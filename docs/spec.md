@@ -31,14 +31,15 @@ this version; their conversation comments are included. Preserve attachment link
 Collect all accessible repository comments with stable IDs. Catalogs include unused
 repository labels and milestones, organization issue types, and organization issue
 field definitions/options. Native issue values are collected in batched GraphQL
-node queries with pagination. Project catalogs include accessible owner projects,
-their field definitions, active/archived items, draft items, memberships, and field
-values. Project data can include references to repositories outside the configured
-ticket corpus; those references do not imply issue/comment coverage there.
+node queries with pagination. Project catalogs include accessible owner projects.
+Ticket memberships preserve project ID, number, title, URL, and archived state
+through the ticket's paginated GraphQL connections.
+Complete project item inventories, draft cards, and project field definitions/values
+are outside the collection scope.
 
-Organization issue fields and project fields remain separate. Extra issue GraphQL
-metadata includes parent, sub-issues, blocked-by, blocking, and project memberships.
-Every nested connection must be paginated. Unavailable organization features can be
+Native issue fields remain distinct from project membership metadata. Extra issue
+GraphQL metadata includes parent, sub-issues, blocked-by, blocking, and project
+memberships. Every nested connection must be paginated. Unavailable organization features can be
 explicitly disabled in configuration and are recorded as disabled, never complete.
 Personal repositories do not have organization issue catalogs.
 
@@ -67,9 +68,12 @@ overlapping REST payloads do not trigger hydration. Native field values, relatio
 project membership, and owner catalogs are also reconciled independently of issue
 update timestamps every `enrichment_interval` (default one hour). The last complete
 enrichment timestamp is exposed separately from issue/comment collection time.
-Project item collection inventories both `ARCHIVED` and `NOT_ARCHIVED` states through
-GraphQL and requests every configured field through bulk REST. Missing inventory
-items receive a complete REST fetch by stable ID; failed recovery rolls back.
+Project memberships use the ticket metadata query with `includeArchived:true` and
+complete nested pagination. Owner project catalogs are fetched once per owner.
+Project coverage is recorded as `memberships` or `disabled`. Existing mirrors whose
+project coverage was `complete` retain existing membership metadata and remove
+obsolete project detail catalogs without forcing enrichment. Narrowing collection
+reuses compatible request checkpoints.
 Periodic full issue/comment reconciliation detects removed records. `--full` requests
 it explicitly; the default reconciliation interval is 24 hours. A full listing removes
 unseen records only after every page succeeds. A 404 or 403 is an access/collection
@@ -82,7 +86,7 @@ Bootstrap lists issues and repository comments in pages of 100 and hydrates at m
 50 tickets per GraphQL batch, shared across repositories. Owner catalogs/projects are collected once per owner.
 Between enrichment and full inventory refreshes, an unchanged repository requires
 two HTTP requests. A 251-ticket fixture with complete catalogs, one project, and a
-nested overflow requires 20 bootstrap requests. Exact conditional responses retain
+nested overflow requires 17 bootstrap requests. Exact conditional responses retain
 ETags and Link headers for reusable listing/catalog URLs. Delta URLs with changing
 `since` watermarks are not persisted in the HTTP cache; conditional requests still count against the request budget.
 Network errors, invalid payloads, GraphQL errors/partial responses, repeated pagination
@@ -138,7 +142,8 @@ history, and returns ranked suggestions. Scores are retrieval scores, not duplic
 probabilities. No automatic duplicate adjudication or closure belongs in gh-mirror.
 
 `get` returns the complete stored issue, comments, native field values, relationships,
-and project memberships. REST and MCP call the same query functions. Reads report the
+and project memberships. Project queries return the local project catalog record
+and collection status. REST and MCP call the same query functions. Reads report the
 database generation and resource coverage; they never contact GitHub. MCP tools are
 `search_issues`, `get_issue`, `get_catalog`, `get_project`,
 `find_duplicate_candidates`, and `get_sync_status`. HTTP provides `/health`,
@@ -185,8 +190,8 @@ database transport. Keep reports/manifest metadata as artifacts, not SQLite file
 
 `make check` performs formatting, vet, build, race-enabled tests, and lint, in order.
 Fixtures cover bootstrap and delta sync, edited/deleted comments, closed history,
-unused/removed labels, native fields and nested pagination, archived/draft project
-items, request counts, failure rollback, collector exclusion, complete local retrieval,
+unused/removed labels, native fields and nested pagination, active/archived project
+memberships, request counts, failure rollback, collector exclusion, complete local retrieval,
 REST/MCP parity, snapshot isolation, failed publication, checksum/freshness/scope errors,
 and acquisition across local and HTTP transports. Tests do not access live GitHub.
 Concurrency tests verify worker bounds, a shared budget, coordinated retry waits,

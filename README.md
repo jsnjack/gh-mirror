@@ -1,6 +1,7 @@
 # gh-mirror
 
-gh-mirror keeps GitHub issues, conversation comments, labels, fields, and projects
+gh-mirror keeps GitHub issues, conversation comments, labels, native issue fields,
+project catalogs, and ticket project memberships
 in a searchable local SQLite database. Collect repositories once, update them
 incrementally, and reuse the data for issue triage, reports, automation, or AI
 tools without repeatedly fetching the same records from GitHub.
@@ -71,6 +72,8 @@ explicitly when those features should be excluded; status records that exclusion
 Personal repositories have no organization issue fields. User-owned Projects REST
 endpoints require a compatible classic PAT; GitHub's current documentation excludes
 fine-grained and installation tokens for those endpoints.
+`projects` collects available project catalogs and ticket memberships. It does not
+fetch complete project items, draft cards, or project field definitions/values.
 
 ## Create and update a mirror
 
@@ -199,14 +202,23 @@ Inspect labels, milestones, native issue types/fields, or project data:
 ```sh
 gh-mirror catalog --kind labels --scope owner/repository
 gh-mirror catalog --kind issue_fields --scope owner
-gh-mirror catalog --kind project_items --scope owner/1
+gh-mirror catalog --kind projects --scope owner
 ```
 
 | Catalog kinds | Scope |
 | --- | --- |
 | `labels`, `milestones` | `owner/repository` |
 | `issue_types`, `issue_fields`, `projects` | `owner` |
-| `project_fields`, `project_items` | `owner/project-number` |
+
+Ticket results include memberships under `extra.projectItems`, with the project
+ID, number, title, URL, and membership's archived state. Membership pagination is
+included in the normal batched ticket metadata collection. Project coverage in
+`status` is `memberships` when enabled and `disabled` when excluded.
+
+Mirrors created by older versions retain existing membership metadata and remove
+full project detail catalogs on the next successful sync, without forcing an extra
+enrichment refresh. Compatible saved responses from an interrupted sync are reused
+automatically; do not use `--restart` to upgrade.
 
 Use `gh-mirror --db /path/to/mirror.sqlite ...` to query another database, including
 an acquired snapshot. Local queries need no GitHub credential.
@@ -234,7 +246,7 @@ curl 'http://127.0.0.1:8787/v1/issues/owner/repository/123'
 | `/v1/search?q=...` | Search; supports `repo`, `state`, `label`, `type`, and `limit` |
 | `/v1/issues/{owner}/{repo}/{number}` | Issue, comments, and metadata |
 | `/v1/catalog?kind=...&scope=...` | Catalog data |
-| `/v1/projects?owner=...&number=...` | Project with fields and items |
+| `/v1/projects?owner=...&number=...` | Project catalog record and collection status |
 | `/v1/candidates?repo=...&number=...&limit=...` | Possible duplicate issues |
 | `/snapshots/latest` | Latest snapshot manifest |
 | `/snapshots/{filename}` | Immutable snapshot file |
@@ -312,17 +324,18 @@ publication and retain generations long enough for in-flight acquisitions to fin
 The mirror includes accessible open and closed issues, ordinary PR conversation
 records, and all conversation comments. Original REST JSON preserves bodies,
 authors, labels, multiple assignees, state reasons, native types, and other returned
-fields. Catalogs include unused labels and available fields. Project collection
-includes active, archived, and draft items with field values.
+fields. Catalogs include unused labels, native issue fields, and available projects.
+Ticket metadata includes project memberships with active and archived states.
 
 PR reviews, inline review comments, Discussions, attachment binaries, and historical
-deleted text are outside this version. The mirror reflects the credential's visible
+deleted text are outside this version. Full project items, draft cards, and project
+fields/values are also excluded. The mirror reflects the credential's visible
 scope and the last successful collection, rather than live GitHub state.
 
 Bootstrap fetches issues and repository-wide comments in pages of 100. Native
 fields and relationships use GraphQL batches of 50 tickets across repositories.
-Owner catalogs and projects are collected once per owner. Project inventories are
-checked against the bulk listing, with individual requests only for omitted items.
+Owner catalogs and projects are collected once per owner. Project memberships are
+returned in the ticket batches, with additional requests only for nested pagination.
 
 Between scheduled enrichment and full reconciliation, an unchanged repository
 requires two requests: one issue delta listing and one comment delta listing.
@@ -359,9 +372,7 @@ Credentials and ticket bodies are excluded from diagnostic logs.
 Collection uses GitHub's [repository issue listing](https://docs.github.com/en/rest/issues/issues#list-repository-issues),
 [repository comment listing](https://docs.github.com/en/rest/issues/comments#list-issue-comments-for-a-repository),
 [native issue GraphQL schema](https://docs.github.com/en/graphql/reference/issues),
-[Projects](https://docs.github.com/en/rest/projects/projects),
-[project fields](https://docs.github.com/en/rest/projects/fields), and
-[project items](https://docs.github.com/en/rest/projects/items). The REST version is
+[Projects](https://docs.github.com/en/rest/projects/projects). The REST version is
 `2026-03-10`. Feature availability on GitHub Enterprise Server may differ; unsupported
 enabled features fail rather than being reported as empty complete catalogs.
 Request coordination follows GitHub's
