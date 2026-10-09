@@ -624,6 +624,7 @@ terms, same/cross-repository duplicate candidates and distractors. Run them with
 ```sh
 go test ./internal/store -run TestRetrievalEvaluation -v
 go test ./internal/store -run '^$' -bench BenchmarkLocalQuery -benchtime=3x
+go test ./internal/github -run '^$' -bench BenchmarkParallelPagination -benchtime=1x
 ```
 
 Synthetic scores establish regression behavior, not real-world duplicate quality.
@@ -696,6 +697,14 @@ Bootstrap fetches issues and repository-wide comments in pages of 100. Native
 fields and relationships use GraphQL batches of 50 tickets across repositories.
 Owner catalogs and projects are collected once per owner. Project memberships are
 returned in the ticket batches, with additional requests only for nested pagination.
+
+When GitHub supplies numbered next/last page links, even a single long listing can
+use all configured `--workers`. Pages share the global request limit and retry
+pauses; completed pages are checkpointed immediately and assembled in page order.
+This fetches the same pages as serial collection, without speculative requests.
+Cursor-dependent listings and listings without a known last page remain sequential.
+Repositories are processed in order. Existing saved pages remain reusable after
+upgrading: interrupt with Ctrl-C and rerun `sync`, without `--restart`.
 
 Between scheduled enrichment and full reconciliation, an unchanged repository
 requires two requests when discussion comments are enabled: one issue delta listing

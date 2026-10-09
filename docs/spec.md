@@ -91,6 +91,15 @@ two HTTP requests. A 251-ticket fixture with complete catalogs, one project, and
 nested overflow requires 17 bootstrap requests. Exact conditional responses retain
 ETags and Link headers for reusable listing/catalog URLs. Delta URLs with changing
 `since` watermarks are not persisted in the HTTP cache; conditional requests still count against the request budget.
+Use advertised numeric next/last page ranges to dispatch bounded page workers through
+the shared request pool. Preserve query ordering in generated URLs for checkpoint
+compatibility, checkpoint each finished page, report monotonic completed-page counts,
+and assemble results in page order. Validate origins, series parameters and next-page
+continuity; fail incomplete inventories. Follow extensions beyond the advertised tail
+using their returned links. Unknown ranges and cursor pagination remain sequential;
+do not speculate beyond known ranges. Join page workers before returning on any error
+or cancellation, preserving successfully saved pages. Scheduling changes leave the
+collection version and pending-session fingerprints unchanged.
 Network errors, invalid payloads, GraphQL errors/partial responses, repeated pagination
 cursors, or request-budget exhaustion roll back the collection. Readers use WAL
 transactions. HTTP retries have bounded attempts and wait time, obey Retry-After and
