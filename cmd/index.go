@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"gh-mirror/internal/config"
 	"gh-mirror/internal/embedding"
 	"gh-mirror/internal/progress"
 	"gh-mirror/internal/store"
@@ -15,8 +16,9 @@ func addIndex() {
 	var workers int
 	var quiet bool
 	command := &cobra.Command{Use: "index", Short: "Build or resume bundled offline semantic vectors without GitHub requests", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) (runErr error) {
-		if workers < 1 || workers > 16 {
-			return fmt.Errorf("index workers must be between 1 and 16")
+		cpuWorkers, err := inferenceWorkers(command, "workers", workers)
+		if err != nil {
+			return err
 		}
 		var display *progress.Display
 		var report progress.Reporter
@@ -38,7 +40,7 @@ func addIndex() {
 			return err
 		}
 		defer closeStore(command.Context(), db)
-		result, err := db.Index(command.Context(), embedding.Default, store.IndexOptions{Workers: workers, Progress: report})
+		result, err := db.Index(command.Context(), embedding.Default, store.IndexOptions{Workers: cpuWorkers, Progress: report})
 		if err != nil {
 			return fmt.Errorf("index local mirror: %w", err)
 		}
@@ -51,7 +53,7 @@ func addIndex() {
 		}
 		return output(command, result)
 	}}
-	command.Flags().IntVar(&workers, "workers", 4, "Parallel CPU inference workers (1–16)")
+	command.Flags().IntVar(&workers, "workers", 0, "Parallel CPU inference workers (1–16; defaults to configuration)")
 	command.Flags().BoolVar(&quiet, "quiet", false, "Suppress indexing progress")
 	root.AddCommand(command)
 	root.AddCommand(&cobra.Command{Use: "model", Short: "Describe the bundled offline encoder and its compatibility identity", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
@@ -64,4 +66,17 @@ func addIndex() {
 			License     string `json:"license"`
 		}{embedding.Model, embedding.Revision, embedding.Fingerprint, embedding.Dimension, embedding.MaxTokens, "Apache-2.0"})
 	}})
+}
+
+func inferenceWorkers(command *cobra.Command, flag string, value int) (int, error) {
+	if !command.Flags().Changed(flag) {
+		value = settings.Workers
+		if value == 0 {
+			value = config.DefaultWorkers
+		}
+	}
+	if value < 1 || value > config.MaxWorkers {
+		return 0, fmt.Errorf("index workers must be between 1 and %d", config.MaxWorkers)
+	}
+	return value, nil
 }

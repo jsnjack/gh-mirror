@@ -40,6 +40,7 @@ type Display struct {
 	repository, repositories int
 	requests, limit, cached  int
 	active, workers          int
+	workerKind               string
 	resumed, saved           int
 	lines, frame             int
 	err                      error
@@ -143,6 +144,9 @@ func (d *Display) Report(event Event) {
 		d.active, d.workers = event.Active, event.Workers
 		d.until = event.WaitUntil
 	}
+	if event.WorkerKind != "" {
+		d.workerKind = event.WorkerKind
+	}
 	d.resumed = max(d.resumed, event.Resumed)
 	d.saved = max(d.saved, event.Saved)
 	if event.Limit > 0 {
@@ -240,7 +244,11 @@ func (d *Display) render(now time.Time, status string) {
 	}
 	requests += fmt.Sprintf(" requests | %d cached", d.cached)
 	if d.workers > 0 {
-		requests = fmt.Sprintf("workers %d/%d active | ", d.active, d.workers) + requests
+		kind := d.workerKind
+		if kind == "" {
+			kind = GitHubWorkers
+		}
+		requests = fmt.Sprintf("%s workers %d/%d active | ", kind, d.active, d.workers) + requests
 	}
 	resume := ""
 	if d.saved > 0 || d.resumed > 0 {

@@ -10,7 +10,6 @@ import (
 	"math"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"gh-mirror/internal/embedding"
@@ -150,37 +149,17 @@ func (s *Store) Index(ctx context.Context, e Vectorizer, o IndexOptions) (Semant
 		return SemanticStatus{}, err
 	}
 	completed, total := 0, initial.PendingDocuments
-	after := ""
-	o.Progress.Send(progress.Event{Phase: "Indexing semantic documents", Total: total, Workers: o.Workers})
+	o.Progress.Send(progress.Event{Phase: "Indexing semantic documents", Total: total, Workers: o.Workers, WorkerKind: progress.CPUWorkers})
 	for {
 		if err := ctx.Err(); err != nil {
 			return SemanticStatus{}, fmt.Errorf("index interrupted; completed chunks retained: %w", err)
 		}
-		rows, err := s.db.QueryContext(ctx, `SELECT d.id,d.title,d.body FROM documents d LEFT JOIN semantic_documents v ON v.document_id=d.id WHERE d.id>? AND (v.document_id IS NULL OR v.complete=0 OR v.model<>?) ORDER BY d.id LIMIT 32`, after, e.ID())
+		processed, err := s.indexPass(ctx, e, o, &completed, total)
 		if err != nil {
-			return SemanticStatus{}, fmt.Errorf("find pending documents: %w", err)
-		}
-		documents := []indexDocument{}
-		for rows.Next() {
-			var d indexDocument
-			if err := rows.Scan(&d.id, &d.title, &d.body); err != nil {
-				return SemanticStatus{}, finishRows(rows, err)
-			}
-			documents = append(documents, d)
-		}
-		if err := finishRows(rows, rows.Err()); err != nil {
 			return SemanticStatus{}, err
 		}
-		if len(documents) == 0 {
-			if after != "" {
-				after = ""
-				continue
-			}
+		if processed == 0 {
 			break
-		}
-		after = documents[len(documents)-1].id
-		if err := s.indexBatch(ctx, e, documents, o, &completed, total); err != nil {
-			return SemanticStatus{}, err
 		}
 	}
 	if err := s.Update(ctx, func(w *Writer) error {
@@ -195,31 +174,76 @@ func (s *Store) Index(ctx context.Context, e Vectorizer, o IndexOptions) (Semant
 	return *out, nil
 }
 
-func (s *Store) indexBatch(ctx context.Context, e Vectorizer, documents []indexDocument, o IndexOptions, completed *int, total int) error {
+func (s *Store) pendingDocuments(ctx context.Context, after, model string) ([]indexDocument, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT d.id,d.title,d.body FROM documents d LEFT JOIN semantic_documents v ON v.document_id=d.id WHERE d.id>? AND (v.document_id IS NULL OR v.complete=0 OR v.model<>?) ORDER BY d.id LIMIT 32`, after, model)
+	if err != nil {
+		return nil, fmt.Errorf("find pending documents: %w", err)
+	}
+	documents := []indexDocument{}
+	for rows.Next() {
+		var d indexDocument
+		if err := rows.Scan(&d.id, &d.title, &d.body); err != nil {
+			return nil, finishRows(rows, err)
+		}
+		documents = append(documents, d)
+	}
+	if err := finishRows(rows, rows.Err()); err != nil {
+		return nil, err
+	}
+	return documents, nil
+}
+
+func (s *Store) indexPass(ctx context.Context, e Vectorizer, o IndexOptions, completed *int, total int) (int, error) {
 	child, cancel := context.WithCancel(ctx)
 	defer cancel()
-	jobs := make(chan indexDocument, len(documents))
-	for _, d := range documents {
-		jobs <- d
-	}
-	close(jobs)
-	done := make(chan error, o.Workers)
+	jobs := make(chan indexDocument, o.Workers)
+	done := make(chan error, o.Workers+1)
 	var group sync.WaitGroup
-	var active atomic.Int32
-	for range min(o.Workers, len(documents)) {
+	var progressMu sync.Mutex
+	active, submitted := 0, 0
+	report := func(event progress.Event, delta int) {
+		progressMu.Lock()
+		defer progressMu.Unlock()
+		active += delta
+		event.Workers, event.Active, event.WorkerKind = o.Workers, active, progress.CPUWorkers
+		o.Progress.Send(event)
+	}
+	group.Go(func() {
+		defer close(jobs)
+		after := ""
+		for {
+			documents, err := s.pendingDocuments(child, after, e.ID())
+			if err != nil {
+				done <- err
+				return
+			}
+			if len(documents) == 0 {
+				return
+			}
+			after = documents[len(documents)-1].id
+			for _, d := range documents {
+				select {
+				case jobs <- d:
+					submitted++
+				case <-child.Done():
+					done <- fmt.Errorf("queue index document: %w", child.Err())
+					return
+				}
+			}
+		}
+	})
+	for range o.Workers {
 		group.Go(func() {
 			for d := range jobs {
 				if child.Err() != nil {
 					return
 				}
-				n := active.Add(1)
-				o.Progress.Send(progress.Event{Workers: o.Workers, Active: int(n)})
+				report(progress.Event{}, 1)
 				chunks, err := passages(e, d)
 				if err == nil {
 					err = s.indexDocument(child, e, d, chunks, IndexOptions{Workers: 1})
 				}
-				n = active.Add(-1)
-				o.Progress.Send(progress.Event{Workers: o.Workers, Active: int(n)})
+				report(progress.Event{}, -1)
 				done <- err
 				if err != nil {
 					return
@@ -238,15 +262,15 @@ func (s *Store) indexBatch(ctx context.Context, e Vectorizer, documents []indexD
 			continue
 		}
 		*completed++
-		o.Progress.Send(progress.Event{Phase: "Indexing semantic documents", Completed: *completed, Total: total, Workers: o.Workers, Active: int(active.Load())})
+		report(progress.Event{Phase: "Indexing semantic documents", Completed: *completed, Total: total}, 0)
 	}
 	if failure != nil {
-		return fmt.Errorf("index batch; completed chunks retained: %w", failure)
+		return submitted, fmt.Errorf("index documents; completed chunks retained: %w", failure)
 	}
 	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("index interrupted: %w", err)
+		return submitted, fmt.Errorf("index interrupted: %w", err)
 	}
-	return nil
+	return submitted, nil
 }
 
 var errDocumentChanged = errors.New("document changed during indexing; rerun index")

@@ -90,6 +90,7 @@ func (c *Client) Report(event progress.Event) {
 	event.Requests, event.Limit = c.used, c.used+c.remaining
 	event.Resumed = c.resumed
 	event.Active, event.Workers = c.active, cap(c.slots)
+	event.WorkerKind = progress.GitHubWorkers
 	event.WaitUntil = c.pausedUntil
 	c.mu.Unlock()
 	c.Progress.Send(event)

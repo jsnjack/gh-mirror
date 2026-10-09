@@ -10,6 +10,8 @@ import (
 
 	"gh-mirror/internal/config"
 	"gh-mirror/internal/store"
+
+	"github.com/spf13/cobra"
 )
 
 func TestOfflineIndexCommands(t *testing.T) {
@@ -60,6 +62,35 @@ func TestOfflineIndexCommands(t *testing.T) {
 				if string(result["pending_documents"]) != "0" || !strings.Contains(stderr.String(), "Index complete") || strings.Contains(stderr.String(), "API:") {
 					t.Fatal("missing completed offline index progress", stdout.String(), stderr.String())
 				}
+			}
+		})
+	}
+}
+
+func TestIndexWorkerInheritance(t *testing.T) {
+	for _, test := range []struct {
+		name                       string
+		configured, override, want int
+		explicit, invalid          bool
+	}{
+		{name: "default", want: 4},
+		{name: "configured eight", configured: 8, want: 8},
+		{name: "sync flag resolved", configured: 12, want: 12},
+		{name: "explicit CPU override", configured: 8, override: 2, explicit: true, want: 2},
+		{name: "maximum", configured: 16, want: 16},
+		{name: "explicit zero", configured: 8, explicit: true, invalid: true},
+		{name: "too many", configured: 8, override: 17, explicit: true, invalid: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			old := settings
+			settings.Workers = test.configured
+			t.Cleanup(func() { settings = old })
+			command := &cobra.Command{}
+			command.Flags().Int("index-workers", 0, "")
+			command.Flags().Lookup("index-workers").Changed = test.explicit
+			got, err := inferenceWorkers(command, "index-workers", test.override)
+			if (err != nil) != test.invalid || (!test.invalid && got != test.want) {
+				t.Fatal("incorrect effective worker setting", got, err)
 			}
 		})
 	}

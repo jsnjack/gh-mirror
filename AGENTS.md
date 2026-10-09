@@ -189,6 +189,12 @@ resumable passages remain in the collector database. Query-only paths never inde
 
 `index` works offline. `sync` indexes after collection commits and before publishing,
 unless --index=false; CPU workers are bounded separately from GitHub workers.
+Indexing inherits the effective sync/configured worker count unless explicitly
+overridden with sync --index-workers or standalone index --workers. Keep document
+workers alive across keyset pages with a bounded queue; close read rows before
+dispatch, join producers/workers on cancellation, and rescan after a completed pass.
+Serialize CPU activity snapshots and progress callbacks; label CPU/GitHub phases
+explicitly. Preserve vector fingerprints and reusable checkpoints for scheduling changes.
 Progress names standalone indexing correctly and retains stderr/stdout separation.
 Semantic/hybrid queries share ticket filters and result contracts. Use exact filtered
 cosine scans and independent lexical/semantic rank fusion (k=60); higher scores rank

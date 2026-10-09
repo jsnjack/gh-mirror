@@ -12,6 +12,12 @@ const FetchingComments = "Fetching comments"
 // FetchingReviewComments identifies inline PR review comment pages counted toward the sync total.
 const FetchingReviewComments = "Fetching review comments"
 
+// CPUWorkers identifies offline inference activity in collection progress.
+const CPUWorkers = "CPU"
+
+// GitHubWorkers identifies upstream request concurrency in collection progress.
+const GitHubWorkers = "GitHub"
+
 // Event describes a phase, listing page, completed batch, or HTTP attempt.
 type Event struct {
 	Phase        string
@@ -34,6 +40,7 @@ type Event struct {
 	WaitUntil    time.Time
 	Active       int
 	Workers      int
+	WorkerKind   string
 }
 
 // Reporter receives activity synchronously; a nil reporter disables reporting.

@@ -70,6 +70,24 @@ func TestResponsiveProgress(t *testing.T) {
 	}
 }
 
+func TestSyncSeparatesCPUWorkerProgress(t *testing.T) {
+	var output bytes.Buffer
+	display, err := New(&output, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	display.Report(Event{Phase: FetchingIssues, Workers: 8, Active: 8, WorkerKind: GitHubWorkers, Requests: 10, Limit: 3000})
+	display.Report(Event{Phase: "Indexing semantic documents", Workers: 8, Active: 7, WorkerKind: CPUWorkers, Total: 40})
+	if err := display.Finish(nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"GitHub workers 8/8 active", "CPU workers 7/8 active", "API: 10/3000 requests"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatal("worker phases are ambiguous", want, output.String())
+		}
+	}
+}
+
 func TestPhaseEstimate(t *testing.T) {
 	for _, name := range []string{"unknown total", "no completed records", "first second", "known total", "retry wait", "complete", "phase changed"} {
 		t.Run(name, func(t *testing.T) {

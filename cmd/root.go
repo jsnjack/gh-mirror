@@ -118,14 +118,15 @@ func addCollection() {
 	var full, publish, quiet, restart, index bool
 	var workers, indexWorkers int
 	command := &cobra.Command{Use: "sync", Short: "Bootstrap or incrementally collect the configured repositories", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) (runErr error) {
-		if indexWorkers < 1 || indexWorkers > 16 {
-			return fmt.Errorf("index workers must be between 1 and 16")
-		}
 		if command.Flags().Changed("workers") {
 			settings.Workers = workers
 			if err := settings.Validate(); err != nil {
 				return fmt.Errorf("validate sync settings: %w", err)
 			}
+		}
+		cpuWorkers, err := inferenceWorkers(command, "index-workers", indexWorkers)
+		if err != nil {
+			return err
 		}
 		var report progress.Reporter
 		var display *progress.Display
@@ -154,7 +155,7 @@ func addCollection() {
 			return fmt.Errorf("collect GitHub data: %w", err)
 		}
 		if index {
-			if _, err := db.Index(command.Context(), embedding.Default, store.IndexOptions{Workers: indexWorkers, Progress: report}); err != nil {
+			if _, err := db.Index(command.Context(), embedding.Default, store.IndexOptions{Workers: cpuWorkers, Progress: report}); err != nil {
 				return fmt.Errorf("index collected mirror: %w", err)
 			}
 			result.Status, err = db.Status(command.Context())
@@ -186,7 +187,7 @@ func addCollection() {
 	}}
 	command.Flags().IntVar(&workers, "workers", config.DefaultWorkers, "Maximum parallel GitHub requests (1–16; overrides configuration)")
 	command.Flags().BoolVar(&index, "index", true, "Incrementally index bundled MiniLM vectors after collection")
-	command.Flags().IntVar(&indexWorkers, "index-workers", 4, "Parallel offline inference workers (1–16)")
+	command.Flags().IntVar(&indexWorkers, "index-workers", 0, "Parallel CPU workers (1–16; defaults to --workers/configuration)")
 	command.Flags().BoolVar(&restart, "restart", false, "Discard pending fetches and start a new sync")
 	command.Flags().BoolVar(&full, "full", false, "Force complete inventories and enrichment")
 	command.Flags().BoolVar(&publish, "publish", true, "Publish a standalone snapshot after collection")

@@ -11,8 +11,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"gh-mirror/internal/embedding"
+	"gh-mirror/internal/progress"
 )
 
 type fakeVectorizer struct {
@@ -20,6 +22,66 @@ type fakeVectorizer struct {
 	calls    int
 	failAt   int
 	identity string
+}
+
+type queuedVectorizer struct {
+	fakeVectorizer
+	continued chan struct{}
+	once      sync.Once
+}
+
+func (e *queuedVectorizer) Embed(ctx context.Context, text string) ([]float32, error) {
+	if text == "slow" {
+		select {
+		case <-e.continued:
+		case <-ctx.Done():
+			return nil, fmt.Errorf("blocked fixture document: %w", ctx.Err())
+		}
+	}
+	if text == "after-first-page" {
+		e.once.Do(func() { close(e.continued) })
+	}
+	return e.fakeVectorizer.Embed(ctx, text)
+}
+
+func TestIndexStreamsBeyondDocumentPage(t *testing.T) {
+	db := testStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := db.Update(ctx, func(w *Writer) error {
+		for n := 1; n <= 40; n++ {
+			number, title := n, "fast"
+			if n == 1 {
+				title = "slow"
+			}
+			if n == 40 {
+				number, title = 999, "after-first-page"
+			}
+			raw := json.RawMessage(fmt.Sprintf(`{"number":%d,"node_id":"queue_%d","title":%q,"body":"","state":"open","updated_at":"2026-01-01T00:00:00Z","html_url":"https://github.com/o/r/issues/%d","labels":[]}`, number, number, title, number))
+			if _, err := w.PutIssue(ctx, "o/r", raw); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	encoder := &queuedVectorizer{continued: make(chan struct{})}
+	completed := 0
+	status, err := db.Index(ctx, encoder, IndexOptions{Workers: 8, Progress: func(event progress.Event) {
+		if event.Workers != 8 || event.Active < 0 || event.Active > 8 || event.WorkerKind != progress.CPUWorkers {
+			t.Error("incorrect CPU worker reporting", event)
+		}
+		if event.Completed > 0 {
+			if event.Completed != completed+1 {
+				t.Error("non-monotonic document progress", completed, event)
+			}
+			completed = event.Completed
+		}
+	}})
+	if err != nil || status.PendingDocuments != 0 || completed != 40 {
+		t.Fatal("later documents waited for an unfinished page", completed, status, err)
+	}
 }
 
 func (e *fakeVectorizer) ID() string {
