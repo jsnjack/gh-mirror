@@ -184,8 +184,9 @@ without this metadata are treated as version 1 and do not need an extra fetch.
 Network errors and rate limits preserve progress; they do not trigger a full rebuild.
 
 Sync uses four coordinated workers by default. Independent issue/comment listings
-and batches of ticket metadata run in parallel; each pagination chain follows its
-next cursor in order. Set `workers` in the configuration or override it for one run:
+and advertised numbered pages and batches of ticket metadata run in parallel;
+cursor-dependent pagination follows its next link in order. Set `workers` in the
+configuration or override it for one run:
 
 ```sh
 gh-mirror sync --workers 4
@@ -292,15 +293,26 @@ gh-mirror candidates --repo owner/repository --number 123 --engine hybrid
 
 `sync` now incrementally indexes vectors after committing collection and before
 publishing its snapshot. `--index-workers` controls CPU concurrency separately from
-GitHub request workers; both default to four. Use `sync --index=false` to skip vector
-indexing. Queries use `--engine lexical` by default.
+GitHub request workers; when omitted, it inherits the effective `--workers` or
+configured `workers` value. Standalone `index` also inherits configuration unless
+its `--workers` flag overrides it. The built-in default remains four.
+For example, `sync --workers 8` uses eight for each phase, while
+`sync --workers 8 --index-workers 4` limits CPU indexing to four.
+Use `sync --index=false` to skip vector indexing. Queries use `--engine lexical`
+by default.
 
 Indexing shows document progress, throughput, an ETA and active workers on stderr.
+The sync display labels GitHub and CPU workers separately. A bounded document queue
+keeps workers running across database pages, so one long document does not hold up
+the next page of work.
 Completed passages are committed as they finish. Interrupt with Ctrl-C and rerun
 `index` to resume. Unchanged documents are skipped; changed documents reuse identical
 passages and encode their new passages. Metadata-only changes do not re-encode text.
 Deleted tickets/comments remove their vectors. Model or chunking changes rebuild
 only the derived local vector index, without refetching GitHub data.
+If collection has finished and indexing is interrupted, `index --workers 8` resumes
+the remaining local work without repeating collection. Run `snapshot` afterward
+to publish the completed index, or rerun `sync` to finish the normal workflow.
 
 Titles, bodies, labels, discussion comments and inline review comments are indexed
 as separate passages. Long text is split at the tokenizer's 256-token budget with

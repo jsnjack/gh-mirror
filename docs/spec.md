@@ -331,7 +331,13 @@ manifest records embedding fingerprint, dimension and index generation.
 
 `index` performs local indexing only. `sync` indexes after the collection commit and
 before publication by default, with `--index=false` available and separate
-`--index-workers`. A failure during indexing retains committed collection and
+`--index-workers`. When omitted, CPU workers inherit the effective sync worker
+setting; standalone `index` inherits configured workers unless its --workers flag
+overrides them. Keep a persistent worker pool fed through a bounded document queue
+across 32-row keyset reads, without waiting for a page's slowest document. Rescan
+after finishing a pass to catch remaining work. Serialize active-worker snapshots
+and label GitHub/CPU workers separately. These scheduling changes preserve embedding
+compatibility and durable passages. A failure during indexing retains committed collection and
 completed vectors; rerun `index` to finish without new upstream requests. Progress
 uses stderr, reports known document totals, rate, ETA and active CPU workers, and
 stops on completion/cancellation/failure.
