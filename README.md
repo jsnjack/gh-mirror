@@ -126,14 +126,19 @@ gh-mirror sync --restart
 Progress appears on stderr immediately, without `--debug`. In a terminal it
 refreshes a live display with the current phase, repository, pages and records,
 elapsed time, HTTP request budget, conditional cache hits, and GitHub's remaining
-rate allowance when returned. Indexing and metadata hydration show a progress bar
-once their record totals are known:
+rate allowance when returned. Rows wrap to the terminal width, with GitHub quota
+and resume counters on separate rows. Indexing and metadata hydration show a
+progress bar, percentage, speed, and estimated time for the current phase once
+their record totals and throughput are known:
 
 ```text
 gh-mirror sync | elapsed 12s
-⠹ Hydrating issue metadata | [======--------------] 100/300
-Received: 300 issues, 840 comments | repository 1/1 | workers 4/4
-API: 19/3000 requests | 0 cached | GitHub remaining: 4981
+⠹ Hydrating issue metadata
+[======--------------] 100/300 (33%) | 25.0/s | phase ETA 8s
+Received: 300 issues, 840 comments | repository 1/1
+workers 4/4 active | API: 19/3000 requests | 0 cached
+GitHub remaining: 4981
+Resume: 8 resumed responses | 10 saved before this run
 ```
 
 Listings use a spinner and counts because their totals are not known in advance.
@@ -184,6 +189,11 @@ Queries return JSON on stdout. Search treats words literally, joins them with OR
 and returns the best matching issue or comment per ticket, with a source URL,
 snippet, and text relevance score. Filters select repository, state, label, and
 native issue type. Results include mirror status so consumers can check freshness.
+
+`score` uses SQLite FTS5's [BM25 ranking](https://www.sqlite.org/fts5.html#the_bm25_function).
+Lower, more negative scores rank first. Title matches have a weight of five and
+body/comment text a weight of one. Compare scores within the same query; they are
+text relevance values, not percentages or duplicate probabilities.
 
 Read a complete issue with its comments and collected metadata, or retrieve
 possible duplicates:

@@ -124,8 +124,11 @@ Sync reports progress on stderr by default, starting before database setup. A
 terminal receives a refreshed display of phase, repository, listing counts,
 elapsed time, request usage, conditional cache hits, and rate-limit information.
 It also reports active/configured workers and saved responses reused on resume.
-Known indexing/hydration totals have progress bars; listings with unknown totals
-have a spinner. Explicit callbacks carry activity from the collector and client
+Terminal rows wrap to the current terminal width without truncating metrics; quota
+and resume counts occupy separate rows. Changing frame heights erase obsolete rows.
+Known indexing/hydration totals have progress bars, percentage, phase throughput,
+and a phase ETA after measurable progress. Unknown totals and retry waits have no
+ETA; listings with unknown totals have a spinner. Explicit callbacks carry activity from the collector and client
 without additional upstream calls. Status refreshes during slow requests, retries,
 and snapshot publication. Nonterminal/debug output uses plain phase updates and
 periodic heartbeats. `sync --quiet` disables progress; stdout remains JSON.
