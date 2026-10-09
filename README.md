@@ -87,6 +87,25 @@ collection. Use `sync --publish=false` if you only need the local database.
 and enrichment timestamps. A failed collection rolls back its data, indexes, and
 checkpoints together, leaving the previous successful generation available.
 
+Progress appears on stderr immediately, without `--debug`. In a terminal it
+refreshes a live display with the current phase, repository, pages and records,
+elapsed time, HTTP request budget, conditional cache hits, and GitHub's remaining
+rate allowance when returned. Indexing and metadata hydration show a progress bar
+once their record totals are known:
+
+```text
+gh-mirror sync | elapsed 12s
+⠹ Hydrating issue metadata | [======--------------] 100/300
+Received: 300 issues, 840 comments | repository 1/1
+API: 19/3000 requests | 0 cached | GitHub remaining: 4981
+```
+
+Listings use a spinner and counts because their totals are not known in advance.
+Progress continues during network requests, retry waits, and snapshot publication.
+Success, failure, and cancellation have explicit final status messages. Redirected
+stderr and `--debug` use plain phase updates with periodic status lines instead of
+terminal animation. Stdout remains JSON; use `sync --quiet` to suppress progress.
+
 Schedule sync with cron, a systemd timer, or your CI scheduler. For example, this
 cron entry updates every 15 minutes without exporting a snapshot:
 
@@ -291,7 +310,8 @@ require `goimports`, `golangci-lint`, and `monova`; the Makefile prints installa
 commands for missing tools. The implementation specification is in
 [docs/spec.md](docs/spec.md).
 
-`--debug` sends diagnostics to stderr. `--trace` independently writes detailed
+`--debug` adds request diagnostics to stderr alongside plain sync progress.
+`--trace` independently writes detailed
 request/count/status metadata to `gh-mirror.log` in the temporary directory
 (normally `/tmp`), truncated at startup.
 Credentials and ticket bodies are excluded from diagnostic logs.

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"gh-mirror/internal/github"
+	"gh-mirror/internal/progress"
 	"gh-mirror/internal/store"
 )
 
@@ -136,6 +137,7 @@ func hydrate(ctx context.Context, c *github.Client, w *store.Writer, refs []stor
 				return fmt.Errorf("store hydrated issue: %w", err)
 			}
 		}
+		c.Progress.Send(progress.Event{Advance: len(batch)})
 	}
 	return nil
 }

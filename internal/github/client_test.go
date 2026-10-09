@@ -2,11 +2,15 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"gh-mirror/internal/progress"
 )
 
 type memoryCache struct {
@@ -141,6 +145,78 @@ func TestClient(t *testing.T) {
 				} else if err == nil {
 					t.Fatal("invalid listing accepted", name)
 				}
+			}
+		})
+	}
+}
+
+func TestHTTPProgress(t *testing.T) {
+	for _, name := range []string{"conditional hit", "retry wait"} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-RateLimit-Remaining", "4999")
+				if name == "retry wait" {
+					w.Header().Set("Retry-After", "30")
+					w.WriteHeader(http.StatusTooManyRequests)
+					return
+				}
+				if r.Header.Get("If-None-Match") != "" {
+					w.WriteHeader(http.StatusNotModified)
+					return
+				}
+				w.Header().Set("ETag", "etag")
+				if _, err := w.Write([]byte(`[{"id":1}]`)); err != nil {
+					t.Error(err)
+				}
+			}))
+			defer server.Close()
+			client := New(server.URL, server.URL+"/graphql", "test-token", 10, &memoryCache{})
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var events []progress.Event
+			client.Progress = func(event progress.Event) {
+				events = append(events, event)
+				if event.Wait > 0 {
+					cancel()
+				}
+			}
+			_, err := client.List(ctx, "/items")
+			if name == "retry wait" {
+				if !errors.Is(err, context.Canceled) || events[len(events)-1].Wait != 30*time.Second || client.Requests() != 1 {
+					t.Fatal("retry wait not reported before cancellation", err, events)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := client.List(ctx, "/items"); err != nil {
+					t.Fatal(err)
+				}
+				cached, pages := 0, 0
+				for _, event := range events {
+					if event.Cached {
+						cached++
+					}
+					if event.Page > 0 {
+						pages++
+						if event.Page != 1 || event.Records != 1 {
+							t.Fatal("incorrect listing progress", event)
+						}
+					}
+				}
+				if cached != 1 || pages != 2 || client.Requests() != 2 {
+					t.Fatal("incorrect request/cache progress", events, client.Requests())
+				}
+			}
+			remaining := false
+			for _, event := range events {
+				remaining = remaining || event.Remaining == "4999"
+				if event.Requests > 0 && event.Limit != 10 {
+					t.Fatal("request budget missing from progress", event)
+				}
+			}
+			if !remaining {
+				t.Fatal("GitHub rate allowance not reported", events)
 			}
 		})
 	}

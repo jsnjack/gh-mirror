@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"gh-mirror/internal/diagnostics"
+	"gh-mirror/internal/progress"
 )
 
 const maxBody = 32 << 20
@@ -27,6 +28,7 @@ type Cache interface {
 
 // Client shares a request budget across REST, GraphQL, and retries.
 type Client struct {
+	Progress          progress.Reporter
 	api, graph, token string
 	http              *http.Client
 	cache             Cache
@@ -53,6 +55,7 @@ func (c *Client) request(ctx context.Context, method, target string, payload []b
 		}
 		c.remaining--
 		c.used++
+		c.Progress.Send(progress.Event{Requests: c.used, Limit: c.used + c.remaining})
 		req, err := http.NewRequestWithContext(ctx, method, target, bytes.NewReader(payload))
 		if err != nil {
 			return nil, nil, 0, fmt.Errorf("prepare GitHub request: %w", err)
@@ -86,6 +89,7 @@ func (c *Client) request(ctx context.Context, method, target string, payload []b
 			return nil, nil, 0, fmt.Errorf("GitHub response exceeds %d bytes", maxBody)
 		}
 		slog.DebugContext(ctx, "GitHub response", "method", method, "status", resp.StatusCode, "request", c.used, "elapsed", time.Since(started))
+		c.Progress.Send(progress.Event{Requests: c.used, Limit: c.used + c.remaining, Remaining: resp.Header.Get("X-RateLimit-Remaining"), Cached: resp.StatusCode == http.StatusNotModified})
 		slog.Log(ctx, diagnostics.TraceLevel, "GitHub request metadata", "path", req.URL.Path, "bytes", len(body), "remaining", resp.Header.Get("X-RateLimit-Remaining"))
 		if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNotModified {
 			return body, resp.Header, resp.StatusCode, nil
@@ -120,6 +124,7 @@ func (c *Client) request(ctx context.Context, method, target string, payload []b
 		if delay < 0 {
 			delay = 0
 		}
+		c.Progress.Send(progress.Event{Wait: delay})
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
@@ -215,6 +220,7 @@ func (c *Client) List(ctx context.Context, path string) ([]json.RawMessage, erro
 			return nil, fmt.Errorf("expected GitHub array at %s", base.Path)
 		}
 		out = append(out, items...)
+		c.Progress.Send(progress.Event{Page: len(seen), Records: len(out)})
 		target = ""
 		for _, link := range strings.Split(page.Link, ",") {
 			segments := strings.Split(strings.TrimSpace(link), ";")

@@ -84,6 +84,16 @@ rate-limit reset headers, and respect cancellation. Requests have deadlines and 
 shared per-sync budget. Trace logs record resource/count/status metadata without
 credentials or ticket bodies. No upstream mutation API exists.
 
+Sync reports progress on stderr by default, starting before database setup. A
+terminal receives a refreshed display of phase, repository, listing counts,
+elapsed time, request usage, conditional cache hits, and rate-limit information.
+Known indexing/hydration totals have progress bars; listings with unknown totals
+have a spinner. Explicit callbacks carry activity from the collector and client
+without additional upstream calls. Status refreshes during slow requests, retries,
+and snapshot publication. Nonterminal/debug output uses plain phase updates and
+periodic heartbeats. `sync --quiet` disables progress; stdout remains JSON.
+Success, failure, and cancellation stop refreshes and produce a final status.
+
 ## Retrieval
 
 FTS5 indexes issue titles/bodies and individual comments. Results return issue

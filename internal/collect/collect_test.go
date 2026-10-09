@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"gh-mirror/internal/config"
+	"gh-mirror/internal/progress"
 	"gh-mirror/internal/store"
 )
 
@@ -238,7 +239,7 @@ func TestCollection(t *testing.T) {
 			}
 			db, c, f, started := setup(t, count)
 			ctx := context.Background()
-			initial, err := syncAt(ctx, db, c, false, started)
+			initial, err := syncAt(ctx, db, c, false, started, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -253,7 +254,7 @@ func TestCollection(t *testing.T) {
 					f.projectCursorOverflow = true
 					f.repeatProjectCursor = name == "project cursor rollback"
 				}
-				out, err := syncAt(ctx, db, c, true, started.Add(time.Hour))
+				out, err := syncAt(ctx, db, c, true, started.Add(time.Hour), nil)
 				if name == "project cursor rollback" {
 					if err == nil {
 						t.Fatal("repeated project cursor committed")
@@ -282,7 +283,7 @@ func TestCollection(t *testing.T) {
 				f.url = newServer.URL
 				f.count = 1
 				f.timestamp = started.Add(-time.Hour).Format(time.RFC3339)
-				out, err := syncAt(ctx, db, c, false, started.Add(10*time.Minute))
+				out, err := syncAt(ctx, db, c, false, started.Add(10*time.Minute), nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -322,7 +323,7 @@ func TestCollection(t *testing.T) {
 			case "incremental two requests":
 				f.stage = "delta"
 				f.timestamp = started.Add(10 * time.Minute).Format(time.RFC3339)
-				out, err := syncAt(ctx, db, c, false, started.Add(10*time.Minute))
+				out, err := syncAt(ctx, db, c, false, started.Add(10*time.Minute), nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -335,7 +336,7 @@ func TestCollection(t *testing.T) {
 				}
 			case "deletion inventories":
 				f.stage = "delete"
-				out, err := syncAt(ctx, db, c, true, started.Add(time.Hour))
+				out, err := syncAt(ctx, db, c, true, started.Add(time.Hour), nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -359,7 +360,7 @@ func TestCollection(t *testing.T) {
 				case "budget rollback":
 					c.MaxRequests = 1
 				}
-				if _, err := syncAt(ctx, db, c, true, started.Add(time.Hour)); err == nil {
+				if _, err := syncAt(ctx, db, c, true, started.Add(time.Hour), nil); err == nil {
 					t.Fatal("failed collection unexpectedly committed")
 				}
 				after, err := db.Status(ctx)
@@ -370,7 +371,7 @@ func TestCollection(t *testing.T) {
 					t.Fatal("failure advanced state", after)
 				}
 			case "changed issue batching":
-				out, err := syncAt(ctx, db, c, false, started.Add(10*time.Minute))
+				out, err := syncAt(ctx, db, c, false, started.Add(10*time.Minute), nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -378,7 +379,7 @@ func TestCollection(t *testing.T) {
 					t.Fatal("unchanged overlapping issue data triggered hydration", out.Requests)
 				}
 				f.timestamp = started.Add(20 * time.Minute).Format(time.RFC3339)
-				out, err = syncAt(ctx, db, c, false, started.Add(20*time.Minute))
+				out, err = syncAt(ctx, db, c, false, started.Add(20*time.Minute), nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -429,7 +430,7 @@ func TestSharedOwnerBatches(t *testing.T) {
 		c.APIURL = server.URL
 		c.GraphQLURL = server.URL + "/graphql"
 		c.Repositories = []string{"o/r", "o/s"}
-		out, err := syncAt(context.Background(), db, c, false, started)
+		out, err := syncAt(context.Background(), db, c, false, started, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -458,4 +459,35 @@ func TestNativeValues(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSyncProgress(t *testing.T) {
+	t.Run("pages and metadata batches retain the request budget", func(t *testing.T) {
+		db, c, _, _ := setup(t, 251)
+		var events []progress.Event
+		result, err := Sync(context.Background(), db, c, false, func(event progress.Event) {
+			events = append(events, event)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		phase := ""
+		issuePages, issues, hydrated, requests := 0, 0, 0, 0
+		for _, event := range events {
+			if event.Phase != "" {
+				phase = event.Phase
+			}
+			if phase == progress.FetchingIssues && event.Page > 0 {
+				issuePages, issues = event.Page, event.Records
+			}
+			hydrated += event.Advance
+			requests = max(requests, event.Requests)
+		}
+		if issuePages != 3 || issues != 251 || hydrated != 251 || requests != 20 || result.Requests != 20 {
+			t.Fatalf("inaccurate progress or extra upstream requests: pages=%d issues=%d hydrated=%d requests=%d result=%d", issuePages, issues, hydrated, requests, result.Requests)
+		}
+		if phase != "Committing mirror" || result.Status.Generation == "" {
+			t.Fatal("collection did not reach the commit phase", phase, result)
+		}
+	})
 }

@@ -7,7 +7,8 @@ commit, push, or change another repository without user authorization.
 
 `cmd/` parses Cobra commands and wires dependencies. `internal/config` loads JSON
 configuration and resolves XDG paths. `internal/diagnostics` manages stderr and trace
-logging. `internal/github` performs bounded read-only upstream requests and pagination.
+logging. `internal/progress` renders sync activity from explicit collector/client
+callbacks. `internal/github` performs bounded read-only upstream requests and pagination.
 `internal/collect` synchronizes configured resources. `internal/store` owns the SQLite
 schema, transactions, FTS5 index, and queries. `internal/snapshot` publishes and acquires
 immutable databases. `internal/service` shares local queries between REST and MCP.
@@ -31,7 +32,16 @@ Credentials come from named environment variables and never enter the database,
 stdout, request bodies, or trace logs. HTTP listeners outside loopback require an
 API bearer token. Read tools never trigger collection or expose arbitrary SQL.
 
+Sync progress starts before opening the database and uses stderr, preserving JSON
+on stdout. Animate terminal output; use plain phase updates and periodic heartbeats
+for nonterminals or debug mode. `sync --quiet` disables progress. Report actual
+pages, records, hydration batches, HTTP attempts, conditional hits, and retry waits
+without extra GitHub requests. Show bounded progress only for known local totals.
+Stop refreshes on success, failure, and cancellation. Diagnostic logs must not
+interleave with animated frames.
+
 Dependencies are justified by the accepted design: Cobra is required by standards;
 modernc.org/sqlite provides embedded SQLite/FTS5 without CGO; the official MCP SDK
-provides protocol and transport handling. Tests use local HTTP fixtures and temporary
+provides protocol and transport handling. The existing go-isatty dependency detects
+terminal writers without adding a UI framework. Tests use local HTTP fixtures and temporary
 databases. No live GitHub writes or production WakeCI changes belong in validation.

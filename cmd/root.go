@@ -18,6 +18,7 @@ import (
 	"gh-mirror/internal/collect"
 	"gh-mirror/internal/config"
 	"gh-mirror/internal/diagnostics"
+	"gh-mirror/internal/progress"
 	"gh-mirror/internal/service"
 	"gh-mirror/internal/snapshot"
 	"gh-mirror/internal/store"
@@ -112,24 +113,50 @@ func closeStore(ctx context.Context, db *store.Store) {
 	}
 }
 func addCollection() {
-	var full, publish bool
-	command := &cobra.Command{Use: "sync", Short: "Bootstrap or incrementally collect the configured repositories", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+	var full, publish, quiet bool
+	command := &cobra.Command{Use: "sync", Short: "Bootstrap or incrementally collect the configured repositories", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) (runErr error) {
+		var report progress.Reporter
+		var display *progress.Display
+		if !quiet {
+			var err error
+			display, err = progress.New(command.ErrOrStderr(), !debug)
+			if err != nil {
+				return fmt.Errorf("start sync progress: %w", err)
+			}
+			report = display.Report
+			defer func() {
+				if display != nil {
+					if err := display.Finish(runErr); err != nil {
+						runErr = errors.Join(runErr, err)
+					}
+				}
+			}()
+		}
 		db, err := open(false)
 		if err != nil {
 			return err
 		}
 		defer closeStore(command.Context(), db)
-		result, err := collect.Sync(command.Context(), db, settings, full)
+		result, err := collect.Sync(command.Context(), db, settings, full, report)
 		if err != nil {
 			return fmt.Errorf("collect GitHub data: %w", err)
 		}
 		var manifest *snapshot.Manifest
 		if publish {
+			report.Send(progress.Event{Phase: "Publishing snapshot"})
 			m, err := snapshot.Publish(command.Context(), db, settings.SnapshotDir)
 			if err != nil {
 				return fmt.Errorf("publish collected mirror: %w", err)
 			}
 			manifest = &m
+		}
+		// Finish cursor updates before stdout can write to the same terminal.
+		if display != nil {
+			err := display.Finish(nil)
+			display = nil
+			if err != nil {
+				return err
+			}
 		}
 		return output(command, struct {
 			collect.Result
@@ -138,6 +165,7 @@ func addCollection() {
 	}}
 	command.Flags().BoolVar(&full, "full", false, "Force complete inventories and enrichment")
 	command.Flags().BoolVar(&publish, "publish", true, "Publish a standalone snapshot after collection")
+	command.Flags().BoolVar(&quiet, "quiet", false, "Suppress sync progress; retain JSON output and errors")
 	root.AddCommand(command)
 }
 func addQueries() {
