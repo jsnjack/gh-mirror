@@ -29,14 +29,17 @@ var filenamePattern = regexp.MustCompile(`^mirror-[A-Za-z0-9_-]+\.sqlite$`)
 
 // Manifest pins a complete database file, checksum, collection time, and scope.
 type Manifest struct {
-	Filename          string   `json:"filename"`
-	SHA256            string   `json:"sha256"`
-	SchemaVersion     int      `json:"schema_version"`
-	CollectionVersion int      `json:"collection_version"`
-	Generation        string   `json:"generation"`
-	CollectedAt       string   `json:"collected_at"`
-	EnrichedAt        string   `json:"enriched_at"`
-	Repositories      []string `json:"repositories"`
+	Filename             string   `json:"filename"`
+	SHA256               string   `json:"sha256"`
+	SchemaVersion        int      `json:"schema_version"`
+	CollectionVersion    int      `json:"collection_version"`
+	Generation           string   `json:"generation"`
+	CollectedAt          string   `json:"collected_at"`
+	EnrichedAt           string   `json:"enriched_at"`
+	Repositories         []string `json:"repositories"`
+	EmbeddingFingerprint string   `json:"embedding_fingerprint,omitempty"`
+	EmbeddingDimension   int      `json:"embedding_dimension,omitempty"`
+	IndexGeneration      string   `json:"index_generation,omitempty"`
 }
 
 func remove(path string) {
@@ -135,7 +138,12 @@ func Publish(ctx context.Context, db *store.Store, dir string) (Manifest, error)
 	if err != nil {
 		return m, fmt.Errorf("checksum exported mirror: %w", err)
 	}
-	m = Manifest{Filename: "mirror-" + s.Generation + "-" + hash[:12] + ".sqlite", SHA256: hash, SchemaVersion: store.SchemaVersion, CollectionVersion: s.CollectionVersion, Generation: s.Generation, CollectedAt: s.CollectedAt, EnrichedAt: s.EnrichedAt, Repositories: s.Repositories}
+	m = Manifest{Filename: "mirror-" + s.Generation + "-" + hash[:12] + ".sqlite", SHA256: hash, SchemaVersion: s.SchemaVersion, CollectionVersion: s.CollectionVersion, Generation: s.Generation, CollectedAt: s.CollectedAt, EnrichedAt: s.EnrichedAt, Repositories: s.Repositories}
+	if s.Semantic != nil {
+		m.EmbeddingFingerprint = s.Semantic.Fingerprint
+		m.EmbeddingDimension = s.Semantic.Dimension
+		m.IndexGeneration = s.Semantic.Generation
+	}
 	if !ValidFilename(m.Filename) {
 		return m, fmt.Errorf("invalid snapshot generation identity")
 	}
@@ -221,7 +229,7 @@ func decode(body []byte) (Manifest, error) {
 	if m.CollectionVersion != store.CollectionVersion {
 		return m, fmt.Errorf("unsupported snapshot collection version %d", m.CollectionVersion)
 	}
-	if !filenamePattern.MatchString(m.Filename) || m.Generation == "" || m.SchemaVersion != store.SchemaVersion || len(m.Repositories) == 0 || len(m.SHA256) != 64 {
+	if !filenamePattern.MatchString(m.Filename) || m.Generation == "" || !store.CompatibleSchema(m.SchemaVersion) || len(m.Repositories) == 0 || len(m.SHA256) != 64 {
 		return m, fmt.Errorf("invalid filename, checksum, schema or scope in manifest")
 	}
 	if _, err := hex.DecodeString(m.SHA256); err != nil {
@@ -346,8 +354,11 @@ func Acquire(ctx context.Context, o Options) (Manifest, error) {
 	if err != nil {
 		return m, fmt.Errorf("validate private snapshot: %w", err)
 	}
-	if s.Generation != m.Generation || s.CollectionVersion != m.CollectionVersion || s.CollectedAt != m.CollectedAt || s.EnrichedAt != m.EnrichedAt || !sameScope(s.Repositories, m.Repositories) {
+	if s.SchemaVersion != m.SchemaVersion || s.Generation != m.Generation || s.CollectionVersion != m.CollectionVersion || s.CollectedAt != m.CollectedAt || s.EnrichedAt != m.EnrichedAt || !sameScope(s.Repositories, m.Repositories) {
 		return m, fmt.Errorf("snapshot embedded metadata does not match manifest")
+	}
+	if m.EmbeddingFingerprint != "" && (s.Semantic == nil || s.Semantic.Fingerprint != m.EmbeddingFingerprint || s.Semantic.Dimension != m.EmbeddingDimension || s.Semantic.Generation != m.IndexGeneration) {
+		return m, fmt.Errorf("snapshot embedding metadata does not match manifest")
 	}
 	for _, suffix := range []string{"-wal", "-shm"} {
 		if _, err := os.Stat(o.Destination + suffix); err == nil {

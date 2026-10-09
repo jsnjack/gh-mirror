@@ -27,14 +27,17 @@ type TicketSummary struct {
 
 // Evidence identifies the field and source supporting a search match.
 type Evidence struct {
-	Field     string `json:"field"`
-	Source    string `json:"source"`
-	Snippet   string `json:"snippet"`
-	CommentID string `json:"comment_id,omitempty"`
-	CreatedAt string `json:"created_at,omitempty"`
-	Path      string `json:"path,omitempty"`
-	Line      int    `json:"line,omitempty"`
-	DiffHunk  string `json:"diff_hunk,omitempty"`
+	Field         string   `json:"field"`
+	Source        string   `json:"source"`
+	Snippet       string   `json:"snippet"`
+	CommentID     string   `json:"comment_id,omitempty"`
+	CreatedAt     string   `json:"created_at,omitempty"`
+	Path          string   `json:"path,omitempty"`
+	Line          int      `json:"line,omitempty"`
+	DiffHunk      string   `json:"diff_hunk,omitempty"`
+	Start         int      `json:"start,omitempty"`
+	End           int      `json:"end,omitempty"`
+	SemanticScore *float64 `json:"semantic_score,omitempty"`
 }
 
 // Warning describes requested resources that are unavailable or stale locally.

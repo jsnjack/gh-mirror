@@ -8,10 +8,13 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"gh-mirror/internal/embedding"
 )
 
 // SearchOptions selects literal text, ticket predicates, evidence and a result page.
 type SearchOptions struct {
+	Engine  string `json:"engine,omitempty"`
 	Query   string `json:"query"`
 	Repo    string `json:"repo,omitempty"`
 	State   string `json:"state,omitempty"`
@@ -30,26 +33,29 @@ type SearchOptions struct {
 	EvidenceLimit int      `json:"evidence_limit,omitempty"`
 	Exclude       int      `json:"-"`
 	ExcludeRepo   string   `json:"-"`
+	seed          *vectorSeed
 }
 
 // Match identifies a ranked ticket with bounded evidence and optional full records.
 type Match struct {
-	Repo      string          `json:"repo"`
-	Number    int             `json:"number"`
-	Title     string          `json:"title"`
-	State     string          `json:"state"`
-	Kind      string          `json:"kind"`
-	URL       string          `json:"url"`
-	Source    string          `json:"source"`
-	Snippet   string          `json:"snippet"`
-	Score     float64         `json:"score"`
-	UpdatedAt string          `json:"updated_at"`
-	Summary   *TicketSummary  `json:"summary"`
-	Evidence  []Evidence      `json:"evidence"`
-	Payload   json.RawMessage `json:"issue,omitempty"`
-	Fields    json.RawMessage `json:"fields,omitempty"`
-	Extra     json.RawMessage `json:"extra,omitempty"`
-	createdAt string
+	Repo          string          `json:"repo"`
+	Number        int             `json:"number"`
+	Title         string          `json:"title"`
+	State         string          `json:"state"`
+	Kind          string          `json:"kind"`
+	URL           string          `json:"url"`
+	Source        string          `json:"source"`
+	Snippet       string          `json:"snippet"`
+	Score         float64         `json:"score"`
+	LexicalScore  *float64        `json:"lexical_score,omitempty"`
+	SemanticScore *float64        `json:"semantic_score,omitempty"`
+	UpdatedAt     string          `json:"updated_at"`
+	Summary       *TicketSummary  `json:"summary"`
+	Evidence      []Evidence      `json:"evidence"`
+	Payload       json.RawMessage `json:"issue,omitempty"`
+	Fields        json.RawMessage `json:"fields,omitempty"`
+	Extra         json.RawMessage `json:"extra,omitempty"`
+	createdAt     string
 }
 
 // Ranking describes how retrieval scores should be interpreted.
@@ -65,6 +71,7 @@ type QueryInfo struct {
 	Match  string   `json:"match"`
 	Prefix bool     `json:"prefix"`
 	In     []string `json:"in"`
+	Engine string   `json:"engine,omitempty"`
 }
 
 // SearchResult returns one ranked page and the generation used for all its observations.
@@ -164,6 +171,12 @@ func scopedDocuments(term string, in []string, evidence, excerpts bool, selectio
 	return strings.Join(selected, " UNION ALL "), args
 }
 func search(ctx context.Context, q querier, o SearchOptions) (SearchResult, error) {
+	if o.Engine == "semantic" || o.Engine == "hybrid" {
+		return vectorSearch(ctx, q, o, embedding.Default)
+	}
+	if o.Engine != "" && o.Engine != "lexical" {
+		return SearchResult{}, invalid("engine must be lexical, semantic or hybrid")
+	}
 	out := SearchResult{Matches: []Match{}, Warnings: []Warning{}, Ranking: Ranking{"sqlite_fts5_bm25", "ascending", "Lower scores rank first; text relevance within this query, not duplicate probability."}}
 	if len(o.Query) > 16384 {
 		return out, invalid("query exceeds 16384 bytes")
@@ -364,7 +377,7 @@ func search(ctx context.Context, q querier, o SearchOptions) (SearchResult, erro
 			}
 		}
 	}
-	out.Query = QueryInfo{terms, o.Match, o.Prefix, o.In}
+	out.Query = QueryInfo{Terms: terms, Match: o.Match, Prefix: o.Prefix, In: o.In, Engine: "lexical"}
 	if out.Query.In == nil {
 		out.Query.In = []string{"title", "body", "labels", "comments", "reviews"}
 	}

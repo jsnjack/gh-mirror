@@ -41,6 +41,15 @@ func (s *Store) Export(ctx context.Context, path string) (exportErr error) {
 	if _, err := db.ExecContext(ctx, "DELETE FROM responses; DELETE FROM metadata WHERE key='credential_identity'"); err != nil {
 		return fmt.Errorf("remove collector data from export: %w", err)
 	}
+	var semantic int
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE name='semantic_documents'").Scan(&semantic); err != nil {
+		return fmt.Errorf("inspect exported vector index: %w", err)
+	}
+	if semantic != 0 {
+		if _, err := db.ExecContext(ctx, "DELETE FROM semantic_vectors WHERE document_id IN (SELECT document_id FROM semantic_documents WHERE complete=0); DELETE FROM semantic_documents WHERE complete=0"); err != nil {
+			return fmt.Errorf("remove incomplete and obsolete passages from export: %w", err)
+		}
+	}
 	var inventory int
 	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE name='issue_inventory'").Scan(&inventory); err != nil {
 		return fmt.Errorf("inspect exported inventory: %w", err)

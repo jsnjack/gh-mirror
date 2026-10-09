@@ -32,6 +32,7 @@ type Status struct {
 	Coverage          []Coverage                 `json:"coverage"`
 	Issues            int                        `json:"issues"`
 	Comments          int                        `json:"comments"`
+	Semantic          *SemanticStatus            `json:"semantic,omitempty"`
 }
 type querier interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
@@ -50,6 +51,12 @@ func status(ctx context.Context, q querier) (Status, error) {
 			return s, finishRows(rows, err)
 		}
 		switch k {
+		case "schema_version":
+			version, err := strconv.Atoi(v)
+			if err != nil {
+				return s, finishRows(rows, fmt.Errorf("parse schema version: %w", err))
+			}
+			s.SchemaVersion = version
 		case "repository_options":
 			if err := json.Unmarshal([]byte(v), &s.RepositoryOptions); err != nil {
 				return s, finishRows(rows, fmt.Errorf("decode repository options: %w", err))
@@ -96,6 +103,12 @@ func status(ctx context.Context, q querier) (Status, error) {
 	}
 	if err := q.QueryRowContext(ctx, "SELECT count(*) FROM comments").Scan(&s.Comments); err != nil {
 		return s, fmt.Errorf("count comments: %w", err)
+	}
+	if s.SchemaVersion >= 2 {
+		s.Semantic, err = semanticStatus(ctx, q)
+		if err != nil {
+			return s, err
+		}
 	}
 	return s, nil
 }

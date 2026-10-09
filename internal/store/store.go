@@ -19,7 +19,10 @@ import (
 )
 
 // SchemaVersion identifies compatible mirror databases.
-const SchemaVersion = 1
+const SchemaVersion = 2
+
+// CompatibleSchema accepts current and legacy lexical snapshots.
+func CompatibleSchema(version int) bool { return version == 1 || version == SchemaVersion }
 
 // ErrNotFound indicates that the requested local resource is absent.
 var ErrNotFound = errors.New("local resource not found")
@@ -63,6 +66,7 @@ func Open(path string, readOnly bool) (*Store, error) {
 		q.Set("mode", "ro")
 	} else {
 		q.Add("_pragma", "journal_mode(WAL)")
+		q.Add("_pragma", "synchronous(FULL)")
 		q.Set("_txlock", "immediate")
 	}
 	u.RawQuery = q.Encode()
@@ -96,22 +100,30 @@ func (s *Store) initialize(readOnly bool) error {
 			if err := s.db.QueryRow("SELECT value FROM metadata WHERE key='schema_version'").Scan(&version); err != nil {
 				return fmt.Errorf("inspect existing schema: %w", err)
 			}
-			if version != strconv.Itoa(SchemaVersion) {
+			if version != "1" && version != strconv.Itoa(SchemaVersion) {
 				return fmt.Errorf("unsupported database schema %q", version)
 			}
 		}
-		if _, err := s.db.Exec(schema); err != nil {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin schema migration: %w", err)
+		}
+		defer rollback(tx)
+		if _, err := tx.Exec(schema + semanticSchema); err != nil {
 			return fmt.Errorf("initialize schema: %w", err)
 		}
-		if _, err := s.db.Exec("INSERT INTO metadata(key,value) VALUES('schema_version',?) ON CONFLICT DO NOTHING", strconv.Itoa(SchemaVersion)); err != nil {
+		if _, err := tx.Exec("INSERT INTO metadata(key,value) VALUES('schema_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", strconv.Itoa(SchemaVersion)); err != nil {
 			return fmt.Errorf("set schema version: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit schema migration: %w", err)
 		}
 	}
 	var version string
 	if err := s.db.QueryRow("SELECT value FROM metadata WHERE key='schema_version'").Scan(&version); err != nil {
 		return fmt.Errorf("read schema version: %w", err)
 	}
-	if version != strconv.Itoa(SchemaVersion) {
+	if version != "1" && version != strconv.Itoa(SchemaVersion) {
 		return fmt.Errorf("unsupported database schema %q", version)
 	}
 	return nil

@@ -13,6 +13,7 @@ import (
 
 // CandidateOptions chooses a seed and local retrieval scope; closed history remains included.
 type CandidateOptions struct {
+	Engine string `json:"engine,omitempty"`
 	Repo   string `json:"repo"`
 	Number int    `json:"number"`
 	QueryFilters
@@ -66,8 +67,14 @@ func (s *Store) FindCandidates(ctx context.Context, o CandidateOptions) (SearchR
 	if _, err := pageLimit(o.Limit); err != nil {
 		return out, err
 	}
+	if (o.Engine == "semantic" || o.Engine == "hybrid") && o.Order == "" && (o.Sort == "" || o.Sort == "relevance") {
+		o.Order = "desc"
+	}
 	if err := o.normalize(true); err != nil {
 		return out, err
+	}
+	if o.Engine != "" && o.Engine != "lexical" && o.Engine != "semantic" && o.Engine != "hybrid" {
+		return out, invalid("engine must be lexical, semantic or hybrid")
 	}
 	if o.CommentLimit == 0 {
 		o.CommentLimit = 20
@@ -89,17 +96,19 @@ func (s *Store) FindCandidates(ctx context.Context, o CandidateOptions) (SearchR
 			labels = seed.Summary.Labels
 		}
 		comments := []string{}
+		commentIDs := []string{}
 		if o.IncludeComments {
-			rows, err := tx.QueryContext(ctx, "SELECT body FROM comments WHERE repo=? AND number=? ORDER BY COALESCE(json_extract(payload,'$.created_at'),'') DESC,id DESC LIMIT ?", o.Repo, o.Number, o.CommentLimit)
+			rows, err := tx.QueryContext(ctx, "SELECT id,body FROM comments WHERE repo=? AND number=? ORDER BY COALESCE(json_extract(payload,'$.created_at'),'') DESC,id DESC LIMIT ?", o.Repo, o.Number, o.CommentLimit)
 			if err != nil {
 				return fmt.Errorf("read candidate seed comments: %w", err)
 			}
 			for rows.Next() {
-				var body string
-				if err := rows.Scan(&body); err != nil {
+				var id, body string
+				if err := rows.Scan(&id, &body); err != nil {
 					return finishRows(rows, err)
 				}
 				comments = append(comments, body)
+				commentIDs = append(commentIDs, "comment:"+id)
 			}
 			if err := finishRows(rows, rows.Err()); err != nil {
 				return err
@@ -122,6 +131,15 @@ func (s *Store) FindCandidates(ctx context.Context, o CandidateOptions) (SearchR
 		targets := o.QueryFilters
 		if len(targets.Repositories) == 0 {
 			targets.Repositories = []string{o.Repo}
+		}
+		if o.Engine == "semantic" || o.Engine == "hybrid" {
+			terms := preliminary[:min(32, len(preliminary))]
+			query := strings.Join(terms, " ")
+			if query == "" {
+				query = Text(object, "title")
+			}
+			out, err = search(ctx, tx, SearchOptions{Engine: o.Engine, Query: query, QueryFilters: targets, PageOptions: o.PageOptions, Limit: o.Limit, Cursor: o.Cursor, Exclude: o.Number, ExcludeRepo: o.Repo, seed: &vectorSeed{TicketID{Repo: o.Repo, Number: o.Number}, o.IncludeLabels == nil || *o.IncludeLabels, commentIDs}})
+			return err
 		}
 		where, filterArgs, err := (filters{QueryFilters: targets}).sql()
 		if err != nil {
