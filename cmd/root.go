@@ -213,14 +213,27 @@ func addQueries() {
 	root.AddCommand(command)
 	addList()
 	addReads()
+	addEvaluate()
 	for _, kind := range []string{"get", "candidates"} {
 		var repo string
 		var number, limit int
 		var read store.ReadOptions
+		var candidates store.CandidateOptions
+		var includeLabels bool
 		command := &cobra.Command{Use: kind, Short: "Read local ticket data or retrieve duplicate candidates", Args: cobra.NoArgs}
 		command.Flags().StringVar(&repo, "repo", "", "Repository owner/name")
 		command.Flags().IntVar(&number, "number", 0, "Issue number")
 		command.Flags().IntVar(&limit, "limit", 30, "Maximum candidate results (1–100)")
+		if kind == "candidates" {
+			command.Flags().StringArrayVar(&candidates.Repositories, "repositories", nil, "Search these repositories; repeat (default seed repo)")
+			command.Flags().BoolVar(&includeLabels, "include-labels", true, "Use attached labels in seed terms")
+			command.Flags().BoolVar(&candidates.IncludeComments, "include-comments", false, "Use recent seed comments")
+			command.Flags().IntVar(&candidates.CommentLimit, "comment-limit", 20, "Recent seed comment limit (1–100)")
+			command.Flags().StringVar(&candidates.Cursor, "cursor", "", "Continue next_cursor")
+			command.Flags().BoolVar(&candidates.Count, "count", false, "Count all candidates")
+			command.Flags().BoolVar(&candidates.Facets, "facets", false, "Count candidate labels, types and projects")
+			command.Flags().StringVar(&candidates.View, "view", "summary", "Return summary or full raw records")
+		}
 		if kind == "get" {
 			command.Flags().StringVar(&read.View, "view", "full", "Return summary or full raw ticket")
 			command.Flags().StringVar(&read.Comments, "comments", "", "Include none, page or legacy all comments")
@@ -244,7 +257,9 @@ func addQueries() {
 				}
 				out, err = db.Read(command.Context(), read)
 			} else {
-				out, err = db.Candidates(command.Context(), repo, number, limit)
+				candidates.Repo, candidates.Number, candidates.Limit = repo, number, limit
+				candidates.IncludeLabels = &includeLabels
+				out, err = db.FindCandidates(command.Context(), candidates)
 			}
 			if err != nil {
 				return fmt.Errorf("read local ticket: %w", err)

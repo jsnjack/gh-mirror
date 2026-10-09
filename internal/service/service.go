@@ -128,7 +128,32 @@ func (s *Service) Handler() http.Handler {
 			respond(w, nil, err)
 			return
 		}
-		out, err := s.Store.Candidates(r.Context(), r.URL.Query().Get("repo"), number, limit)
+		q := r.URL.Query()
+		filters, page, err := queryParams(q)
+		if err != nil {
+			respond(w, nil, err)
+			return
+		}
+		comments, err := boolParam(q, "include_comments")
+		if err != nil {
+			respond(w, nil, err)
+			return
+		}
+		var labels *bool
+		if q.Has("include_labels") {
+			value, e := boolParam(q, "include_labels")
+			if e != nil {
+				respond(w, nil, e)
+				return
+			}
+			labels = &value
+		}
+		commentLimit, err := intParam(q, "comment_limit", 20)
+		if err != nil {
+			respond(w, nil, err)
+			return
+		}
+		out, err := s.Store.FindCandidates(r.Context(), store.CandidateOptions{Repo: q.Get("repo"), Number: number, QueryFilters: filters, PageOptions: page, Limit: limit, Cursor: q.Get("cursor"), IncludeComments: comments, IncludeLabels: labels, CommentLimit: commentLimit})
 		respond(w, out, err)
 	})
 	mux.HandleFunc("GET /snapshots/latest", func(w http.ResponseWriter, r *http.Request) {
@@ -201,11 +226,6 @@ func respond(w http.ResponseWriter, out any, err error) {
 	}
 }
 
-type issueInput struct {
-	Repo   string `json:"repo"`
-	Number int    `json:"number"`
-	Limit  int    `json:"limit,omitempty"`
-}
 type catalogInput struct {
 	Kind  string `json:"kind"`
 	Scope string `json:"scope"`
@@ -244,8 +264,8 @@ func (s *Service) MCP() *mcp.Server {
 		out, err := s.Store.Project(ctx, input.Owner, input.Number)
 		return nil, out, err
 	})
-	mcp.AddTool(server, tool("find_duplicate_candidates", "Rank related local issues including closed history; scores are retrieval scores, not duplicate probabilities.", store.SearchResult{}), func(ctx context.Context, _ *mcp.CallToolRequest, input issueInput) (*mcp.CallToolResult, store.SearchResult, error) {
-		out, err := s.Store.Candidates(ctx, input.Repo, input.Number, input.Limit)
+	mcp.AddTool(server, tool("find_duplicate_candidates", "Find related local tickets using distinctive seed terms, technical acronyms and optional labels/comments. Defaults to the seed repository; repositories can widen scope. Include closed history. Scores are retrieval scores, not duplicate probabilities; follow next_cursor with identical options.", store.SearchResult{}), func(ctx context.Context, _ *mcp.CallToolRequest, input store.CandidateOptions) (*mcp.CallToolResult, store.SearchResult, error) {
+		out, err := s.Store.FindCandidates(ctx, input)
 		return nil, out, err
 	})
 	mcp.AddTool(server, tool("get_sync_status", "Read generation, scope, collection timestamps and coverage.", store.Status{}), func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, store.Status, error) {

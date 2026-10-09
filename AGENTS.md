@@ -150,3 +150,12 @@ describe stable output envelopes with unconstrained raw upstream JSON. REST uses
 400 for invalid input, 404 for absent resources, 409 for stale generation cursors
 and 500 for internal failures. Query warnings explain disabled, stale and uncollected
 resources without making network requests.
+Candidate retrieval preserves short technical terms, de-duplicates template words
+and ranks seed terms using title/label/comment weights and local ticket frequency.
+Default scope is the seed repository; explicit repositories widen it. Seed labels
+are enabled unless explicitly false; recent seed comments are opt-in and bounded.
+Candidate reads never load all seed comments or query GitHub. Offline evaluation
+uses explicit local relevance judgments, reports P@10 with a fixed denominator of
+10 and Recall@20, and fails on generation changes. Synthetic fixtures test retrieval
+semantics; their scores do not establish quality on real tickets. Benchmark broad,
+selective and candidate queries before changing query plans or adding dependencies.

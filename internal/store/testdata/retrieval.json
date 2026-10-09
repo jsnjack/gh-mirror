@@ -1,0 +1,30 @@
+{
+  "tickets": [
+    {"repo":"demo/support","number":1,"title":"CSS rendering fails after SSO login","body":"Browser details\nDescription\nExpected behavior\nActual behavior","labels":["client:Acme"]},
+    {"repo":"demo/support","number":2,"title":"SSO login causes CSS rendering failure","body":"Styles disappear after authentication","labels":["client:Acme"]},
+    {"repo":"demo/support","number":3,"title":"CSS layout improvements","body":"Change spacing on dashboard","labels":["enhancement"]},
+    {"repo":"demo/support","number":4,"title":"Authentication tokens expire","body":"API returns HTTP 403 after refresh","labels":["client:Beta"]},
+    {"repo":"demo/support","number":5,"title":"API HTTP 403 after token refresh","body":"Authorization failure","labels":["client:Beta"]},
+    {"repo":"demo/support","number":6,"title":"Video playback stalls","body":"Socket timeout disconnects playback","labels":["client:Acme"]},
+    {"repo":"demo/support","number":7,"title":"Socket configuration cleanup","body":"Increase buffer size","labels":["maintenance"]},
+    {"repo":"demo/support","number":8,"title":"Acme billing correction","body":"Credit invoice","labels":["client:Acme"]},
+    {"repo":"demo/support","number":9,"title":"Canvas synchronization stops","body":"WebGL updates stop reaching the follower","labels":["bug"]},
+    {"repo":"demo/code","number":10,"title":"SSO callback CSS fix","body":"Restore styles after SSO authentication","labels":["bug"]},
+    {"repo":"demo/code","number":11,"title":"Handle playback timeouts","body":"Socket timeout handling","labels":["bug"]},
+    {"repo":"demo/support","number":12,"title":"Browser support documentation","body":"Browser details description expected behavior actual behavior steps to reproduce","labels":["documentation"]}
+  ],
+  "comments": [
+    {"number":9,"body":"Socket timeout also stops the canvas updates"},
+    {"number":6,"body":"Error ECONNRESET appears before playback stops"}
+  ],
+  "evaluation": {
+    "cases": [
+      {"name":"exact phrase","search":{"query":"socket timeout","match":"phrase"},"relevant":[{"repo":"demo/support","number":6},{"repo":"demo/support","number":9},{"repo":"demo/code","number":11}]},
+      {"name":"client label and separate comment","search":{"query":"Acme ECONNRESET","match":"all"},"relevant":[{"repo":"demo/support","number":6}]},
+      {"name":"technical acronym","search":{"query":"SSO CSS","match":"all"},"relevant":[{"repo":"demo/support","number":1},{"repo":"demo/support","number":2},{"repo":"demo/code","number":10}]},
+      {"name":"acronym duplicate","candidates":{"repo":"demo/support","number":1,"include_labels":false},"relevant":[{"repo":"demo/support","number":2}]},
+      {"name":"error identifier duplicate","candidates":{"repo":"demo/support","number":4,"include_labels":false},"relevant":[{"repo":"demo/support","number":5}]},
+      {"name":"duplicate across repositories","candidates":{"repo":"demo/support","number":1,"repositories":["demo/support","demo/code"],"include_labels":false},"relevant":[{"repo":"demo/support","number":2},{"repo":"demo/code","number":10}]}
+    ]
+  }
+}
