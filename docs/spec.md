@@ -158,6 +158,13 @@ derives distinctive terms from a stored ticket, excludes that ticket, includes c
 history, and returns ranked suggestions. Scores are retrieval scores, not duplicate
 probabilities. No automatic duplicate adjudication or closure belongs in gh-mirror.
 
+Full-text search includes issue titles, bodies, attached label names, and comments.
+Label documents preserve the issue URL as evidence and have the same BM25 weight
+as titles. Label changes, transfers, and deletion remove stale matches. Existing
+mirrors receive a transactional local backfill from stored payloads on the next
+sync, recorded by `label_index_version`, without invalidating pending work or
+forcing extra upstream requests. Unused labels remain catalog data.
+
 `get` returns the complete stored issue, comments, native field values, relationships,
 and project memberships. Project queries return the local project catalog record
 and collection status. REST and MCP call the same query functions. Reads report the

@@ -187,23 +187,30 @@ outside the new scope.
 
 ## Query locally
 
-Search issue titles, bodies, and comments:
+Search issue titles, bodies, attached label names, and comments:
 
 ```sh
 gh-mirror search 'socket timeout'
 gh-mirror search 'socket timeout' --repo owner/repository --state closed --label bug --limit 20
 gh-mirror search 'socket timeout' --type Bug
+gh-mirror search 'Acme' --repo owner/repository
 ```
 
 Queries return JSON on stdout. Search treats words literally, joins them with OR,
-and returns the best matching issue or comment per ticket, with a source URL,
+and returns the best matching issue, labels, or comment per ticket, with a source URL,
 snippet, and text relevance score. Filters select repository, state, label, and
 native issue type. Results include mirror status so consumers can check freshness.
 
 `score` uses SQLite FTS5's [BM25 ranking](https://www.sqlite.org/fts5.html#the_bm25_function).
-Lower, more negative scores rank first. Title matches have a weight of five and
+Lower, more negative scores rank first. Titles and label names have a weight of five and
 body/comment text a weight of one. Compare scores within the same query; they are
 text relevance values, not percentages or duplicate probabilities.
+
+A client name that appears only in an attached label is searchable. `--label`
+still applies an exact label filter. Label additions, renames, and removals update
+the index with the issue. The next sync upgrades existing mirrors from stored
+payloads without extra GitHub requests; publish or acquire a new snapshot to use
+that index in a consumer. Unused label names are available through the catalog.
 
 Read a complete issue with its comments and collected metadata, or retrieve
 possible duplicates:
