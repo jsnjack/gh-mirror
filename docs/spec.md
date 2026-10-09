@@ -271,3 +271,23 @@ before checkpointing; refetch invalid legacy responses without discarding good w
 GitHub Actions checks formatting, vet, build, race tests and lint. Tagged releases
 require a version matching monova and package CGO-free Linux/macOS binaries for
 amd64 and arm64 with SHA-256 checksums. Package only the executable and README.
+
+## Query and result expansion
+
+Keep SQLite as the default retrieval engine and preserve literal OR search. Add
+explicit any/all/phrase modes, prefix matching, exclusions, source selection and
+composable ticket predicates. All-word matching spans selected documents belonging
+to one ticket; phrase matching stays within one document. No query exposes raw SQL
+or FTS syntax. Reject excessive terms instead of silently dropping them.
+
+Search and list pages bind continuation to a committed generation and effective
+query, with deterministic ties. Support relevance, number, creation and update
+ordering, summary/full projections, optional totals and bounded label/type/project
+facets. Search results expose metadata, ranked source evidence and score semantics.
+Provide bounded comments and catalogs, batched ticket reads, explicit coverage
+warnings, typed REST errors and documented MCP output envelopes. Preserve legacy
+full reads as explicit or existing compatibility paths. Improve duplicate term
+selection using local document frequency, technical identifiers and optional seed
+labels/comments; evaluate candidate recall and search precision on versioned local
+fixtures. A semantic layer requires evidence from that evaluation before adding
+model or deployment dependencies.

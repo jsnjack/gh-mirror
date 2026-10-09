@@ -132,3 +132,12 @@ modernc.org/sqlite provides embedded SQLite/FTS5 without CGO; the official MCP S
 provides protocol and transport handling. The existing go-isatty dependency detects
 terminal writers without adding a UI framework. Tests use local HTTP fixtures and temporary
 databases. No live GitHub writes or production WakeCI changes belong in validation.
+
+Local queries share composable predicates and generation-bound cursors. Search keeps
+literal OR matching by default; all-word mode requires terms across the whole
+selected ticket, and phrase mode requires consecutive terms in one document.
+Compile only generated, escaped FTS expressions. Report term limits explicitly.
+Search/list support deterministic sorting, summary/full projections and optional
+counts/facets before pagination. Preserve legacy raw fields and score meanings;
+attach bounded evidence and a ranking description. Query-only enhancements must
+work against existing snapshots without migrations or upstream requests.

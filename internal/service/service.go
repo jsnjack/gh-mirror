@@ -58,30 +58,28 @@ func (s *Service) Handler() http.Handler {
 		respond(w, out, err)
 	})
 	mux.HandleFunc("GET /v1/search", func(w http.ResponseWriter, r *http.Request) {
-		limit, err := parseLimit(r)
+		options, err := searchParams(r.URL.Query())
 		if err != nil {
 			respond(w, nil, err)
 			return
 		}
-		q := r.URL.Query()
-		out, err := s.Store.Search(r.Context(), store.SearchOptions{Query: q.Get("q"), Repo: q.Get("repo"), State: q.Get("state"), Label: q.Get("label"), Type: q.Get("type"), Kind: q.Get("kind"), Project: q.Get("project"), Limit: limit})
+		out, err := s.Store.Search(r.Context(), options)
 		respond(w, out, err)
 	})
 	mux.HandleFunc("GET /v1/issues", func(w http.ResponseWriter, r *http.Request) {
-		limit, err := parseLimit(r)
+		options, err := listParams(r.URL.Query())
 		if err != nil {
 			respond(w, nil, err)
 			return
 		}
-		q := r.URL.Query()
-		out, err := s.Store.List(r.Context(), store.ListOptions{Repo: q.Get("repo"), State: q.Get("state"), Label: q.Get("label"), Type: q.Get("type"), Kind: q.Get("kind"), Project: q.Get("project"), Limit: limit, Cursor: q.Get("cursor")})
+		out, err := s.Store.List(r.Context(), options)
 		respond(w, out, err)
 	})
 	mux.HandleFunc("GET /v1/issues/{owner}/{repo}/{number}", func(w http.ResponseWriter, r *http.Request) {
 		repo := r.PathValue("owner") + "/" + r.PathValue("repo")
 		number, err := strconv.Atoi(r.PathValue("number"))
 		if err != nil || number < 1 || !config.ValidRepository(repo) {
-			respond(w, nil, fmt.Errorf("invalid issue identity"))
+			respond(w, nil, badInput("invalid issue identity"))
 			return
 		}
 		out, err := s.Store.Get(r.Context(), repo, number)
@@ -94,7 +92,7 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/projects", func(w http.ResponseWriter, r *http.Request) {
 		number, err := strconv.Atoi(r.URL.Query().Get("number"))
 		if err != nil || number < 1 {
-			respond(w, nil, fmt.Errorf("positive project number required"))
+			respond(w, nil, badInput("positive project number required"))
 			return
 		}
 		out, err := s.Store.Project(r.Context(), r.URL.Query().Get("owner"), number)
@@ -103,7 +101,7 @@ func (s *Service) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/candidates", func(w http.ResponseWriter, r *http.Request) {
 		number, err := strconv.Atoi(r.URL.Query().Get("number"))
 		if err != nil || number < 1 {
-			respond(w, nil, fmt.Errorf("positive issue number required"))
+			respond(w, nil, badInput("positive issue number required"))
 			return
 		}
 		limit, err := parseLimit(r)
@@ -159,19 +157,25 @@ func parseLimit(r *http.Request) (int, error) {
 	}
 	limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
 	if err != nil || limit < 1 || limit > 100 {
-		return 0, fmt.Errorf("limit must be between 1 and 100")
+		return 0, badInput("limit must be between 1 and 100")
 	}
 	return limit, nil
 }
 func respond(w http.ResponseWriter, out any, err error) {
 	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
-		code := http.StatusBadRequest
+		code, category := http.StatusInternalServerError, "internal_error"
+		if errors.Is(err, store.ErrInvalidQuery) {
+			code, category = http.StatusBadRequest, "invalid_query"
+		}
+		if errors.Is(err, store.ErrCursorConflict) {
+			code, category = http.StatusConflict, "stale_cursor"
+		}
 		if errors.Is(err, store.ErrNotFound) || os.IsNotExist(err) {
-			code = http.StatusNotFound
+			code, category = http.StatusNotFound, "not_found"
 		}
 		w.WriteHeader(code)
-		out = map[string]string{"error": err.Error()}
+		out = map[string]string{"error": err.Error(), "code": category}
 	}
 	if err := json.NewEncoder(w).Encode(out); err != nil {
 		slog.Warn("write API response", "error", err)

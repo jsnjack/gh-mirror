@@ -202,6 +202,14 @@ func addQueries() {
 	command.Flags().StringVar(&search.Kind, "kind", "", "Filter issue or pull_request")
 	command.Flags().StringVar(&search.Project, "project", "", "Filter project membership owner/number, including archived memberships")
 	command.Flags().IntVar(&search.Limit, "limit", 30, "Maximum results (1–100)")
+	queryFlags(command, &search.QueryFilters, &search.PageOptions)
+	command.Flags().StringVar(&search.Match, "match", "any", "Match any words, all words across the ticket, or a phrase")
+	command.Flags().BoolVar(&search.Prefix, "prefix", false, "Match word prefixes (phrase: final word only)")
+	command.Flags().StringArrayVar(&search.In, "in", nil, "Search title, body, labels, comments or reviews; repeat")
+	command.Flags().StringArrayVar(&search.ExcludeWords, "exclude-word", nil, "Exclude tickets containing these literal words; repeat")
+	command.Flags().StringVar(&search.Cursor, "cursor", "", "Continue next_cursor with the same query")
+	command.Flags().IntVar(&search.EvidenceLimit, "evidence-limit", 3, "Maximum supporting sources per ticket (1–10)")
+
 	root.AddCommand(command)
 	addList()
 	for _, kind := range []string{"get", "candidates"} {

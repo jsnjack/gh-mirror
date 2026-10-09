@@ -30,5 +30,6 @@ func addList() {
 	command.Flags().StringVar(&options.Project, "project", "", "Filter project membership owner/number, including archived memberships")
 	command.Flags().IntVar(&options.Limit, "limit", 30, "Page size (1–100)")
 	command.Flags().StringVar(&options.Cursor, "cursor", "", "Continue next_cursor with the same filters")
+	queryFlags(command, &options.QueryFilters, &options.PageOptions)
 	root.AddCommand(command)
 }
