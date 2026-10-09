@@ -1,10 +1,27 @@
 {
-  "repositories": ["owner/repository"],
+  "repositories": [
+    "owner/repository"
+  ],
   "fields": true,
   "projects": true,
   "max_requests": 3000,
   "workers": 4,
   "overlap": "5m",
   "enrichment_interval": "1h",
-  "reconcile_interval": "24h"
+  "reconcile_interval": "24h",
+  "repository_options": {
+    "owner/repository": {
+      "issues": true,
+      "pull_requests": true,
+      "issue_comments": true,
+      "pull_request_comments": true,
+      "pull_request_review_comments": false,
+      "labels": true,
+      "milestones": true,
+      "issue_types": true,
+      "fields": true,
+      "relationships": true,
+      "projects": true
+    }
+  }
 }

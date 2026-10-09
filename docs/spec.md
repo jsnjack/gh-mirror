@@ -15,7 +15,7 @@ standards. modernc.org/sqlite supplies SQLite and FTS5 without platform-specific
 C libraries. The official Go MCP SDK handles stdio and Streamable HTTP.
 
 The CLI supports `sync`, `search`, `get`, `candidates`, `catalog`, `status`, `snapshot`,
-`acquire`, `serve`, and `mcp`. All commands inherit `--config`/`-c`, `--debug`/`-d`,
+`acquire`, `list`, `scope`, `serve`, and `mcp`. All commands inherit `--config`/`-c`, `--debug`/`-d`,
 and `--trace`. The root supports `--version`. Configuration is JSON under the XDG
 configuration directory. Durable data uses the XDG data directory. Tokens are
 read from named environment variables, never configuration values or databases.
@@ -25,8 +25,9 @@ read from named environment variables, never configuration values or databases.
 Configured repositories include open and closed issues and ordinary PR conversation
 records, distinguished by kind. Preserve upstream JSON, complete Markdown bodies,
 authors, timestamps, URLs, state reasons, assignees, labels, milestones, and native
-issue types. PR reviews, review comments, diffs, and attachment binaries are outside
-this version; their conversation comments are included. Preserve attachment links.
+issue types. PR approval reviews, full PR details, commits, file diffs, check runs and attachment
+binaries are outside this version. Inline PR review comments are optional and
+preserve diff context and reply identifiers; discussion comments are independent. Preserve attachment links.
 
 Collect all accessible repository comments with stable IDs. Catalogs include unused
 repository labels and milestones, organization issue types, and organization issue
@@ -169,9 +170,9 @@ forcing extra upstream requests. Unused labels remain catalog data.
 and project memberships. Project queries return the local project catalog record
 and collection status. REST and MCP call the same query functions. Reads report the
 database generation and resource coverage; they never contact GitHub. MCP tools are
-`search_issues`, `get_issue`, `get_catalog`, `get_project`,
+`list_issues`, `search_issues`, `get_issue`, `get_catalog`, `get_project`,
 `find_duplicate_candidates`, and `get_sync_status`. HTTP provides `/health`,
-`/v1/search`, `/v1/issues/{owner}/{repo}/{number}`, `/v1/catalog`, `/v1/projects`,
+`/v1/search`, `/v1/issues`, `/v1/issues/{owner}/{repo}/{number}`, `/v1/catalog`, `/v1/projects`,
 `/v1/candidates`, `/v1/status`, `/snapshots/latest`, and `/snapshots/{filename}`.
 HTTP requires bearer authentication outside loopback. Stdio MCP uses local filesystem
 access. The HTTP server uses request limits/timeouts and graceful shutdown.
@@ -181,17 +182,23 @@ access. The HTTP server uses request limits/timeouts and graceful shutdown.
 Snapshots use SQLite `VACUUM INTO` to produce a standalone database including FTS
 and metadata from one SQLite read snapshot. Derive the manifest from the exported
 database so concurrent collection cannot mix manifest and database generations.
-Serialize publication through the single scheduled collector job.
+Remove conditional caches, local credential identity and private kind inventory
+from the export, then vacuum away deleted payload bytes. Keep source collector
+state intact. Serialize publication through the single scheduled collector job.
 Close and validate the output, fsync it, compute SHA-256, then install it with a unique
 immutable filename. Finally atomically replace and fsync `latest.json`. The manifest
-contains filename, checksum, schema version, generation, scope, and collection time.
+contains filename, checksum, schema and collection versions, generation, scope,
+collection time and enrichment time. Publication and acquisition reject unsupported
+collection versions; missing manifest versions default to legacy version 1.
 Failed publication leaves the previous pointer intact. Versioned files are retained
 until explicitly removed by operators; automatic retention is outside this version.
 Acquisition currently bounds database downloads to 2 GiB.
 
 Acquisition reads a local or HTTP manifest once, validates its fields and freshness,
 copies/downloads its exact immutable file, verifies its checksum and embedded metadata,
-and atomically installs a private destination. It rejects scope/schema mismatch and
+and atomically installs a private destination. An optional maximum enrichment age
+checks metadata freshness separately from issue/comment collection age. It rejects
+scope/schema/collection-version mismatch and
 unsafe filenames. A failed acquisition leaves an existing destination intact. A
 published snapshot is never opened for writes. Copying a live WAL file is unsupported.
 
@@ -226,3 +233,41 @@ generation remains visible, and check original watermarks and session invalidati
 Embeddings, webhooks, attachment downloads, GitHub App token minting, object-storage
 upload clients, and automatic snapshot retention are future extensions. Existing
 installation/PAT credentials can be supplied through the token environment variable.
+
+## Repository resource options
+
+`repository_options` maps exact configured repository names to eleven booleans:
+`issues`, `pull_requests`, `issue_comments`, `pull_request_comments`,
+`pull_request_review_comments`, `labels`, `milestones`, `issue_types`, `fields`,
+`relationships`, and `projects`. Explicit entries default omitted switches to false;
+missing entries preserve legacy global defaults. Inline review comments default
+false. `scope` prints effective options; committed status records them. Ticket
+payload metadata remains intact regardless of catalog switches. At least one ticket
+kind must be enabled. Shared owner catalogs use the union of enabled resources.
+
+Keep minimal private ticket number/kind observations to filter bulk comment streams
+without per-excluded-ticket fetches. Review comment IDs are namespaced separately
+from discussion IDs; raw payload IDs remain unchanged. Strip kind inventory from
+exports. Ticket/comment changes reconcile only the affected repository; metadata
+changes rehydrate without forcing full inventories. Persist resolved options only
+with successful collection. Equivalent explicit defaults preserve legacy pending
+fingerprints. Different resource selections participate in pending session identity.
+
+## Listing and compatibility
+
+CLI `list`, REST `/v1/issues` and MCP `list_issues` enumerate raw ticket payloads,
+fields and observations with repository/state/label/type/kind/project filters,
+ordered by repository and ticket number. Comments are retrieved through `get`.
+Opaque keyset cursors bind filters and committed generation; reject changed filters
+or generations. Search also supports kind and owner/project-number filters,
+including archived memberships and enterprise/user project URLs.
+
+Credential/upstream identities are opaque hashes retained only in collector
+metadata. Changes or missing identity on an existing mirror require an atomic,
+resumable full rebuild with cleared conditional cache. Same-token permission changes
+still use explicit or periodic reconciliation. GraphQL observations are validated
+before checkpointing; refetch invalid legacy responses without discarding good work.
+
+GitHub Actions checks formatting, vet, build, race tests and lint. Tagged releases
+require a version matching monova and package CGO-free Linux/macOS binaries for
+amd64 and arm64 with SHA-256 checksums. Package only the executable and README.

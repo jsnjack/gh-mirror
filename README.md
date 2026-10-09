@@ -11,9 +11,14 @@ portable database snapshots. It runs without an external database or search
 service. Queries work offline; only collection needs GitHub access. All upstream
 operations are read-only.
 
-## Build
+## Install
 
-Build with Go 1.26.4 or newer and `monova` installed:
+Download an archive for Linux or macOS, on amd64 or arm64, from
+[GitHub releases](https://github.com/jsnjack/gh-mirror/releases). Each archive
+contains the executable and README; release assets include `checksums.txt`.
+Extract it and install the executable in your `PATH`. Go is unnecessary at runtime.
+
+To build from source, use Go 1.26.4 or newer and `monova` installed:
 
 ```sh
 make build
@@ -67,13 +72,90 @@ change those environment variable names; credentials are not stored in the mirro
 The GitHub credential needs access to the configured repositories, issue data,
 organization issue types/fields, and owner projects. The available resources
 depend on the token's visibility and GitHub features. Enabled features that return
-403/404 or GraphQL errors fail collection. Set `fields` or `projects` to `false`
-explicitly when those features should be excluded; status records that exclusion.
+403/404 or GraphQL errors fail collection. Disable unavailable resources in
+`repository_options`; status records the resolved scope.
 Personal repositories have no organization issue fields. User-owned Projects REST
 endpoints require a compatible classic PAT; GitHub's current documentation excludes
 fine-grained and installation tokens for those endpoints.
 `projects` collects available project catalogs and ticket memberships. It does not
 fetch complete project items, draft cards, or project field definitions/values.
+
+## Select resources per repository
+
+Add an explicit `repository_options` entry for each repository you want to control.
+Every switch is a boolean; omitted switches in an explicit entry are **false**.
+Repositories without an entry retain the defaults above, including issue and PR
+conversation comments; inline review comments default to false.
+
+```json
+{
+  "repositories": ["owner/repository", "owner/code"],
+  "repository_options": {
+    "owner/repository": {
+      "issues": true,
+      "pull_requests": true,
+      "issue_comments": true,
+      "pull_request_comments": true,
+      "pull_request_review_comments": false,
+      "labels": true,
+      "milestones": true,
+      "issue_types": true,
+      "fields": true,
+      "relationships": true,
+      "projects": true
+    },
+    "owner/code": {
+      "issues": false,
+      "pull_requests": true,
+      "issue_comments": false,
+      "pull_request_comments": true,
+      "pull_request_review_comments": true,
+      "labels": false,
+      "milestones": false,
+      "issue_types": false,
+      "fields": false,
+      "relationships": false,
+      "projects": false
+    }
+  }
+}
+```
+
+| Switch | Collected resource |
+| --- | --- |
+| `issues` | Open and closed issues and their raw ticket payloads |
+| `pull_requests` | Open and closed PR ticket records from the issue listing |
+| `issue_comments` | Issue discussion comments |
+| `pull_request_comments` | PR discussion comments |
+| `pull_request_review_comments` | Inline PR review comments, including diff context and replies |
+| `labels` | Available label catalog, including unused labels |
+| `milestones` | Available milestone catalog, including closed milestones |
+| `issue_types` | Organization issue type catalog |
+| `fields` | Native issue field definitions/options and ticket values |
+| `relationships` | Parent, sub-issues, blocked-by and blocking relationships |
+| `projects` | Owner project catalog and active/archived ticket memberships |
+
+Comments require their corresponding ticket kind. Issue types, native fields and
+issue relationships apply when issues are enabled. Shared owner catalogs are
+collected once when any configured repository requests them. Each repository must
+enable issues or pull requests. The raw ticket response always preserves titles,
+bodies, state, authors, assignees, attached labels, milestones and issue type;
+turning off a catalog does not remove those fields or their label search matches.
+
+PR records currently use the issue representation; full PR details, commits, file
+patches, check runs, approval reviews, reactions and attachment binaries are outside
+this scope. Full project cards, draft items and project custom fields are excluded.
+
+```sh
+gh-mirror scope
+```
+
+`scope` shows effective options without contacting GitHub; `status` shows the
+options used for the committed mirror. Ticket/comment scope changes reconcile the
+affected repository. Catalog/metadata changes refresh its selected observations
+without forcing full ticket listings. Interrupted changes preserve the previous
+mirror and resume fetched work. Bulk comment streams use a private number/kind
+inventory to avoid fetching each excluded comment parent.
 
 ## Create and update a mirror
 
@@ -181,7 +263,11 @@ Force complete inventories and enrichment immediately with:
 gh-mirror sync --full
 ```
 
-Run this after changing credentials or permissions. Changing the repository list
+Changed credentials automatically require full reconciliation. Existing mirrors
+without a recorded credential identity perform one full reconciliation on upgrade.
+The identity is an opaque local hash, committed only on successful sync and excluded
+from snapshots and status. Permission changes on an unchanged token still require
+`--full` or scheduled reconciliation. Changing the repository list
 or upstream API host automatically forces complete collection and removes data
 outside the new scope.
 
@@ -194,12 +280,13 @@ gh-mirror search 'socket timeout'
 gh-mirror search 'socket timeout' --repo owner/repository --state closed --label bug --limit 20
 gh-mirror search 'socket timeout' --type Bug
 gh-mirror search 'Acme' --repo owner/repository
+gh-mirror search 'timeout' --project owner/1 --kind issue
 ```
 
 Queries return JSON on stdout. Search treats words literally, joins them with OR,
 and returns the best matching issue, labels, or comment per ticket, with a source URL,
 snippet, and text relevance score. Filters select repository, state, label, and
-native issue type. Results include mirror status so consumers can check freshness.
+native issue type, resource kind, and project membership. Results include mirror status so consumers can check freshness.
 
 `score` uses SQLite FTS5's [BM25 ranking](https://www.sqlite.org/fts5.html#the_bm25_function).
 Lower, more negative scores rank first. Titles and label names have a weight of five and
@@ -211,6 +298,21 @@ still applies an exact label filter. Label additions, renames, and removals upda
 the index with the issue. The next sync upgrades existing mirrors from stored
 payloads without extra GitHub requests; publish or acquire a new snapshot to use
 that index in a consumer. Unused label names are available through the catalog.
+
+List tickets without requiring search words:
+
+```sh
+gh-mirror list --repo owner/repository --label 'client:Acme' --limit 100
+gh-mirror list --kind pull_request --project owner/1 --limit 100
+# Continue using next_cursor from the previous JSON, with the same filters:
+gh-mirror list --repo owner/repository --label 'client:Acme' --limit 100 --cursor "$next_cursor"
+```
+
+Pages contain raw ticket records, fields and extra metadata, ordered by repository
+and ticket number. `next_cursor` is empty on the final page. Cursors pin the mirror
+generation and filters; after a sync, restart enumeration or use an immutable
+snapshot. Use `get` to retrieve a ticket's discussion and enabled review comments.
+Project filters include archived memberships and use `owner/project-number`.
 
 Read a complete issue with its comments and collected metadata, or retrieve
 possible duplicates:
@@ -270,7 +372,8 @@ curl 'http://127.0.0.1:8787/v1/issues/owner/repository/123'
 | --- | --- |
 | `/health` | Health check |
 | `/v1/status` | Generation, scope, coverage, and freshness |
-| `/v1/search?q=...` | Search; supports `repo`, `state`, `label`, `type`, and `limit` |
+| `/v1/search?q=...` | Search; supports `repo`, `state`, `label`, `type`, `kind`, `project`, and `limit` |
+| `/v1/issues` | Paginated listing; same filters plus `cursor`, without `q` |
 | `/v1/issues/{owner}/{repo}/{number}` | Issue, comments, and metadata |
 | `/v1/catalog?kind=...&scope=...` | Catalog data |
 | `/v1/projects?owner=...&number=...` | Project catalog record and collection status |
@@ -301,7 +404,7 @@ The stdio command is `gh-mirror --db /path/to/mirror.sqlite mcp`; stdout contain
 only protocol traffic. The HTTP server also provides Streamable HTTP MCP at
 `http://127.0.0.1:8787/mcp`, with the same bearer authentication as REST.
 
-The six read-only tools are `search_issues`, `get_issue`, `get_catalog`,
+The seven read-only tools are `list_issues`, `search_issues`, `get_issue`, `get_catalog`,
 `get_project`, `find_duplicate_candidates`, and `get_sync_status`.
 
 ## Share a snapshot
@@ -314,7 +417,9 @@ successful collection separately with:
 gh-mirror snapshot
 ```
 
-The publisher exports a standalone SQLite file including its search index, assigns
+The publisher exports a standalone SQLite file including its search index, removes
+collector response caches and credential identity, compacts it to remove deleted
+payload bytes, assigns
 an immutable filename, and atomically updates `latest.json`. Use this export rather
 than copying the main file of a live SQLite database with WAL sidecars.
 
@@ -337,7 +442,11 @@ gh-mirror acquire --source https://mirror.example/snapshots/latest \
 ```
 
 Acquisition resolves the manifest once, checks age and exact repository scope,
-verifies SHA-256 and embedded metadata, then atomically installs the private file.
+verifies SHA-256, schema and collection versions, and embedded metadata, then
+atomically installs the private file. Legacy manifests without collection version
+are interpreted as version 1. To require fresh fields and project memberships, add
+`--max-enrichment-age 2h`; this is independent of `--max-age` for issue/comment
+updates. The enrichment check is disabled by default.
 For multiple repositories, repeat `--repo` or use a comma-separated list. Failed
 acquisition preserves the previous destination. The destination must have no live
 WAL sidecars; the current download limit is 2 GiB.
@@ -348,13 +457,13 @@ publication and retain generations long enough for in-flight acquisitions to fin
 
 ## Collection scope and efficiency
 
-The mirror includes accessible open and closed issues, ordinary PR conversation
-records, and all conversation comments. Original REST JSON preserves bodies,
+The selected scope includes accessible open and closed issues, PR ticket records,
+discussion comments and optional inline review comments. Original REST JSON preserves bodies,
 authors, labels, multiple assignees, state reasons, native types, and other returned
 fields. Catalogs include unused labels, native issue fields, and available projects.
 Ticket metadata includes project memberships with active and archived states.
 
-PR reviews, inline review comments, Discussions, attachment binaries, and historical
+PR approval reviews, Discussions, attachment binaries, and historical
 deleted text are outside this version. Full project items, draft cards, and project
 fields/values are also excluded. The mirror reflects the credential's visible
 scope and the last successful collection, rather than live GitHub state.
@@ -365,7 +474,9 @@ Owner catalogs and projects are collected once per owner. Project memberships ar
 returned in the ticket batches, with additional requests only for nested pagination.
 
 Between scheduled enrichment and full reconciliation, an unchanged repository
-requires two requests: one issue delta listing and one comment delta listing.
+requires two requests when discussion comments are enabled: one issue delta listing
+and one comment delta listing. Enabling inline review comments adds one repository
+review-comment listing; disabling all comments leaves one issue delta listing.
 Polling comments separately catches edits to comments on older issues. The overlap
 window avoids gaps; unchanged overlapping issues do not trigger extra hydration.
 Changed or new issues are hydrated in batches. Reusable listings use conditional
@@ -382,6 +493,11 @@ The budget applies separately to each invocation. Longer refresh intervals reduc
 at the cost of older field, project, or deletion information.
 
 ## Development and diagnostics
+
+GitHub Actions runs formatting, vetting, build, race tests and linting on pushes
+and pull requests. Run `make release` to package Linux/macOS amd64/arm64 archives.
+Pushing a `vMAJOR.MINOR.PATCH` tag runs checks and publishes the archives and SHA-256
+checksums; the tag must match the version computed by monova.
 
 Run `make check` for formatting, vetting, build, race tests, and linting. Checks
 require `goimports`, `golangci-lint`, and `monova`; the Makefile prints installation
