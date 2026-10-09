@@ -164,6 +164,17 @@ func syncAt(ctx context.Context, db *store.Store, c config.Config, options Optio
 					client.Report(progress.Event{Completed: i + 1, Total: len(issues)})
 				}
 			}
+			knownIssues := seenIssues
+			if !inventory {
+				knownIssues = map[int]bool{}
+				refs, err := w.IssueRefs(ctx, repo)
+				if err != nil {
+					return fmt.Errorf("read comment parent inventory: %w", err)
+				}
+				for _, ref := range refs {
+					knownIssues[ref.Number] = true
+				}
+			}
 			seenComments := map[string]bool{}
 			client.Report(progress.Event{Phase: "Indexing comments", Scope: repo, Total: len(comments)})
 			for i, raw := range comments {
@@ -183,6 +194,18 @@ func syncAt(ctx context.Context, db *store.Store, c config.Config, options Optio
 				number, err := strconv.Atoi(issueURL.Path[at+len(marker):])
 				if err != nil || number < 1 {
 					return fmt.Errorf("invalid comment issue number")
+				}
+				if !knownIssues[number] {
+					client.Report(progress.Event{Phase: "Recovering comment parent", Scope: fmt.Sprintf("%s#%d", repo, number)})
+					ref, err := recoverIssue(ctx, client, w, repo, number)
+					if err != nil {
+						return fmt.Errorf("recover parent of comment %s: %w", store.Identity(o, "id"), err)
+					}
+					knownIssues[number], seenIssues[number] = true, true
+					if ref.Changed {
+						changed = append(changed, ref)
+					}
+					client.Report(progress.Event{Phase: "Indexing comments", Scope: repo, Total: len(comments), Completed: i})
 				}
 				if err := w.PutComment(ctx, repo, number, raw); err != nil {
 					return fmt.Errorf("store repository comment: %w", err)
@@ -321,6 +344,26 @@ func syncAt(ctx context.Context, db *store.Store, c config.Config, options Optio
 	}
 	return result, nil
 }
+
+func recoverIssue(ctx context.Context, c *github.Client, w *store.Writer, repo string, number int) (store.IssueRef, error) {
+	raw, err := c.Get(ctx, fmt.Sprintf("/repos/%s/issues/%d", repo, number))
+	if err != nil {
+		return store.IssueRef{}, fmt.Errorf("fetch missing issue %s#%d: %w", repo, number, err)
+	}
+	object, err := store.Object(raw)
+	if err != nil {
+		return store.IssueRef{}, fmt.Errorf("decode missing issue: %w", err)
+	}
+	if store.Identity(object, "number") != strconv.Itoa(number) {
+		return store.IssueRef{}, fmt.Errorf("missing issue %s#%d returned a different issue number", repo, number)
+	}
+	ref, err := w.PutIssue(ctx, repo, raw)
+	if err != nil {
+		return ref, fmt.Errorf("store recovered issue %s#%d: %w", repo, number, err)
+	}
+	return ref, nil
+}
+
 func due(timestamp string, now time.Time, interval time.Duration) bool {
 	if timestamp == "" {
 		return true

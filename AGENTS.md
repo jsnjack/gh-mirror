@@ -25,6 +25,11 @@ from issues. Bootstrap uses 100-record REST pages and 50-node GraphQL batches sh
 across repositories. Hydrate only changed tickets on deltas; reconcile catalogs,
 projects, fields and relationships on the configured enrichment interval. Expose
 that timestamp separately. Never retain non-reusable since-response cache entries. Full reconciliation removes stale issues, comments, and memberships.
+Repository comment listings may reference parents omitted from issue listings.
+Recover each missing parent once before storing its comments, preserve it through
+full reconciliation, and include it in batched hydration. On deltas, check the stored
+inventory first. Recovery fetches use the shared budget and durable resume checkpoint;
+inaccessible or mismatched parents fail explicitly without dropping comments.
 
 Workers share concurrency permits, budget reservations, retry pauses, and serialized
 progress callbacks. Parallelize independent listings and hydration batches; follow

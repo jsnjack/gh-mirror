@@ -54,6 +54,14 @@ overlap. A successful checkpoint records collection start time; changes during
 collection remain eligible for the next run. Upserts reject stale timestamped
 responses, replace label membership, and update the index in the same transaction.
 
+Comment listings can reference issues absent from the bulk issue inventory. Recover
+each missing parent through a single issue GET before storing its comments. Deltas
+use the existing stored inventory to avoid fetching unchanged parents. Recovered
+issues remain in full reconciliation inventories and receive batched metadata
+hydration. Recovery shares the request budget and response checkpoint, so retrying
+after interruption reuses the fetched parent. Inaccessible or mismatched parent
+responses fail collection rather than dropping comments.
+
 New and changed tickets receive batched field/relationship hydration. Unchanged
 overlapping REST payloads do not trigger hydration. Native field values, relationships,
 project membership, and owner catalogs are also reconciled independently of issue

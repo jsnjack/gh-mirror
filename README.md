@@ -330,6 +330,10 @@ Polling comments separately catches edits to comments on older issues. The overl
 window avoids gaps; unchanged overlapping issues do not trigger extra hydration.
 Changed or new issues are hydrated in batches. Reusable listings use conditional
 requests; a 304 still counts as a request.
+If a comment references an issue missing from the issue inventory, sync fetches that
+parent once and includes it in the mirror and metadata batches. Existing parents
+require no additional requests during incremental updates. Recovery fetches are
+saved for resume along with listing pages.
 
 Each sync reports its actual HTTP attempt count. Pagination, GraphQL, and retries
 share `max_requests` across workers; exhausting the budget or encountering a long
