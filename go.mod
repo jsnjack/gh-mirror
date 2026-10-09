@@ -5,6 +5,7 @@ go 1.26.4
 require (
 	github.com/mattn/go-isatty v0.0.24
 	github.com/modelcontextprotocol/go-sdk v1.6.1
+	github.com/rostamlabs/rembed v0.3.1-0.20260826212454-19d673b357bd
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/sys v0.47.0
 	modernc.org/sqlite v1.57.0
@@ -22,6 +23,7 @@ require (
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	golang.org/x/oauth2 v0.35.0 // indirect
+	golang.org/x/text v0.41.0 // indirect
 	modernc.org/libc v1.74.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect

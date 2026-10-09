@@ -1,0 +1,10 @@
+Bundled model: sentence-transformers/all-MiniLM-L6-v2
+Copyright belongs to the model's original authors.
+Source: https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/tree/1110a243fdf4706b3f48f1d95db1a4f5529b4d41
+License: Apache License, Version 2.0 (assets/LICENSE).
+Weights and tokenizer are redistributed without modification. manifest.json
+contains explicit gh-mirror pooling and encoder settings derived from those files.
+
+Reference vectors in testdata/minilm-golden.json are copied from rostamlabs/rembed
+revision 19d673b357bd8c244aa1a6d17d83769224fa98c9, under Apache License 2.0.
+Source: https://github.com/rostamlabs/rembed/blob/19d673b357bd8c244aa1a6d17d83769224fa98c9/testdata/golden.json
