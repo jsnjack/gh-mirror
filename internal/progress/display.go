@@ -29,6 +29,8 @@ type Display struct {
 	writer                   io.Writer
 	interactive              bool
 	started, printed, until  time.Time
+	phaseStarted             time.Time
+	columns                  func() int
 	phase, scope, remaining  string
 	resource                 string
 	received                 map[string]int
@@ -55,7 +57,8 @@ func New(writer io.Writer, animate bool) (*Display, error) {
 }
 
 func newDisplay(writer io.Writer, interactive bool) (*Display, error) {
-	d := &Display{writer: writer, interactive: interactive, started: time.Now(), phase: "Opening database", received: map[string]int{}, stop: make(chan struct{}), stopped: make(chan struct{})}
+	now := time.Now()
+	d := &Display{writer: writer, interactive: interactive, started: now, phaseStarted: now, columns: func() int { return terminalWidth(writer) }, phase: "Opening database", received: map[string]int{}, stop: make(chan struct{}), stopped: make(chan struct{})}
 	d.render(time.Now(), "")
 	if d.err != nil {
 		return nil, d.err
@@ -90,6 +93,7 @@ func (d *Display) Report(event Event) {
 	changed := event.Phase != "" && (event.Phase != d.phase || event.Scope != d.scope)
 	if event.Phase != "" {
 		if changed {
+			d.phaseStarted = time.Now()
 			d.page, d.records, d.done, d.total = 0, 0, 0, 0
 			d.resource = ""
 		}
@@ -189,33 +193,46 @@ func (d *Display) render(now time.Time, status string) {
 		}
 		activity += fmt.Sprintf(" | page %d, %d records", d.page, d.records)
 	}
+	bounded := ""
 	if d.total > 0 {
-		filled := min(d.done, d.total) * barWidth / d.total
-		activity += fmt.Sprintf(" | [%s%s] %d/%d", strings.Repeat("=", filled), strings.Repeat("-", barWidth-filled), d.done, d.total)
+		done := min(d.done, d.total)
+		filled := done * barWidth / d.total
+		bounded = fmt.Sprintf("[%s%s] %d/%d (%d%%)", strings.Repeat("=", filled), strings.Repeat("-", barWidth-filled), done, d.total, done*100/d.total)
+		if seconds := now.Sub(d.phaseStarted).Seconds(); seconds >= 1 && done > 0 {
+			rate := float64(done) / seconds
+			bounded += fmt.Sprintf(" | %.1f/s", rate)
+			if status == "" && done < d.total && !now.Before(d.until) {
+				eta := time.Duration(float64(d.total-done) / rate * float64(time.Second)).Round(time.Second)
+				bounded += " | phase ETA " + eta.String()
+			}
+		}
 	}
+	wait := ""
 	if now.Before(d.until) {
-		activity += fmt.Sprintf(" | retry wait %s", max(time.Duration(0), d.until.Sub(now)).Round(time.Second))
+		wait = fmt.Sprintf("retry wait %s", max(time.Duration(0), d.until.Sub(now)).Round(time.Second))
 	}
 	counters := fmt.Sprintf("Received: %d issues, %d comments", d.issues, d.comments)
 	if d.repositories > 0 {
 		counters += fmt.Sprintf(" | repository %d/%d", d.repository, d.repositories)
-	}
-	if d.workers > 0 {
-		counters += fmt.Sprintf(" | workers %d/%d", d.active, d.workers)
 	}
 	requests := fmt.Sprintf("API: %d", d.requests)
 	if d.limit > 0 {
 		requests += fmt.Sprintf("/%d", d.limit)
 	}
 	requests += fmt.Sprintf(" requests | %d cached", d.cached)
+	if d.workers > 0 {
+		requests = fmt.Sprintf("workers %d/%d active | ", d.active, d.workers) + requests
+	}
+	resume := ""
 	if d.saved > 0 || d.resumed > 0 {
-		requests += fmt.Sprintf(" | %d resumed", d.resumed)
+		resume = fmt.Sprintf("Resume: %d resumed responses", d.resumed)
 	}
-	if d.saved > 0 && d.resumed < d.saved {
-		requests += fmt.Sprintf("/%d saved", d.saved)
+	if d.saved > 0 {
+		resume += fmt.Sprintf(" | %d saved before this run", d.saved)
 	}
+	quota := "GitHub remaining: not reported yet"
 	if d.remaining != "" {
-		requests += " | GitHub remaining: " + d.remaining
+		quota = "GitHub remaining: " + d.remaining
 	}
 	var text string
 	if d.interactive {
@@ -231,15 +248,40 @@ func (d *Display) render(now time.Time, status string) {
 			activity = frames[d.frame%len(frames)] + " " + activity
 			d.frame++
 		}
-		for _, line := range []string{header, activity, counters, requests} {
-			b.WriteString("\r\x1b[2K" + fit(line) + "\n")
+		rows := []string{header, activity, bounded, wait, counters, requests, quota, resume}
+		var lines []string
+		// Leave the final column unused to avoid an untracked terminal wrap.
+		width := max(1, d.columns()-1)
+		for _, row := range rows {
+			if row != "" {
+				lines = append(lines, wrap(row, width)...)
+			}
 		}
-		text, d.lines = b.String(), 4
+		for index := range max(d.lines, len(lines)) {
+			b.WriteString("\r\x1b[2K")
+			if index < len(lines) {
+				b.WriteString(lines[index])
+			}
+			b.WriteByte('\n')
+		}
+		if d.lines > len(lines) {
+			fmt.Fprintf(&b, "\x1b[%dA", d.lines-len(lines))
+		}
+		text, d.lines = b.String(), len(lines)
 	} else {
+		for _, detail := range []string{bounded, wait} {
+			if detail != "" {
+				activity += " | " + detail
+			}
+		}
 		if status != "" {
 			activity = status + " | last phase: " + activity
 		}
-		text = fmt.Sprintf("gh-mirror | %s | %s | %s | elapsed %s\n", activity, counters, requests, elapsed)
+		text = fmt.Sprintf("gh-mirror | %s | %s | %s | elapsed %s | %s", activity, counters, requests, elapsed, quota)
+		if resume != "" {
+			text += " | " + resume
+		}
+		text += "\n"
 	}
 	if _, err := io.WriteString(d.writer, text); err != nil {
 		d.err = fmt.Errorf("write sync progress: %w", err)
@@ -256,10 +298,30 @@ func clean(value string) string {
 	}, value)
 }
 
-func fit(line string) string {
+func wrap(line string, width int) []string {
 	runes := []rune(line)
-	if len(runes) > lineWidth {
-		return string(runes[:lineWidth-3]) + "..."
+	var lines []string
+	for len(runes) > width {
+		at, skip := width, 0
+		for i := width; i > 0; i-- {
+			if i+2 < len(runes) && string(runes[i:i+3]) == " | " {
+				at, skip = i, 3
+				break
+			}
+		}
+		if skip == 0 {
+			for i := width; i > 0; i-- {
+				if runes[i] == ' ' {
+					at, skip = i, 1
+					break
+				}
+			}
+		}
+		lines = append(lines, string(runes[:at]))
+		runes = runes[at+skip:]
 	}
-	return line
+	if len(runes) > 0 {
+		lines = append(lines, string(runes))
+	}
+	return lines
 }

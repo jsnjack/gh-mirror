@@ -64,6 +64,10 @@ Stop refreshes on success, failure, and cancellation. Diagnostic logs must not
 interleave with animated frames.
 Count interleaved listing records independently and report active workers and resumed
 responses separately from HTTP attempts.
+Wrap terminal rows to the detected width without truncating metrics. Keep GitHub
+quota and resume counters on separate rows and track physical rows when clearing
+frames. Known totals show percentage, phase throughput, and a phase ETA after
+measurable progress; unknown totals and retry waits do not show an ETA.
 
 Dependencies are justified by the accepted design: Cobra is required by standards;
 modernc.org/sqlite provides embedded SQLite/FTS5 without CGO; the official MCP SDK

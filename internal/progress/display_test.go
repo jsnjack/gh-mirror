@@ -6,11 +6,114 @@ import (
 	"errors"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestResponsiveProgress(t *testing.T) {
+	for _, width := range []int{40, 78, 120} {
+		t.Run(strconv.Itoa(width)+" columns", func(t *testing.T) {
+			var output lockedBuffer
+			display, err := newDisplay(&output, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if err := display.Finish(nil); err != nil {
+					t.Error(err)
+				}
+			}()
+			display.Report(Event{Phase: "Hydrating issue metadata", Total: 8447, Advance: 2800, Requests: 60, Limit: 3000, Workers: 4, Active: 4, Remaining: "4773", Resumed: 202, Saved: 984})
+			display.mu.Lock()
+			display.columns = func() int { return width }
+			display.started, display.phaseStarted = time.Now().Add(-20*time.Second), time.Now().Add(-20*time.Second)
+			before := len(output.String())
+			display.render(display.phaseStarted.Add(20*time.Second), "")
+			frame := output.String()[before:]
+			lines := display.lines
+			display.mu.Unlock()
+			for _, want := range []string{"GitHub remaining: 4773", "2800/8447 (33%)", "140.0/s", "phase ETA 40s", "60/3000 requests", "202 resumed responses", "984 saved before this run"} {
+				if !strings.Contains(frame, want) {
+					t.Fatal("progress hid information", want, frame)
+				}
+			}
+			if strings.Contains(frame, "...") {
+				t.Fatal("progress still truncates rows", frame)
+			}
+			rows := 0
+			for _, line := range strings.Split(frame, "\n") {
+				if at := strings.Index(line, "\x1b[2K"); at >= 0 {
+					rows++
+					if len([]rune(line[at+len("\x1b[2K"):])) >= width {
+						t.Fatal("row would wrap outside the rendered frame", line)
+					}
+				}
+			}
+			if rows != lines {
+				t.Fatal("wrapped rows were not tracked", rows, lines)
+			}
+			// A shorter frame must erase old rows and leave the cursor below its new end.
+			display.mu.Lock()
+			display.total, display.saved, display.resumed = 0, 0, 0
+			before = len(output.String())
+			display.render(time.Now(), "")
+			frame = output.String()[before:]
+			shorter := display.lines
+			display.mu.Unlock()
+			if shorter >= lines || strings.Count(frame, "\x1b[2K") != lines || !strings.HasSuffix(frame, "\x1b["+strconv.Itoa(lines-shorter)+"A") {
+				t.Fatal("shorter frame left stale rows or misplaced the cursor", frame)
+			}
+		})
+	}
+}
+
+func TestPhaseEstimate(t *testing.T) {
+	for _, name := range []string{"unknown total", "no completed records", "first second", "known total", "retry wait", "complete", "phase changed"} {
+		t.Run(name, func(t *testing.T) {
+			var output lockedBuffer
+			display, err := newDisplay(&output, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if err := display.Finish(nil); err != nil {
+					t.Error(err)
+				}
+			}()
+			display.Report(Event{Phase: "Indexing issues", Total: 100, Advance: 25})
+			if name == "phase changed" {
+				display.Report(Event{Phase: "Hydrating issue metadata", Total: 100})
+			}
+			display.mu.Lock()
+			now := display.phaseStarted.Add(5 * time.Second)
+			switch name {
+			case "unknown total":
+				display.total = 0
+			case "no completed records":
+				display.done = 0
+			case "first second":
+				now = display.phaseStarted.Add(time.Millisecond)
+			case "retry wait":
+				display.until = now.Add(time.Minute)
+			case "complete":
+				display.done = 100
+			}
+			before := len(output.String())
+			display.render(now, "")
+			frame := output.String()[before:]
+			display.mu.Unlock()
+			if strings.Contains(frame, "phase ETA") != (name == "known total") {
+				t.Fatal("estimated progress without useful measurements", frame)
+			}
+			if name == "known total" && (!strings.Contains(frame, "5.0/s") || !strings.Contains(frame, "phase ETA 15s")) {
+				t.Fatal("phase estimate used the wrong rate", frame)
+			}
+		})
+	}
+}
 
 func TestReporter(t *testing.T) {
 	for _, name := range []string{"nil", "callback"} {
