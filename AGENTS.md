@@ -23,6 +23,12 @@ legacy mirrors locally during sync using stored payloads and `label_index_versio
 This derived index change preserves collection compatibility and pending work and
 must not force extra upstream requests. Unused labels remain catalog entries and
 do not produce ticket search matches.
+`Store.List` enumerates raw tickets and metadata by repository and issue number,
+without comments or required search words. CLI `list`, REST `/v1/issues` and MCP
+`list_issues` share generation-bound keyset cursors that reject changed filters or
+generations. Search and listing share filters, including issue/pull_request kind
+and project owner/number. Match stored membership URLs for organization/user
+projects, enterprise hosts and archived memberships without extra collection.
 
 GitHub remains authoritative. Never issue upstream mutations. Preserve raw payloads,
 all accessible comments, native issue types, multiple assignees, and unused labels.

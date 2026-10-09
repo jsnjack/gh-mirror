@@ -196,8 +196,11 @@ func addQueries() {
 	command.Flags().StringVar(&search.State, "state", "", "Filter open or closed")
 	command.Flags().StringVar(&search.Label, "label", "", "Filter label name")
 	command.Flags().StringVar(&search.Type, "type", "", "Filter native issue type name")
+	command.Flags().StringVar(&search.Kind, "kind", "", "Filter issue or pull_request")
+	command.Flags().StringVar(&search.Project, "project", "", "Filter project membership owner/number, including archived memberships")
 	command.Flags().IntVar(&search.Limit, "limit", 30, "Maximum results (1–100)")
 	root.AddCommand(command)
+	addList()
 	for _, kind := range []string{"get", "candidates"} {
 		var repo string
 		var number, limit int

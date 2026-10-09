@@ -64,7 +64,17 @@ func (s *Service) Handler() http.Handler {
 			return
 		}
 		q := r.URL.Query()
-		out, err := s.Store.Search(r.Context(), store.SearchOptions{Query: q.Get("q"), Repo: q.Get("repo"), State: q.Get("state"), Label: q.Get("label"), Type: q.Get("type"), Limit: limit})
+		out, err := s.Store.Search(r.Context(), store.SearchOptions{Query: q.Get("q"), Repo: q.Get("repo"), State: q.Get("state"), Label: q.Get("label"), Type: q.Get("type"), Kind: q.Get("kind"), Project: q.Get("project"), Limit: limit})
+		respond(w, out, err)
+	})
+	mux.HandleFunc("GET /v1/issues", func(w http.ResponseWriter, r *http.Request) {
+		limit, err := parseLimit(r)
+		if err != nil {
+			respond(w, nil, err)
+			return
+		}
+		q := r.URL.Query()
+		out, err := s.Store.List(r.Context(), store.ListOptions{Repo: q.Get("repo"), State: q.Get("state"), Label: q.Get("label"), Type: q.Get("type"), Kind: q.Get("kind"), Project: q.Get("project"), Limit: limit, Cursor: q.Get("cursor")})
 		respond(w, out, err)
 	})
 	mux.HandleFunc("GET /v1/issues/{owner}/{repo}/{number}", func(w http.ResponseWriter, r *http.Request) {
@@ -188,9 +198,13 @@ func tool(name, description string) *mcp.Tool {
 	return &mcp.Tool{Name: name, Description: description, OutputSchema: map[string]any{"type": "object"}, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}
 }
 
-// MCP creates six local read tools; tool calls never fetch upstream data.
+// MCP creates local read tools; tool calls never fetch upstream data.
 func (s *Service) MCP() *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "gh-mirror", Version: s.Version}, nil)
+	mcp.AddTool(server, tool("list_issues", "List local tickets with repository, state, label, type, kind and project owner/number filters. Follow next_cursor with the same filters; cursors pin a mirror generation."), func(ctx context.Context, _ *mcp.CallToolRequest, input store.ListOptions) (*mcp.CallToolResult, store.ListResult, error) {
+		out, err := s.Store.List(ctx, input)
+		return nil, out, err
+	})
 	mcp.AddTool(server, tool("search_issues", "Search local issue titles, bodies, label names and all conversation comments using literal words."), func(ctx context.Context, _ *mcp.CallToolRequest, input store.SearchOptions) (*mcp.CallToolResult, store.SearchResult, error) {
 		out, err := s.Store.Search(ctx, input)
 		return nil, out, err

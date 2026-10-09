@@ -226,6 +226,8 @@ type SearchOptions struct {
 	State   string `json:"state,omitempty"`
 	Label   string `json:"label,omitempty"`
 	Type    string `json:"type,omitempty"`
+	Kind    string `json:"kind,omitempty"`
+	Project string `json:"project,omitempty"`
 	Limit   int    `json:"limit,omitempty"`
 	Exclude int    `json:"-"`
 }
@@ -281,17 +283,18 @@ func search(ctx context.Context, q querier, o SearchOptions) (SearchResult, erro
 	if o.Limit < 1 || o.Limit > 100 {
 		return out, fmt.Errorf("limit must be between 1 and 100")
 	}
-	if o.State != "" && o.State != "open" && o.State != "closed" {
-		return out, fmt.Errorf("state must be open or closed")
+	filters, err := filterArguments(o.Repo, o.State, o.Label, o.Type, o.Kind, o.Project)
+	if err != nil {
+		return out, err
 	}
+	args := append([]any{term}, filters...)
+	args = append(args, o.Repo, o.Exclude, o.Limit)
 	rows, err := q.QueryContext(ctx, `WITH ranked AS MATERIALIZED (
  SELECT i.repo,i.number,i.title,i.state,i.kind,i.url,d.source,snippet(documents_fts,-1,'[',']',' … ',32) AS excerpt,bm25(documents_fts,5,1) AS score,i.updated_at
  FROM documents_fts JOIN documents d ON d.rowid=documents_fts.rowid JOIN issues i ON i.repo=d.repo AND i.number=d.number
- WHERE documents_fts MATCH ? AND (?='' OR i.repo=?) AND (?='' OR i.state=?)
- AND (?='' OR EXISTS(SELECT 1 FROM json_each(i.payload,'$.labels') l WHERE json_extract(l.value,'$.name')=?))
- AND (?='' OR json_extract(i.payload,'$.type.name')=?) AND NOT(i.repo=? AND i.number=?)
+ WHERE documents_fts MATCH ? AND `+issueFilters+` AND NOT(i.repo=? AND i.number=?)
  ), grouped AS (SELECT *,row_number() OVER(PARTITION BY repo,number ORDER BY score,source) AS ordinal FROM ranked)
- SELECT repo,number,title,state,kind,url,source,excerpt,score,updated_at FROM grouped WHERE ordinal=1 ORDER BY score,repo,number LIMIT ?`, term, o.Repo, o.Repo, o.State, o.State, o.Label, o.Label, o.Type, o.Type, o.Repo, o.Exclude, o.Limit)
+ SELECT repo,number,title,state,kind,url,source,excerpt,score,updated_at FROM grouped WHERE ordinal=1 ORDER BY score,repo,number LIMIT ?`, args...)
 	if err != nil {
 		return out, fmt.Errorf("search index: %w", err)
 	}
