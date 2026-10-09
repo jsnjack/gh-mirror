@@ -191,7 +191,7 @@ func tool(name, description string) *mcp.Tool {
 // MCP creates six local read tools; tool calls never fetch upstream data.
 func (s *Service) MCP() *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "gh-mirror", Version: s.Version}, nil)
-	mcp.AddTool(server, tool("search_issues", "Search local issue titles, bodies and all conversation comments using literal words."), func(ctx context.Context, _ *mcp.CallToolRequest, input store.SearchOptions) (*mcp.CallToolResult, store.SearchResult, error) {
+	mcp.AddTool(server, tool("search_issues", "Search local issue titles, bodies, label names and all conversation comments using literal words."), func(ctx context.Context, _ *mcp.CallToolRequest, input store.SearchOptions) (*mcp.CallToolResult, store.SearchResult, error) {
 		out, err := s.Store.Search(ctx, input)
 		return nil, out, err
 	})

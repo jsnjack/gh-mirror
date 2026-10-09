@@ -15,6 +15,15 @@ immutable databases. `internal/service` shares local queries between REST and MC
 `internal/checkpoint` durably stages completed responses outside the mirror transaction
 so interrupted syncs resume across process boundaries.
 
+Index attached label names as separate full-text documents for each issue, with
+the issue URL as their source and the same weight as titles. Keep raw issue titles
+and bodies unchanged. Update label documents with issue changes; removals, transfers,
+and issue deletion must remove stale matches. `Writer.EnsureLabelIndex` backfills
+legacy mirrors locally during sync using stored payloads and `label_index_version`.
+This derived index change preserves collection compatibility and pending work and
+must not force extra upstream requests. Unused labels remain catalog entries and
+do not produce ticket search matches.
+
 GitHub remains authoritative. Never issue upstream mutations. Preserve raw payloads,
 all accessible comments, native issue types, multiple assignees, and unused labels.
 Collect project catalogs and ticket memberships, including archived memberships.

@@ -236,6 +236,9 @@ func (w *Writer) PutIssue(ctx context.Context, repo string, raw json.RawMessage)
 		if err := w.document(ctx, "issue:"+repo+":"+strconv.Itoa(number), repo, number, Text(o, "html_url"), Text(o, "title"), Text(o, "body")); err != nil {
 			return ref, err
 		}
+		if err := w.indexLabels(ctx, repo, number, o); err != nil {
+			return ref, fmt.Errorf("index labels for %s#%d: %w", repo, number, err)
+		}
 	}
 	for _, raw := range transferred {
 		if err := w.PutComment(ctx, repo, number, raw); err != nil {

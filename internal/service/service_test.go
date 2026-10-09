@@ -29,7 +29,7 @@ func fixture(t *testing.T) *Service {
 	})
 	err = db.Update(context.Background(), func(w *store.Writer) error {
 		for _, n := range []int{1, 2} {
-			raw := json.RawMessage(fmt.Sprintf(`{"number":%d,"node_id":"I_%d","title":"network crash","body":"socket timeout","state":"closed","updated_at":"2026-01-01T00:00:00Z","html_url":"https://github.com/o/r/issues/%d"}`, n, n, n))
+			raw := json.RawMessage(fmt.Sprintf(`{"number":%d,"node_id":"I_%d","title":"network crash","body":"socket timeout","state":"closed","updated_at":"2026-01-01T00:00:00Z","html_url":"https://github.com/o/r/issues/%d","labels":[{"name":"client:Acme"}]}`, n, n, n))
 			if _, err := w.PutIssue(context.Background(), "o/r", raw); err != nil {
 				return fmt.Errorf("seed ticket: %w", err)
 			}
@@ -55,7 +55,7 @@ func TestRESTMCPParity(t *testing.T) {
 	cases := []struct {
 		name, path, tool string
 		args             map[string]any
-	}{{"search", "/v1/search?q=network", "search_issues", map[string]any{"query": "network"}}, {"get", "/v1/issues/o/r/1", "get_issue", map[string]any{"repo": "o/r", "number": 1}}, {"catalog", "/v1/catalog?kind=labels&scope=o/r", "get_catalog", map[string]any{"kind": "labels", "scope": "o/r"}}, {"project", "/v1/projects?owner=o&number=1", "get_project", map[string]any{"owner": "o", "number": 1}}, {"candidates", "/v1/candidates?repo=o/r&number=1", "find_duplicate_candidates", map[string]any{"repo": "o/r", "number": 1}}, {"status", "/v1/status", "get_sync_status", map[string]any{}}}
+	}{{"search", "/v1/search?q=acme", "search_issues", map[string]any{"query": "acme"}}, {"get", "/v1/issues/o/r/1", "get_issue", map[string]any{"repo": "o/r", "number": 1}}, {"catalog", "/v1/catalog?kind=labels&scope=o/r", "get_catalog", map[string]any{"kind": "labels", "scope": "o/r"}}, {"project", "/v1/projects?owner=o&number=1", "get_project", map[string]any{"owner": "o", "number": 1}}, {"candidates", "/v1/candidates?repo=o/r&number=1", "find_duplicate_candidates", map[string]any{"repo": "o/r", "number": 1}}, {"status", "/v1/status", "get_sync_status", map[string]any{}}}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			svc := fixture(t)
@@ -113,6 +113,9 @@ func TestRESTMCPParity(t *testing.T) {
 			}
 			if !reflect.DeepEqual(mcpOut, restOut) {
 				t.Fatalf("REST and MCP differ:\n%s\n%s", encoded, response.Body.String())
+			}
+			if tc.name == "search" && len(restOut.(map[string]any)["matches"].([]any)) != 2 {
+				t.Fatal("REST and MCP omitted label-only matches", restOut)
 			}
 		})
 	}
