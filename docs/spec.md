@@ -322,8 +322,11 @@ Split title/body and label/comment/review sources into passages of at most 256
 WordPiece tokens including framing, with a 2,048-rune character cap, 32-rune overlap and original byte offsets.
 Preserve long-document tails. Index with bounded independent CPU workers, default
 four, and FULL synchronous SQLite commits. Resume completed passages after errors,
-interrupts and process restarts. Text edits invalidate completeness but keep reusable
-passages locally; metadata-only updates retain vectors. Match reusable text exactly
+interrupts and process restarts. Serialize same-store write transactions through a
+cancellable queue before acquiring pooled connections; keep readers and CPU inference
+concurrent and preserve SQLite locking against independent collectors. Text edits
+invalidate completeness but keep reusable passages locally; metadata-only updates
+retain vectors. Match reusable text exactly
 within its field and model. Guard checkpoint commits against changed source text
 and model identity. Deletions cascade. Exports remove incomplete/obsolete passages
 and compact the file; completed vectors travel in the SQLite snapshot and its

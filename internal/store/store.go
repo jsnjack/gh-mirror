@@ -29,8 +29,9 @@ var ErrNotFound = errors.New("local resource not found")
 
 // Store maintains a SQLite connection pool and its filesystem location.
 type Store struct {
-	db   *sql.DB
-	Path string
+	db         *sql.DB
+	writerGate chan struct{}
+	Path       string
 }
 
 // Open opens a writer database or an existing read-only database.
@@ -75,7 +76,7 @@ func Open(path string, readOnly bool) (*Store, error) {
 		return nil, fmt.Errorf("open SQLite: %w", err)
 	}
 	db.SetMaxOpenConns(4)
-	s := &Store{db: db, Path: abs}
+	s := &Store{db: db, writerGate: make(chan struct{}, 1), Path: abs}
 	if err := s.initialize(readOnly); err != nil {
 		s.closeOnError()
 		return nil, err
@@ -153,8 +154,19 @@ func (w *Writer) Metadata(ctx context.Context, key string) (string, error) {
 	return value, nil
 }
 
-// Update commits all changes together or rolls them back when collection fails.
+// Update queues local writers and commits their changes together or rolls them back.
 func (s *Store) Update(ctx context.Context, update func(*Writer) error) error {
+	// WAL allows concurrent readers, but only one writer; do not occupy pool
+	// connections with checkpoints waiting inside SQLite's busy timeout.
+	select {
+	case s.writerGate <- struct{}{}:
+	case <-ctx.Done():
+		return fmt.Errorf("wait for mirror writer: %w", ctx.Err())
+	}
+	defer func() { <-s.writerGate }()
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("wait for mirror writer: %w", err)
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("lock collector transaction: %w", err)

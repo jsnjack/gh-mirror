@@ -204,6 +204,19 @@ func TestMirror(t *testing.T) {
 					t.Fatal("reader created missing database")
 				}
 			case "collector exclusion":
+				collector, err := Open(db.Path, false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() {
+					if err := collector.Close(); err != nil {
+						t.Error(err)
+					}
+				}()
+				collector.db.SetMaxOpenConns(1)
+				if _, err := collector.db.ExecContext(ctx, "PRAGMA busy_timeout=0"); err != nil {
+					t.Fatal(err)
+				}
 				entered := make(chan struct{})
 				release := make(chan struct{})
 				done := make(chan error, 1)
@@ -220,7 +233,7 @@ func TestMirror(t *testing.T) {
 				if err := other.Close(); err != nil {
 					t.Error(err)
 				}
-				if err := db.Update(ctx, func(*Writer) error { return nil }); err == nil {
+				if err := collector.Update(ctx, func(*Writer) error { return nil }); err == nil {
 					t.Error("concurrent collector obtained lock")
 				}
 				close(release)

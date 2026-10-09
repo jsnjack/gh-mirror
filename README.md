@@ -308,6 +308,8 @@ the next page of work.
 Completed passages are committed as they finish. Interrupt with Ctrl-C and rerun
 `index` to resume. Unchanged documents are skipped; changed documents reuse identical
 passages and encode their new passages. Metadata-only changes do not re-encode text.
+Inference runs in parallel while checkpoint writes queue for SQLite's single writer.
+Readers remain concurrent, and each checkpoint retains FULL synchronous durability.
 Deleted tickets/comments remove their vectors. Model or chunking changes rebuild
 only the derived local vector index, without refetching GitHub data.
 If collection has finished and indexing is interrupted, `index --workers 8` resumes

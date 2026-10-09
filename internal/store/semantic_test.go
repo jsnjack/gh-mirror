@@ -84,6 +84,36 @@ func TestIndexStreamsBeyondDocumentPage(t *testing.T) {
 	}
 }
 
+func TestIndexCheckpointContention(t *testing.T) {
+	for _, workers := range []int{8, 16} {
+		t.Run(fmt.Sprintf("workers %d", workers), func(t *testing.T) {
+			db := testStore(t)
+			disableSQLiteBusyWait(t, db)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := db.Update(ctx, func(w *Writer) error {
+				for number := 1; number <= 80; number++ {
+					if _, err := w.PutIssue(ctx, "o/r", issueFixture(number, "checkpoint contention", "2026-01-01T00:00:00Z")); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			encoder := &fakeVectorizer{}
+			status, err := db.Index(ctx, encoder, IndexOptions{Workers: workers})
+			if err != nil || status.PendingDocuments != 0 || status.IndexedDocuments != 160 {
+				t.Fatal("concurrent checkpoints failed", status, err)
+			}
+			calls := encoder.calls
+			if _, err := db.Index(ctx, encoder, IndexOptions{Workers: workers}); err != nil || encoder.calls != calls {
+				t.Fatal("completed checkpoints were not reused", encoder.calls, calls, err)
+			}
+		})
+	}
+}
+
 func (e *fakeVectorizer) ID() string {
 	if e.identity != "" {
 		return e.identity
