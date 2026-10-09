@@ -130,7 +130,7 @@ func (f filters) sql() (string, []any, error) {
 				} else {
 					high = t
 				}
-				add("julianday("+bounds.column+")"+v.op+"julianday(?)", t.UTC().Format(time.RFC3339))
+				add("julianday("+bounds.column+")"+v.op+"julianday(?)", t.UTC().Format(time.RFC3339Nano))
 			}
 		}
 		if !low.IsZero() && !high.IsZero() && low.After(high) {

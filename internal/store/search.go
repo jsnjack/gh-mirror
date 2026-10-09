@@ -105,7 +105,7 @@ func (o SearchOptions) filters() filters {
 	return filters{o.Repo, o.State, o.Label, o.Type, o.Kind, o.Project, o.QueryFilters}
 }
 
-func scopedDocuments(term string, in []string, evidence bool) (string, []any) {
+func scopedDocuments(term string, in []string, evidence, excerpts bool, selection string, selectionArgs []any) (string, []any) {
 	selected := []string{}
 	args := []any{}
 	scopes := in
@@ -142,12 +142,24 @@ func scopedDocuments(term string, in []string, evidence bool) (string, []any) {
 			field = "'review_comment'"
 			column = "1"
 		}
+		if !excerpts && scope == "all" {
+			field = "'ticket'"
+		}
 		projection := "d.repo,d.number"
 		if evidence {
-			projection = "d.repo,d.number,d.id,d.source,bm25(documents_fts,5,1) score,CASE WHEN d.id LIKE 'labels:%' THEN 'labels' WHEN d.id LIKE 'comment:review:%' THEN 'review_comment' WHEN d.id LIKE 'comment:%' THEN 'comment' ELSE " + field + " END field,snippet(documents_fts," + column + ",'[',']',' … ',32) excerpt"
+			projection = "d.repo,d.number,d.id,d.source,bm25(documents_fts,5,1) score,CASE WHEN d.id LIKE 'labels:%' THEN 'labels' WHEN d.id LIKE 'comment:review:%' THEN 'review_comment' WHEN d.id LIKE 'comment:%' THEN 'comment' ELSE " + field + " END field"
+			if excerpts {
+				projection += ",snippet(documents_fts," + column + ",'[',']',' … ',32) excerpt"
+			} else {
+				projection += ",'' excerpt"
+			}
+		}
+		if selection != "" {
+			condition += " AND (" + selection + ")"
 		}
 		selected = append(selected, "SELECT "+projection+" FROM documents_fts JOIN documents d ON d.rowid=documents_fts.rowid WHERE documents_fts MATCH ? AND "+condition)
 		args = append(args, expression)
+		args = append(args, selectionArgs...)
 	}
 	return strings.Join(selected, " UNION ALL "), args
 }
@@ -204,12 +216,12 @@ func search(ctx context.Context, q querier, o SearchOptions) (SearchResult, erro
 			term += "*"
 		}
 	}
-	docs, docArgs := scopedDocuments(term, o.In, true)
+	docs, docArgs := scopedDocuments(term, o.In, true, false, "", nil)
 	ctes := []string{"hits AS MATERIALIZED (" + docs + ")"}
 	baseArgs := append([]any{}, docArgs...)
 	if o.Match == "all" {
 		for n, expression := range expressions {
-			sql, a := scopedDocuments(expression, o.In, false)
+			sql, a := scopedDocuments(expression, o.In, false, false, "", nil)
 			name := fmt.Sprintf("required%d", n)
 			ctes = append(ctes, name+" AS ("+sql+")")
 			baseArgs = append(baseArgs, a...)
@@ -221,7 +233,7 @@ func search(ctx context.Context, q querier, o SearchOptions) (SearchResult, erro
 		if len(ws) == 0 || len(ws) > 32 {
 			return out, invalid("excluded text must contain 1–32 words")
 		}
-		sql, a := scopedDocuments(strings.Join(quoteTerms(ws, false), " OR "), o.In, false)
+		sql, a := scopedDocuments(strings.Join(quoteTerms(ws, false), " OR "), o.In, false, false, "", nil)
 		name := fmt.Sprintf("excluded%d", n)
 		ctes = append(ctes, name+" AS ("+sql+")")
 		baseArgs = append(baseArgs, a...)
@@ -315,15 +327,20 @@ func search(ctx context.Context, q querier, o SearchOptions) (SearchResult, erro
 	}
 	if len(out.Matches) > 0 {
 		selected := []string{}
-		evidenceArgs := append([]any{}, baseArgs...)
+		selectionArgs := []any{}
 		indices := map[string]int{}
 		for n, m := range out.Matches {
-			selected = append(selected, "(r.repo=? AND r.number=?)")
-			evidenceArgs = append(evidenceArgs, m.Repo, m.Number)
+			selected = append(selected, "(d.repo=? AND d.number=?)")
+			selectionArgs = append(selectionArgs, m.Repo, m.Number)
 			indices[fmt.Sprintf("%s#%d", m.Repo, m.Number)] = n
 		}
+		boundedDocs, boundedArgs := scopedDocuments(term, o.In, true, true, strings.Join(selected, " OR "), selectionArgs)
+		evidenceCTEs := append([]string{}, ctes...)
+		evidenceCTEs[0] = "hits AS MATERIALIZED (" + boundedDocs + ")"
+		evidenceCTE := "WITH " + strings.Join(evidenceCTEs, ",")
+		evidenceArgs := append(boundedArgs, baseArgs[len(docArgs):]...)
 		evidenceArgs = append(evidenceArgs, o.EvidenceLimit)
-		sql := cte + `,dedup AS (SELECT r.*,row_number() OVER(PARTITION BY r.repo,r.number,r.id ORDER BY r.score,r.field) doc_ordinal FROM ranked r WHERE ` + strings.Join(selected, " OR ") + `), evidence AS (SELECT *,row_number() OVER(PARTITION BY repo,number ORDER BY score,source,id) evidence_ordinal FROM dedup WHERE doc_ordinal=1) SELECT e.repo,e.number,e.field,e.source,e.excerpt,COALESCE(CAST(json_extract(c.payload,'$.id') AS TEXT),''),COALESCE(json_extract(c.payload,'$.created_at'),''),COALESCE(json_extract(c.payload,'$.path'),''),COALESCE(json_extract(c.payload,'$.line'),json_extract(c.payload,'$.original_line'),0),substr(COALESCE(json_extract(c.payload,'$.diff_hunk'),''),1,1024) FROM evidence e LEFT JOIN comments c ON c.id=substr(e.id,9) WHERE e.evidence_ordinal<=? ORDER BY e.repo,e.number,e.evidence_ordinal`
+		sql := evidenceCTE + `,dedup AS (SELECT r.*,row_number() OVER(PARTITION BY r.repo,r.number,r.id ORDER BY r.score,r.field) doc_ordinal FROM ranked r), evidence AS (SELECT *,row_number() OVER(PARTITION BY repo,number ORDER BY score,source,id) evidence_ordinal FROM dedup WHERE doc_ordinal=1) SELECT e.repo,e.number,e.field,e.source,e.excerpt,COALESCE(CAST(json_extract(c.payload,'$.id') AS TEXT),''),COALESCE(json_extract(c.payload,'$.created_at'),''),COALESCE(json_extract(c.payload,'$.path'),''),COALESCE(json_extract(c.payload,'$.line'),json_extract(c.payload,'$.original_line'),0),substr(COALESCE(json_extract(c.payload,'$.diff_hunk'),''),1,1024) FROM evidence e LEFT JOIN comments c ON c.id=substr(e.id,9) WHERE e.evidence_ordinal<=? ORDER BY e.repo,e.number,e.evidence_ordinal`
 		rows, err := q.QueryContext(ctx, sql, evidenceArgs...)
 		if err != nil {
 			return out, fmt.Errorf("read match evidence: %w", err)
@@ -340,6 +357,11 @@ func search(ctx context.Context, q querier, o SearchOptions) (SearchResult, erro
 		}
 		if err := finishRows(rows, rows.Err()); err != nil {
 			return out, err
+		}
+		for n := range out.Matches {
+			if len(out.Matches[n].Evidence) > 0 {
+				out.Matches[n].Snippet = out.Matches[n].Evidence[0].Snippet
+			}
 		}
 	}
 	out.Query = QueryInfo{terms, o.Match, o.Prefix, o.In}
