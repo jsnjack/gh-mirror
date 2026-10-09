@@ -66,6 +66,9 @@ watermark on resume. Fingerprint scope/settings/credential identity without stor
 credentials; worker/budget changes preserve pending work. Initialize and clean up
 sessions under the collector lock. Never discard staged work before the mirror commits
 or delete another collector's session. Snapshot exports exclude pending work.
+Validate GraphQL node identities, resource kinds, connections and pagination cursors
+before saving responses. Refetch invalid legacy saves by deleting only that request;
+retain valid saved pages and batches when a later request fails.
 
 Readers open existing databases without migrations or writes. Publish standalone
 SQLite exports, never copies of live WAL databases. Complete and validate the export

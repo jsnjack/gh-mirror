@@ -32,6 +32,7 @@ type Cache interface {
 type Checkpoint interface {
 	Load(context.Context, string) ([]byte, bool, error)
 	Save(context.Context, string, []byte) error
+	Delete(context.Context, string) error
 }
 
 // Client shares a request budget across REST, GraphQL, and retries.
@@ -342,6 +343,11 @@ func (c *Client) ListWithProgress(ctx context.Context, path string, activity pro
 
 // GraphQL executes a query document and rejects all partial-error responses.
 func (c *Client) GraphQL(ctx context.Context, query string, variables any, out any) error {
+	return c.GraphQLValidated(ctx, query, variables, out, nil)
+}
+
+// GraphQLValidated validates observations before checkpointing and refetches invalid legacy saves.
+func (c *Client) GraphQLValidated(ctx context.Context, query string, variables any, out any, validate func(json.RawMessage) error) error {
 	if !strings.HasPrefix(strings.TrimSpace(query), "query") {
 		return fmt.Errorf("only GraphQL query documents are supported")
 	}
@@ -355,10 +361,16 @@ func (c *Client) GraphQL(ctx context.Context, query string, variables any, out a
 		return err
 	}
 	if found {
-		if err := json.Unmarshal(saved, out); err != nil {
-			return fmt.Errorf("decode saved GraphQL data: %w", err)
+		err := json.Unmarshal(saved, out)
+		if err == nil && validate != nil {
+			err = validate(saved)
 		}
-		return nil
+		if err == nil {
+			return nil
+		}
+		if err := c.Checkpoint.Delete(ctx, key); err != nil {
+			return fmt.Errorf("discard invalid GraphQL observation: %w", err)
+		}
 	}
 	body, _, _, err := c.request(ctx, http.MethodPost, c.graph, payload, "")
 	if err != nil {
@@ -379,6 +391,11 @@ func (c *Client) GraphQL(ctx context.Context, query string, variables any, out a
 	}
 	if err := json.Unmarshal(envelope.Data, out); err != nil {
 		return fmt.Errorf("decode GraphQL data: %w", err)
+	}
+	if validate != nil {
+		if err := validate(envelope.Data); err != nil {
+			return fmt.Errorf("validate GraphQL observations: %w", err)
+		}
 	}
 	return c.save(ctx, key, envelope.Data)
 }

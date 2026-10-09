@@ -133,6 +133,16 @@ func (s *Store) Save(ctx context.Context, key string, body []byte) error {
 	return nil
 }
 
+// Delete removes an invalid saved response while retaining other completed work.
+func (s *Store) Delete(ctx context.Context, key string) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if _, err := s.db.ExecContext(ctx, "DELETE FROM responses WHERE key=?", key); err != nil {
+		return fmt.Errorf("delete invalid saved fetch: %w", err)
+	}
+	return nil
+}
+
 // Close releases the checkpoint database without discarding unfinished work.
 func (s *Store) Close() error {
 	if err := s.db.Close(); err != nil {

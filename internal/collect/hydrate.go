@@ -94,7 +94,9 @@ func fetchBatch(ctx context.Context, c *github.Client, batch []store.IssueRef, f
 	var data struct {
 		Nodes []json.RawMessage `json:"nodes"`
 	}
-	if err := c.GraphQL(ctx, query, map[string]any{"ids": ids}, &data); err != nil {
+	if err := c.GraphQLValidated(ctx, query, map[string]any{"ids": ids}, &data, func(raw json.RawMessage) error {
+		return validateBatch(raw, batch, names, projects)
+	}); err != nil {
 		return nil, fmt.Errorf("batch issue metadata: %w", err)
 	}
 	if len(data.Nodes) != len(batch) {
@@ -180,21 +182,79 @@ func normalizeValues(items []json.RawMessage) ([]json.RawMessage, error) {
 	}
 	return items, nil
 }
+
+func validateConnection(raw json.RawMessage) (connection, error) {
+	var page connection
+	if err := json.Unmarshal(raw, &page); err != nil {
+		return page, fmt.Errorf("decode connection: %w", err)
+	}
+	if page.PageInfo == nil || page.Nodes == nil {
+		return page, fmt.Errorf("missing GraphQL connection data")
+	}
+	if page.PageInfo.HasNextPage && page.PageInfo.EndCursor == "" {
+		return page, fmt.Errorf("empty GraphQL cursor")
+	}
+	for _, node := range page.Nodes {
+		if _, err := store.Object(node); err != nil {
+			return page, fmt.Errorf("inaccessible connection node: %w", err)
+		}
+	}
+	return page, nil
+}
+
+func validateBatch(raw json.RawMessage, batch []store.IssueRef, names []string, projects bool) error {
+	var data struct {
+		Nodes []json.RawMessage `json:"nodes"`
+	}
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return fmt.Errorf("decode batch: %w", err)
+	}
+	if len(data.Nodes) != len(batch) {
+		return fmt.Errorf("GraphQL issue inventory count mismatch")
+	}
+	for i, raw := range data.Nodes {
+		object, err := store.Object(raw)
+		if err != nil {
+			return fmt.Errorf("inaccessible GraphQL node %s: %w", batch[i].NodeID, err)
+		}
+		expected := "Issue"
+		if batch[i].Kind == "pull_request" {
+			expected = "PullRequest"
+		}
+		if store.Text(object, "id") != batch[i].NodeID || store.Text(object, "__typename") != expected {
+			return fmt.Errorf("GraphQL issue identity or resource kind mismatch")
+		}
+		connections := []string{}
+		if expected == "Issue" {
+			parent, ok := object["parent"]
+			if !ok {
+				return fmt.Errorf("GraphQL issue is missing parent observation")
+			}
+			if string(parent) != "null" {
+				if _, err := store.Object(parent); err != nil {
+					return fmt.Errorf("invalid parent observation: %w", err)
+				}
+			}
+			connections = append(connections, names...)
+		}
+		if projects {
+			connections = append(connections, "projectItems")
+		}
+		for _, name := range connections {
+			if _, err := validateConnection(object[name]); err != nil {
+				return fmt.Errorf("validate %s on %s: %w", name, batch[i].NodeID, err)
+			}
+		}
+	}
+	return nil
+}
 func connectionItems(ctx context.Context, c *github.Client, ref store.IssueRef, name string, raw json.RawMessage) ([]json.RawMessage, error) {
 	out := []json.RawMessage{}
 	seen := map[string]bool{}
 	for {
-		var page connection
-		if err := json.Unmarshal(raw, &page); err != nil {
-			return nil, fmt.Errorf("decode connection: %w", err)
-		}
-		if page.PageInfo == nil || page.Nodes == nil {
-			return nil, fmt.Errorf("missing GraphQL connection data")
-		}
-		for _, node := range page.Nodes {
-			if _, err := store.Object(node); err != nil {
-				return nil, fmt.Errorf("inaccessible connection node: %w", err)
-			}
+		page, err := validateConnection(raw)
+		if err != nil {
+			return nil, err
 		}
 		out = append(out, page.Nodes...)
 		if !page.PageInfo.HasNextPage {
@@ -213,7 +273,22 @@ func connectionItems(ctx context.Context, c *github.Client, ref store.IssueRef, 
 		var data struct {
 			Node map[string]json.RawMessage `json:"node"`
 		}
-		if err := c.GraphQL(ctx, query, map[string]any{"id": ref.NodeID, "cursor": cursor}, &data); err != nil {
+		if err := c.GraphQLValidated(ctx, query, map[string]any{"id": ref.NodeID, "cursor": cursor}, &data, func(raw json.RawMessage) error {
+			var response struct {
+				Node map[string]json.RawMessage `json:"node"`
+			}
+			if err := json.Unmarshal(raw, &response); err != nil {
+				return fmt.Errorf("decode connection response: %w", err)
+			}
+			page, err := validateConnection(response.Node[name])
+			if err != nil {
+				return err
+			}
+			if page.PageInfo.HasNextPage && seen[page.PageInfo.EndCursor] {
+				return fmt.Errorf("repeated GraphQL cursor")
+			}
+			return nil
+		}); err != nil {
 			return nil, fmt.Errorf("fetch connection page: %w", err)
 		}
 		raw = data.Node[name]
