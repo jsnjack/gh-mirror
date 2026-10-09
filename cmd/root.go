@@ -3,15 +3,24 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	"gh-mirror/internal/collect"
 	"gh-mirror/internal/config"
 	"gh-mirror/internal/diagnostics"
+	"gh-mirror/internal/service"
+	"gh-mirror/internal/snapshot"
+	"gh-mirror/internal/store"
 
 	"github.com/spf13/cobra"
 )
@@ -60,6 +69,10 @@ func init() {
 		}
 		return nil
 	}
+	addCollection()
+	addQueries()
+	addSnapshots()
+	addServers()
 }
 
 // Execute runs commands with interrupt cancellation and closes trace diagnostics.
@@ -77,4 +90,238 @@ func Execute() error {
 		return fmt.Errorf("gh-mirror: %w", err)
 	}
 	return nil
+}
+func output(command *cobra.Command, value any) error {
+	encoder := json.NewEncoder(command.OutOrStdout())
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(value); err != nil {
+		return fmt.Errorf("write command output: %w", err)
+	}
+	return nil
+}
+func open(readOnly bool) (*store.Store, error) {
+	db, err := store.Open(settings.Database, readOnly)
+	if err != nil {
+		return nil, fmt.Errorf("open configured mirror: %w", err)
+	}
+	return db, nil
+}
+func closeStore(ctx context.Context, db *store.Store) {
+	if err := db.Close(); err != nil {
+		slog.Log(ctx, diagnostics.TraceLevel, "close mirror", "error", err)
+	}
+}
+func addCollection() {
+	var full, publish bool
+	command := &cobra.Command{Use: "sync", Short: "Bootstrap or incrementally collect the configured repositories", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+		db, err := open(false)
+		if err != nil {
+			return err
+		}
+		defer closeStore(command.Context(), db)
+		result, err := collect.Sync(command.Context(), db, settings, full)
+		if err != nil {
+			return fmt.Errorf("collect GitHub data: %w", err)
+		}
+		var manifest *snapshot.Manifest
+		if publish {
+			m, err := snapshot.Publish(command.Context(), db, settings.SnapshotDir)
+			if err != nil {
+				return fmt.Errorf("publish collected mirror: %w", err)
+			}
+			manifest = &m
+		}
+		return output(command, struct {
+			collect.Result
+			Snapshot *snapshot.Manifest `json:"snapshot,omitempty"`
+		}{Result: result, Snapshot: manifest})
+	}}
+	command.Flags().BoolVar(&full, "full", false, "Force complete inventories and enrichment")
+	command.Flags().BoolVar(&publish, "publish", true, "Publish a standalone snapshot after collection")
+	root.AddCommand(command)
+}
+func addQueries() {
+	var search store.SearchOptions
+	command := &cobra.Command{Use: "search WORDS", Short: "Search local issues and comments", Args: cobra.ExactArgs(1), RunE: func(command *cobra.Command, args []string) error {
+		db, err := open(true)
+		if err != nil {
+			return err
+		}
+		defer closeStore(command.Context(), db)
+		search.Query = args[0]
+		out, err := db.Search(command.Context(), search)
+		if err != nil {
+			return fmt.Errorf("search local mirror: %w", err)
+		}
+		return output(command, out)
+	}}
+	command.Flags().StringVar(&search.Repo, "repo", "", "Filter repository owner/name")
+	command.Flags().StringVar(&search.State, "state", "", "Filter open or closed")
+	command.Flags().StringVar(&search.Label, "label", "", "Filter label name")
+	command.Flags().StringVar(&search.Type, "type", "", "Filter native issue type name")
+	command.Flags().IntVar(&search.Limit, "limit", 30, "Maximum results (1–100)")
+	root.AddCommand(command)
+	for _, kind := range []string{"get", "candidates"} {
+		var repo string
+		var number, limit int
+		command := &cobra.Command{Use: kind, Short: "Read local ticket data or retrieve duplicate candidates", Args: cobra.NoArgs}
+		command.Flags().StringVar(&repo, "repo", "", "Repository owner/name")
+		command.Flags().IntVar(&number, "number", 0, "Issue number")
+		command.Flags().IntVar(&limit, "limit", 30, "Maximum candidate results (1–100)")
+		command.RunE = func(command *cobra.Command, _ []string) error {
+			if !config.ValidRepository(repo) || number < 1 {
+				return fmt.Errorf("valid --repo and positive --number are required")
+			}
+			db, err := open(true)
+			if err != nil {
+				return err
+			}
+			defer closeStore(command.Context(), db)
+			var out any
+			if kind == "get" {
+				out, err = db.Get(command.Context(), repo, number)
+			} else {
+				out, err = db.Candidates(command.Context(), repo, number, limit)
+			}
+			if err != nil {
+				return fmt.Errorf("read local ticket: %w", err)
+			}
+			return output(command, out)
+		}
+		root.AddCommand(command)
+	}
+	var kind, scope string
+	catalog := &cobra.Command{Use: "catalog", Short: "Read labels, milestones, issue fields/types or project catalogs", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+		if kind == "" || scope == "" {
+			return fmt.Errorf("--kind and --scope are required")
+		}
+		db, err := open(true)
+		if err != nil {
+			return err
+		}
+		defer closeStore(command.Context(), db)
+		out, err := db.Catalog(command.Context(), kind, scope)
+		if err != nil {
+			return fmt.Errorf("read local catalog: %w", err)
+		}
+		return output(command, out)
+	}}
+	catalog.Flags().StringVar(&kind, "kind", "", "Catalog name")
+	catalog.Flags().StringVar(&scope, "scope", "", "Repository, owner or owner/project-number")
+	root.AddCommand(catalog)
+	root.AddCommand(&cobra.Command{Use: "status", Short: "Read generation, scope and coverage", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+		db, err := open(true)
+		if err != nil {
+			return err
+		}
+		defer closeStore(command.Context(), db)
+		out, err := db.Status(command.Context())
+		if err != nil {
+			return fmt.Errorf("read local status: %w", err)
+		}
+		return output(command, out)
+	}})
+}
+func addSnapshots() {
+	root.AddCommand(&cobra.Command{Use: "snapshot", Short: "Publish an immutable snapshot of the last successful collection", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+		db, err := open(true)
+		if err != nil {
+			return err
+		}
+		defer closeStore(command.Context(), db)
+		out, err := snapshot.Publish(command.Context(), db, settings.SnapshotDir)
+		if err != nil {
+			return fmt.Errorf("publish snapshot: %w", err)
+		}
+		return output(command, out)
+	}})
+	var source, dest string
+	var repos []string
+	var maxAge time.Duration
+	command := &cobra.Command{Use: "acquire", Short: "Verify and install one private snapshot for a CI job", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+		if len(repos) == 0 {
+			repos = settings.Repositories
+		}
+		if source == "" {
+			source = settings.SnapshotDir + string(os.PathSeparator) + "latest.json"
+		}
+		out, err := snapshot.Acquire(command.Context(), snapshot.Options{Source: source, Destination: dest, Repositories: repos, MaxAge: maxAge, Token: os.Getenv(settings.APITokenEnv)})
+		if err != nil {
+			return fmt.Errorf("acquire CI snapshot: %w", err)
+		}
+		return output(command, out)
+	}}
+	command.Flags().StringVar(&source, "source", "", "Local latest.json or HTTPS /snapshots/latest URL")
+	command.Flags().StringVar(&dest, "dest", "", "Private destination database (required)")
+	command.Flags().StringSliceVar(&repos, "repo", nil, "Exact required repository scope")
+	command.Flags().DurationVar(&maxAge, "max-age", 2*time.Hour, "Maximum collection age")
+	root.AddCommand(command)
+}
+func addServers() {
+	var listen string
+	command := &cobra.Command{Use: "serve", Short: "Serve local REST, MCP HTTP and immutable snapshots", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+		address := listen
+		if address == "" {
+			address = settings.Listen
+		}
+		token := os.Getenv(settings.APITokenEnv)
+		if err := service.ValidateListen(address, token); err != nil {
+			return fmt.Errorf("validate HTTP listener: %w", err)
+		}
+		db, err := open(true)
+		if err != nil {
+			return err
+		}
+		defer closeStore(command.Context(), db)
+		svc := &service.Service{Store: db, SnapshotDir: settings.SnapshotDir, Token: token, Version: Version}
+		listener, err := net.Listen("tcp", address)
+		if err != nil {
+			return fmt.Errorf("listen: %w", err)
+		}
+		defer func() {
+			if err := listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				slog.Log(command.Context(), diagnostics.TraceLevel, "close listener", "error", err)
+			}
+		}()
+		if _, err := fmt.Fprintln(command.ErrOrStderr(), service.Address(listener)); err != nil {
+			return fmt.Errorf("write listening address: %w", err)
+		}
+		slog.Log(command.Context(), diagnostics.TraceLevel, service.Address(listener))
+		server := &http.Server{Handler: svc.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 5 * time.Minute, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 32768}
+		done := make(chan struct{})
+		stopped := make(chan struct{})
+		go func() {
+			defer close(stopped)
+			select {
+			case <-command.Context().Done():
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				if err := server.Shutdown(shutdownCtx); err != nil {
+					slog.Warn("shut down HTTP server", "error", err)
+					if err := server.Close(); err != nil {
+						slog.Log(context.Background(), diagnostics.TraceLevel, "close HTTP server", "error", err)
+					}
+				}
+			case <-done:
+			}
+		}()
+		err = server.Serve(listener)
+		close(done)
+		<-stopped
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return fmt.Errorf("serve HTTP: %w", err)
+		}
+		return nil
+	}}
+	command.Flags().StringVar(&listen, "listen", "", "Override listening address")
+	root.AddCommand(command)
+	root.AddCommand(&cobra.Command{Use: "mcp", Short: "Serve local read tools over MCP stdio", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+		db, err := open(true)
+		if err != nil {
+			return err
+		}
+		defer closeStore(command.Context(), db)
+		svc := &service.Service{Store: db, Version: Version}
+		return svc.RunMCP(command.Context())
+	}})
 }
