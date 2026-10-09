@@ -128,6 +128,19 @@ func (s *Store) Close() error {
 // Writer performs collection changes within one immediate transaction.
 type Writer struct{ tx *sql.Tx }
 
+// Metadata reads an optional collector setting within the current transaction.
+func (w *Writer) Metadata(ctx context.Context, key string) (string, error) {
+	var value string
+	err := w.tx.QueryRowContext(ctx, "SELECT value FROM metadata WHERE key=?", key).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read collector metadata %s: %w", key, err)
+	}
+	return value, nil
+}
+
 // Update commits all changes together or rolls them back when collection fails.
 func (s *Store) Update(ctx context.Context, update func(*Writer) error) error {
 	tx, err := s.db.BeginTx(ctx, nil)

@@ -75,6 +75,8 @@ func syncVersion(ctx context.Context, db *store.Store, c config.Config, options 
 	}
 	var pending *checkpoint.Store
 	var signature string
+	token := os.Getenv(c.TokenEnv)
+	identity := credentialIdentity(c, token)
 	pendingPath := db.Path + ".sync.sqlite"
 	err = db.Update(ctx, func(w *store.Writer) error {
 		old, err := w.Status(ctx)
@@ -82,12 +84,21 @@ func syncVersion(ctx context.Context, db *store.Store, c config.Config, options 
 			return fmt.Errorf("load collector checkpoints: %w", err)
 		}
 		incompatible := old.Generation != "" && old.CollectionVersion != version
+		priorIdentity, err := w.Metadata(ctx, "credential_identity")
+		if err != nil {
+			return fmt.Errorf("read credential scope: %w", err)
+		}
+		credentialsChanged := old.Generation != "" && priorIdentity != identity
+		if credentialsChanged {
+			full = true
+			report.Send(progress.Event{Phase: "Credential scope changed or unknown; full sync required"})
+		}
 		if incompatible {
 			full = true
 			report.Send(progress.Event{Phase: "Collection version changed; full sync required", Scope: fmt.Sprintf("v%d -> v%d", old.CollectionVersion, version)})
 			slog.DebugContext(ctx, "rebuild incompatible collection", "previous", old.CollectionVersion, "current", version)
 		}
-		signature, err = sessionSignature(c, repos, old.Generation, full, os.Getenv(c.TokenEnv), version)
+		signature, err = sessionSignature(c, repos, old.Generation, full, token, version)
 		if err != nil {
 			return err
 		}
@@ -120,7 +131,7 @@ func syncVersion(ctx context.Context, db *store.Store, c config.Config, options 
 				refresh = true
 			}
 		}
-		if err := w.ResetScope(ctx, repos, refresh, incompatible || old.Upstream != strings.TrimRight(c.APIURL, "/")); err != nil {
+		if err := w.ResetScope(ctx, repos, refresh, incompatible || credentialsChanged || old.Upstream != strings.TrimRight(c.APIURL, "/")); err != nil {
 			return fmt.Errorf("reset collection scope: %w", err)
 		}
 		if err := w.PruneResponseCache(ctx, c.Fields, c.Projects); err != nil {
@@ -130,7 +141,7 @@ func syncVersion(ctx context.Context, db *store.Store, c config.Config, options 
 		if err := w.EnsureLabelIndex(ctx); err != nil {
 			return fmt.Errorf("prepare label search index: %w", err)
 		}
-		client := github.New(c.APIURL, c.GraphQLURL, os.Getenv(c.TokenEnv), c.MaxRequests, c.Workers, w)
+		client := github.New(c.APIURL, c.GraphQLURL, token, c.MaxRequests, c.Workers, w)
 		client.Progress = report
 		client.Checkpoint = pending
 		owners := map[string]bool{}
@@ -339,7 +350,7 @@ func syncVersion(ctx context.Context, db *store.Store, c config.Config, options 
 				return err
 			}
 		}
-		for key, value := range map[string]string{"upstream": strings.TrimRight(c.APIURL, "/"), "repositories": string(scope), "generation": rand.Text(), "collected_at": started.Format(time.RFC3339Nano), "collection_version": strconv.Itoa(version)} {
+		for key, value := range map[string]string{"upstream": strings.TrimRight(c.APIURL, "/"), "repositories": string(scope), "generation": rand.Text(), "collected_at": started.Format(time.RFC3339Nano), "collection_version": strconv.Itoa(version), "credential_identity": identity} {
 			if err := w.SetMetadata(ctx, key, value); err != nil {
 				return err
 			}

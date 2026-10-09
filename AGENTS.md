@@ -54,6 +54,11 @@ new version only when collection commits; cancellation or failure preserves the
 previous mirror and resumes completed fetches for the target version. Compatible
 code changes do not bump this version or force collection. Physical SQL schema
 changes remain subject to the separate schema compatibility checks.
+Persist an opaque hash of upstream endpoints and credentials only after successful
+sync. A changed or missing identity in a committed mirror forces a resumable full
+inventory and enrichment rebuild with cleared conditional caches. Do not expose
+the identity through status or exported snapshots. Permission changes on the same
+token still require explicit full sync or scheduled reconciliation.
 
 Workers share concurrency permits, budget reservations, retry pauses, and serialized
 progress callbacks. Parallelize independent listings and hydration batches; follow

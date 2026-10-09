@@ -11,6 +11,10 @@ import (
 
 const checkpointVersion = 1
 
+func credentialIdentity(c config.Config, token string) string {
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(c.APIURL+"\x00"+c.GraphQLURL+"\x00"+token)))
+}
+
 func sessionSignature(c config.Config, repos []string, generation string, full bool, token string, version int) (string, error) {
 	contract := version
 	if version == store.LegacyCollectionVersion {
