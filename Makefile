@@ -2,7 +2,7 @@ BINARY := gh-mirror
 export PATH := $(PATH):$(shell go env GOPATH)/bin
 .NOTPARALLEL:
 
-.PHONY: build check fmt vet test lint standards
+.PHONY: build check fmt vet test lint standards release
 build:
 	@command -v monova >/dev/null || { echo 'Install monova: grm install jsnjack/monova'; exit 1; }
 	@mkdir -p bin
@@ -19,6 +19,8 @@ lint:
 	@command -v golangci-lint >/dev/null || { echo 'Install golangci-lint: grm install golangci/golangci-lint'; exit 1; }
 	golangci-lint run
 check: fmt vet build test lint
+release: build
+	./scripts/package.sh "$$(monova)"
 standards:
 	@for name in AGENTS.universal.md AGENTS.go.md; do \
 	  curl --fail --silent --show-error --location "https://raw.githubusercontent.com/jsnjack/standards/master/$$name" -o "$$name.tmp" && mv "$$name.tmp" "$$name" || exit $$?; \

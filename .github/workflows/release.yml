@@ -1,0 +1,62 @@
+name: Release
+on:
+  push:
+    tags: ['v*.*.*']
+permissions:
+  contents: read
+jobs:
+  check:
+    uses: ./.github/workflows/check.yml
+  build:
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: actions/checkout@v6
+        with:
+          repository: jsnjack/monova
+          ref: v2.1.0
+          path: .tools/monova
+          persist-credentials: false
+      - name: Package release binaries
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          mkdir -p "$(go env GOPATH)/bin"
+          go build -C .tools/monova -o "$(go env GOPATH)/bin/monova" .
+          make release
+          test "$(bin/gh-mirror --version)" = "${RELEASE_TAG#v}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-binaries
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-binaries
+          path: dist
+      - name: Verify and publish release assets
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          sha256sum --check checksums.txt
+          gh release create "$RELEASE_TAG" --verify-tag --generate-notes ./*.tar.gz checksums.txt
