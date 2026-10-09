@@ -15,6 +15,12 @@ import (
 
 var repositoryPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 
+// DefaultWorkers bounds concurrent GitHub requests in a normal sync.
+const DefaultWorkers = 4
+
+// MaxWorkers caps user-configured fetch concurrency.
+const MaxWorkers = 16
+
 // Config defines collection scope, paths, and environment variable names.
 type Config struct {
 	Repositories       []string `json:"repositories"`
@@ -28,6 +34,7 @@ type Config struct {
 	Fields             bool     `json:"fields"`
 	Projects           bool     `json:"projects"`
 	MaxRequests        int      `json:"max_requests"`
+	Workers            int      `json:"workers"`
 	Overlap            string   `json:"overlap"`
 	EnrichmentInterval string   `json:"enrichment_interval"`
 	ReconcileInterval  string   `json:"reconcile_interval"`
@@ -53,7 +60,7 @@ func Load(path string, explicit bool) (Config, error) {
 		dataDir = filepath.Join(home, ".local", "share")
 	}
 	dataDir = filepath.Join(dataDir, "gh-mirror")
-	c := Config{Database: filepath.Join(dataDir, "state.sqlite"), SnapshotDir: filepath.Join(dataDir, "snapshots"), APIURL: "https://api.github.com", GraphQLURL: "https://api.github.com/graphql", TokenEnv: "GITHUB_TOKEN", APITokenEnv: "GH_MIRROR_API_TOKEN", Listen: "127.0.0.1:8787", Fields: true, Projects: true, MaxRequests: 3000, Overlap: "5m", EnrichmentInterval: "1h", ReconcileInterval: "24h"}
+	c := Config{Database: filepath.Join(dataDir, "state.sqlite"), SnapshotDir: filepath.Join(dataDir, "snapshots"), APIURL: "https://api.github.com", GraphQLURL: "https://api.github.com/graphql", TokenEnv: "GITHUB_TOKEN", APITokenEnv: "GH_MIRROR_API_TOKEN", Listen: "127.0.0.1:8787", Fields: true, Projects: true, MaxRequests: 3000, Workers: DefaultWorkers, Overlap: "5m", EnrichmentInterval: "1h", ReconcileInterval: "24h"}
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) && !explicit {
@@ -92,6 +99,9 @@ func Load(path string, explicit bool) (Config, error) {
 
 // Validate checks settings before any database or network operation.
 func (c Config) Validate() error {
+	if c.Workers < 1 || c.Workers > MaxWorkers {
+		return fmt.Errorf("workers must be between 1 and %d", MaxWorkers)
+	}
 	seen := map[string]bool{}
 	for _, repo := range c.Repositories {
 		if !ValidRepository(repo) || seen[strings.ToLower(repo)] {

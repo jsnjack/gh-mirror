@@ -13,6 +13,7 @@ const FetchingComments = "Fetching comments"
 type Event struct {
 	Phase        string
 	Scope        string
+	Resource     string
 	Page         int
 	Records      int
 	Completed    int
@@ -20,11 +21,16 @@ type Event struct {
 	Advance      int
 	Repository   int
 	Repositories int
+	Resumed      int
+	Saved        int
 	Requests     int
 	Limit        int
 	Remaining    string
 	Cached       bool
 	Wait         time.Duration
+	WaitUntil    time.Time
+	Active       int
+	Workers      int
 }
 
 // Reporter receives activity synchronously; a nil reporter disables reporting.

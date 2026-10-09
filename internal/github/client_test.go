@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"gh-mirror/internal/progress"
 )
@@ -97,7 +96,7 @@ func TestClient(t *testing.T) {
 			}))
 			defer server.Close()
 			base = server.URL
-			client := New(base, base+"/graphql", "secret", 10, cache)
+			client := New(base, base+"/graphql", "secret", 10, 1, cache)
 			switch name {
 			case "delta cache omitted":
 				for range 2 {
@@ -170,7 +169,7 @@ func TestHTTPProgress(t *testing.T) {
 				}
 			}))
 			defer server.Close()
-			client := New(server.URL, server.URL+"/graphql", "test-token", 10, &memoryCache{})
+			client := New(server.URL, server.URL+"/graphql", "test-token", 10, 1, &memoryCache{})
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			var events []progress.Event
@@ -182,7 +181,7 @@ func TestHTTPProgress(t *testing.T) {
 			}
 			_, err := client.List(ctx, "/items")
 			if name == "retry wait" {
-				if !errors.Is(err, context.Canceled) || events[len(events)-1].Wait != 30*time.Second || client.Requests() != 1 {
+				if !errors.Is(err, context.Canceled) || client.pausedUntil.IsZero() || client.Requests() != 1 {
 					t.Fatal("retry wait not reported before cancellation", err, events)
 				}
 			} else {

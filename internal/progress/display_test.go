@@ -131,6 +131,35 @@ func TestDisplay(t *testing.T) {
 	}
 }
 
+func TestParallelProgress(t *testing.T) {
+	t.Run("interleaved pages and shared counters", func(t *testing.T) {
+		var output lockedBuffer
+		display, err := newDisplay(&output, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		display.Report(Event{Phase: "Fetching issues and comments", Scope: "o/r", Saved: 5})
+		for _, event := range []Event{
+			{Resource: FetchingIssues, Scope: "o/r", Page: 1, Records: 100},
+			{Resource: FetchingComments, Scope: "o/r", Page: 1, Records: 100},
+			{Resource: FetchingIssues, Scope: "o/r", Page: 2, Records: 125},
+			{Resource: FetchingComments, Scope: "o/r", Page: 2, Records: 150},
+			{Requests: 8, Limit: 20, Workers: 4, Active: 3, Resumed: 5},
+			{Requests: 7, Limit: 20, Workers: 4, Active: 2, Resumed: 4},
+		} {
+			display.Report(event)
+		}
+		if err := display.Finish(nil); err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{"125 issues, 150 comments", "8/20 requests", "workers 2/4", "5 resumed"} {
+			if !strings.Contains(output.String(), want) {
+				t.Fatal("incorrect parallel counters", want, output.String())
+			}
+		}
+	})
+}
+
 type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }

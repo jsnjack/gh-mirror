@@ -77,7 +77,7 @@ func syncAt(ctx context.Context, db *store.Store, c config.Config, full bool, st
 		if err := w.ResetScope(ctx, repos, refresh, old.Upstream != strings.TrimRight(c.APIURL, "/")); err != nil {
 			return fmt.Errorf("reset collection scope: %w", err)
 		}
-		client := github.New(c.APIURL, c.GraphQLURL, os.Getenv(c.TokenEnv), c.MaxRequests, w)
+		client := github.New(c.APIURL, c.GraphQLURL, os.Getenv(c.TokenEnv), c.MaxRequests, c.Workers, w)
 		client.Progress = report
 		owners := map[string]bool{}
 		ownerTypes := map[string]bool{}

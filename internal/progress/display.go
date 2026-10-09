@@ -30,11 +30,15 @@ type Display struct {
 	interactive              bool
 	started, printed, until  time.Time
 	phase, scope, remaining  string
+	resource                 string
+	received                 map[string]int
 	page, records            int
 	done, total              int
 	issues, comments         int
 	repository, repositories int
 	requests, limit, cached  int
+	active, workers          int
+	resumed, saved           int
 	lines, frame             int
 	err                      error
 	stop, stopped            chan struct{}
@@ -51,7 +55,7 @@ func New(writer io.Writer, animate bool) (*Display, error) {
 }
 
 func newDisplay(writer io.Writer, interactive bool) (*Display, error) {
-	d := &Display{writer: writer, interactive: interactive, started: time.Now(), phase: "Opening database", stop: make(chan struct{}), stopped: make(chan struct{})}
+	d := &Display{writer: writer, interactive: interactive, started: time.Now(), phase: "Opening database", received: map[string]int{}, stop: make(chan struct{}), stopped: make(chan struct{})}
 	d.render(time.Now(), "")
 	if d.err != nil {
 		return nil, d.err
@@ -87,15 +91,24 @@ func (d *Display) Report(event Event) {
 	if event.Phase != "" {
 		if changed {
 			d.page, d.records, d.done, d.total = 0, 0, 0, 0
+			d.resource = ""
 		}
 		d.phase, d.scope = clean(event.Phase), clean(event.Scope)
 	}
 	if event.Page > 0 {
-		switch d.phase {
+		resource, previous := d.phase, d.records
+		if event.Resource != "" {
+			resource = event.Resource
+			key := event.Scope + "/" + resource
+			previous = d.received[key]
+			d.received[key] = event.Records
+			d.resource = clean(resource)
+		}
+		switch resource {
 		case FetchingIssues:
-			d.issues += event.Records - d.records
+			d.issues += event.Records - previous
 		case FetchingComments:
-			d.comments += event.Records - d.records
+			d.comments += event.Records - previous
 		}
 		d.page, d.records = event.Page, event.Records
 	}
@@ -107,9 +120,17 @@ func (d *Display) Report(event Event) {
 		d.repository, d.repositories = event.Repository, event.Repositories
 	}
 	if event.Requests > 0 {
-		d.requests = event.Requests
-		d.until = time.Time{}
+		d.requests = max(d.requests, event.Requests)
+		if event.Workers == 0 {
+			d.until = time.Time{}
+		}
 	}
+	if event.Workers > 0 {
+		d.active, d.workers = event.Active, event.Workers
+		d.until = event.WaitUntil
+	}
+	d.resumed = max(d.resumed, event.Resumed)
+	d.saved = max(d.saved, event.Saved)
 	if event.Limit > 0 {
 		d.limit = event.Limit
 	}
@@ -120,7 +141,9 @@ func (d *Display) Report(event Event) {
 		d.cached++
 	}
 	if event.Wait > 0 {
-		d.until = time.Now().Add(event.Wait)
+		if event.WaitUntil.IsZero() {
+			d.until = time.Now().Add(event.Wait)
+		}
 	}
 	if changed || event.Wait > 0 || (d.total > 0 && d.done == d.total) || time.Since(d.printed) >= time.Second {
 		d.render(time.Now(), "")
@@ -143,7 +166,7 @@ func (d *Display) Finish(result error) error {
 	defer d.mu.Unlock()
 	status := "Sync complete"
 	if errors.Is(result, context.Canceled) {
-		status = "Sync cancelled"
+		status = "Sync cancelled; rerun sync to resume"
 	} else if result != nil {
 		status = "Sync failed"
 	}
@@ -161,24 +184,36 @@ func (d *Display) render(now time.Time, status string) {
 		activity += " | " + d.scope
 	}
 	if d.page > 0 {
+		if d.resource != "" {
+			activity += " | " + d.resource
+		}
 		activity += fmt.Sprintf(" | page %d, %d records", d.page, d.records)
 	}
 	if d.total > 0 {
 		filled := min(d.done, d.total) * barWidth / d.total
 		activity += fmt.Sprintf(" | [%s%s] %d/%d", strings.Repeat("=", filled), strings.Repeat("-", barWidth-filled), d.done, d.total)
 	}
-	if !d.until.IsZero() {
+	if now.Before(d.until) {
 		activity += fmt.Sprintf(" | retry wait %s", max(time.Duration(0), d.until.Sub(now)).Round(time.Second))
 	}
 	counters := fmt.Sprintf("Received: %d issues, %d comments", d.issues, d.comments)
 	if d.repositories > 0 {
 		counters += fmt.Sprintf(" | repository %d/%d", d.repository, d.repositories)
 	}
+	if d.workers > 0 {
+		counters += fmt.Sprintf(" | workers %d/%d", d.active, d.workers)
+	}
 	requests := fmt.Sprintf("API: %d", d.requests)
 	if d.limit > 0 {
 		requests += fmt.Sprintf("/%d", d.limit)
 	}
 	requests += fmt.Sprintf(" requests | %d cached", d.cached)
+	if d.saved > 0 || d.resumed > 0 {
+		requests += fmt.Sprintf(" | %d resumed", d.resumed)
+	}
+	if d.saved > 0 && d.resumed < d.saved {
+		requests += fmt.Sprintf("/%d saved", d.saved)
+	}
 	if d.remaining != "" {
 		requests += " | GitHub remaining: " + d.remaining
 	}

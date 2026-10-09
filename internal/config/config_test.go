@@ -8,7 +8,7 @@ import (
 )
 
 func TestConfiguration(t *testing.T) {
-	for _, name := range []string{"XDG defaults", "explicit missing", "valid", "unknown key", "null", "two objects", "invalid repository", "duplicate repository", "unsafe API", "invalid duration"} {
+	for _, name := range []string{"XDG defaults", "explicit missing", "valid", "unknown key", "null", "two objects", "invalid repository", "duplicate repository", "unsafe API", "invalid duration", "invalid workers zero", "invalid workers high", "workers override"} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 			t.Setenv("XDG_DATA_HOME", filepath.Join(dir, "data"))
@@ -53,6 +53,12 @@ func TestConfiguration(t *testing.T) {
 				c.Repositories = []string{"o/r", "O/R"}
 			case "unsafe API":
 				c.APIURL = "http://example.com"
+			case "invalid workers zero":
+				c.Workers = 0
+			case "invalid workers high":
+				c.Workers = MaxWorkers + 1
+			case "workers override":
+				c.Workers = 8
 			case "invalid duration":
 				c.EnrichmentInterval = "0s"
 			}
@@ -60,6 +66,9 @@ func TestConfiguration(t *testing.T) {
 			invalid := strings.HasPrefix(name, "invalid") || name == "duplicate repository" || name == "unsafe API"
 			if (err != nil) != invalid {
 				t.Fatal("validation", err)
+			}
+			if name == "XDG defaults" && c.Workers != DefaultWorkers {
+				t.Fatal("missing worker default", c.Workers)
 			}
 			if name == "XDG defaults" && !strings.HasPrefix(c.Database, filepath.Join(dir, "data")) {
 				t.Fatal(c.Database)
