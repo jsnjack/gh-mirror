@@ -78,8 +78,17 @@ the identity through status or exported snapshots. Permission changes on the sam
 token still require explicit full sync or scheduled reconciliation.
 
 Workers share concurrency permits, budget reservations, retry pauses, and serialized
-progress callbacks. Parallelize independent listings and hydration batches; follow
-dependent pagination sequentially. Apply hydration results serially and join workers
+progress callbacks. Parallelize independent listings, advertised numbered REST page
+ranges and hydration batches; follow cursor-dependent or unknown-range pagination
+sequentially. Preserve page-link query ordering for exact-URL checkpoint reuse.
+Validate origins, page-series parameters and contiguous next links, and assemble
+results in page order while reporting completed-page counts. Follow a growing tail
+from its next link; reject inconsistent pagination rather than commit a partial
+inventory. Discard only invalid page checkpoints and the range seed when its plan
+needs rediscovery. Keep collection/session compatibility unchanged for scheduling.
+Persist updated pagination headers from 304 responses when supplied, retaining
+cached links when the response omits them.
+Apply hydration results serially and join workers
 before ending the collection transaction. One worker must support serial collection.
 Save completed responses in the private `<database>.sync.sqlite` checkpoint with
 FULL synchronous durability, including delta pages. This temporary resume store is

@@ -225,6 +225,9 @@ func (c *Client) get(ctx context.Context, target string) (cachedResponse, error)
 		if len(cached.Body) == 0 {
 			return cached, fmt.Errorf("GitHub returned 304 without cached response")
 		}
+		if links, present := headers["Link"]; present {
+			cached.Link = strings.Join(links, ",")
+		}
 		encoded, err := json.Marshal(cached)
 		if err != nil {
 			return cached, fmt.Errorf("encode saved conditional response: %w", err)
@@ -232,7 +235,7 @@ func (c *Client) get(ctx context.Context, target string) (cachedResponse, error)
 		if err := c.save(ctx, key, encoded); err != nil {
 			return cached, err
 		}
-		return cached, nil
+		return cached, c.remember(ctx, target, cached, encoded)
 	}
 	if !json.Valid(body) {
 		return cached, fmt.Errorf("GitHub returned invalid JSON")
@@ -271,74 +274,6 @@ func (c *Client) Get(ctx context.Context, path string) (json.RawMessage, error) 
 		return nil, fmt.Errorf("fetch %s: %w", path, err)
 	}
 	return out.Body, nil
-}
-
-// List follows every REST next link, rejecting cycles and foreign origins.
-func (c *Client) List(ctx context.Context, path string) ([]json.RawMessage, error) {
-	return c.ListWithProgress(ctx, path, progress.Event{})
-}
-
-// ListWithProgress identifies a listing so parallel page counters remain independent.
-func (c *Client) ListWithProgress(ctx context.Context, path string, activity progress.Event) ([]json.RawMessage, error) {
-	target := c.api + path
-	base, err := url.Parse(target)
-	if err != nil {
-		return nil, fmt.Errorf("parse listing URL: %w", err)
-	}
-	apiBase, err := url.Parse(c.api)
-	if err != nil {
-		return nil, fmt.Errorf("parse API base: %w", err)
-	}
-	apiPrefix := strings.TrimRight(apiBase.Path, "/") + "/"
-	seen := map[string]bool{}
-	out := []json.RawMessage{}
-	for target != "" {
-		if seen[target] {
-			return nil, fmt.Errorf("repeated GitHub pagination URL")
-		}
-		seen[target] = true
-		page, err := c.get(ctx, target)
-		if err != nil {
-			return nil, fmt.Errorf("list %s page %d: %w", base.Path, len(seen), err)
-		}
-		var items []json.RawMessage
-		if err := json.Unmarshal(page.Body, &items); err != nil || items == nil {
-			return nil, fmt.Errorf("expected GitHub array at %s", base.Path)
-		}
-		out = append(out, items...)
-		activity.Page, activity.Records = len(seen), len(out)
-		c.Report(activity)
-		target = ""
-		for _, link := range strings.Split(page.Link, ",") {
-			segments := strings.Split(strings.TrimSpace(link), ";")
-			if len(segments) < 2 {
-				continue
-			}
-			next := false
-			for _, segment := range segments[1:] {
-				if strings.TrimSpace(segment) == `rel="next"` {
-					next = true
-				}
-			}
-			if !next {
-				continue
-			}
-			candidate, err := url.Parse(strings.Trim(strings.TrimSpace(segments[0]), "<>"))
-			if err != nil {
-				return nil, fmt.Errorf("parse next page: %w", err)
-			}
-			candidate = base.ResolveReference(candidate)
-			// GitHub may switch /repos/owner/name to /repositories/id in next links.
-			if candidate.Scheme != base.Scheme || candidate.Host != base.Host || !strings.HasPrefix(candidate.Path, apiPrefix) || candidate.User != nil || candidate.Fragment != "" {
-				return nil, fmt.Errorf("unsafe GitHub pagination URL")
-			}
-			if target != "" {
-				return nil, fmt.Errorf("multiple GitHub next links")
-			}
-			target = candidate.String()
-		}
-	}
-	return out, nil
 }
 
 // GraphQL executes a query document and rejects all partial-error responses.
