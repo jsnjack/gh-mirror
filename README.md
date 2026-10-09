@@ -283,10 +283,41 @@ gh-mirror search 'Acme' --repo owner/repository
 gh-mirror search 'timeout' --project owner/1 --kind issue
 ```
 
-Queries return JSON on stdout. Search treats words literally, joins them with OR,
-and returns the best matching issue, labels, or comment per ticket, with a source URL,
-snippet, and text relevance score. Filters select repository, state, label, and
-native issue type, resource kind, and project membership. Results include mirror status so consumers can check freshness.
+Queries return JSON on stdout. The default `--match any` joins literal words with
+OR. `--match all` requires every word somewhere in the selected ticket: a label and
+a separate comment can satisfy it together. `--match phrase` requires consecutive
+words in one source. Punctuation is tokenized; operators in the query are literal
+words. Queries exceeding 32 terms or 16,384 bytes fail explicitly.
+
+```sh
+gh-mirror search 'Acme timeout' --match all --count --facets
+gh-mirror search 'socket timeout' --match phrase --in body --in comments
+gh-mirror search 'auth' --prefix --in title --exclude-word deprecated
+gh-mirror search 'timeout' --repositories owner/support --repositories owner/code --limit 20
+```
+
+`--prefix` matches word prefixes; in phrase mode it applies only to the final word.
+`--in` selects title, body, labels, discussion comments (`comments`) or inline
+review comments (`reviews`). Repeat it to select several sources; omitting it
+searches all. Excluded words apply across the selected sources of the whole ticket.
+
+Search returns compact summaries by default. Each match contains the legacy title,
+URL, source, snippet and BM25 score, plus labels, assignees, issue type, milestone,
+author, project identities and timestamps under `summary`. `evidence` contains up
+to three matching sources with the field, excerpt, URL and comment identity/time.
+Inline review evidence also includes stored file/line context and at most 1,024
+characters of diff context. `--evidence-limit` accepts 1–10. Use `--view full` to add
+raw ticket records, fields and memberships; comments are retrieved separately.
+
+Search and listing return `has_more`, `next_cursor`, collection `status` and
+structured `warnings`. Follow the cursor using the same query options; page size
+can change. A changed generation requires restarting or querying an immutable
+snapshot. `--count` adds `total` over all matching tickets before pagination.
+`--facets` adds label/type/project counts over that same set, capped at 100 values
+per facet with `truncated` indicating omitted values. These aggregate operations
+are opt-in. Warnings identify uncollected repositories, disabled requested
+resources and stale enrichment; `--max-enrichment-age 2h` changes the default
+24-hour warning threshold for requested fields/projects.
 
 `score` uses SQLite FTS5's [BM25 ranking](https://www.sqlite.org/fts5.html#the_bm25_function).
 Lower, more negative scores rank first. Titles and label names have a weight of five and
@@ -308,11 +339,37 @@ gh-mirror list --kind pull_request --project owner/1 --limit 100
 gh-mirror list --repo owner/repository --label 'client:Acme' --limit 100 --cursor "$next_cursor"
 ```
 
-Pages contain raw ticket records, fields and extra metadata, ordered by repository
-and ticket number. `next_cursor` is empty on the final page. Cursors pin the mirror
-generation and filters; after a sync, restart enumeration or use an immutable
-snapshot. Use `get` to retrieve a ticket's discussion and enabled review comments.
+Listing preserves full raw records by default; `--view summary` omits them and
+returns common metadata. Default ordering is repository and ticket number.
+Search defaults to relevance. Both support `--sort number`, `--sort updated` and
+`--sort created`, with `--order asc` or `desc`; timestamps default to descending,
+number/relevance to ascending. Ties use repository/number for stable continuation.
 Project filters include archived memberships and use `owner/project-number`.
+
+Search and listing share these filters:
+
+| CLI flag | REST/MCP field | Meaning |
+| --- | --- | --- |
+| `--repo` | `repo` | One repository |
+| `--repositories` | `repositories` | Any of these repositories; repeat |
+| `--state`, `--kind`, `--type` | `state`, `kind`, `type` | Ticket state, issue/PR kind, exact native type |
+| `--label`, `--labels-all` | `label`, `labels_all` | Require every exact label; repeat `labels-all` |
+| `--labels-any` | `labels_any` | Require any listed exact label; repeat |
+| `--exclude-label` | `exclude_labels` | Exclude each exact label; repeat |
+| `--author` | `author` | Ticket author login |
+| `--assignee` | `assignees` | Any selected assignee login; repeat |
+| `--milestone` | `milestone` | Exact milestone title or number |
+| `--created-after`, `--created-before` | `created_after`, `created_before` | Inclusive RFC3339 creation bounds |
+| `--updated-after`, `--updated-before` | `updated_after`, `updated_before` | Inclusive RFC3339 update bounds |
+| `--project` | `project` | Project membership owner/number |
+| `--field 'Priority=High'` | REST: `field=Priority=High`; MCP: `field_values` | Require every collected field predicate; repeat |
+
+MCP array fields accept JSON arrays. REST array fields use repeated parameters;
+repeated `repo` parameters also select multiple repositories. MCP `field_values`
+is an array of `{"name":"Priority","value":"High"}`. Native fields match text,
+date and number values or selection option names. Singular and compound predicates
+combine with AND; assignees and `labels_any` combine with OR within their lists.
+Project membership filters do not change text ranking.
 
 Read a complete issue with its comments and collected metadata, or retrieve
 possible duplicates:
@@ -322,9 +379,32 @@ gh-mirror get --repo owner/repository --number 123
 gh-mirror candidates --repo owner/repository --number 123 --limit 30
 ```
 
-Candidates use the seed issue's title and body to find similar text in the same
-repository. They include closed issues and exclude the seed. Scores measure text
-relevance, not duplicate probability; review the returned evidence before acting.
+Candidates select up to 24 distinctive seed terms using local ticket frequency.
+Titles receive more weight than descriptions, repeated boilerplate is de-duplicated,
+and technical acronyms/error identifiers such as CSS, API and 403 are retained.
+Attached seed labels contribute by default; use `--include-labels=false` to exclude
+them. Recent seed comments are opt-in and bounded by `--comment-limit` (default 20,
+maximum 100). Candidates include closed history and exclude the seed.
+
+```sh
+gh-mirror candidates --repo owner/support --number 123 --include-comments --count
+gh-mirror candidates --repo owner/support --number 123 --repositories owner/support --repositories owner/code
+gh-mirror get --repo owner/repository --number 123 --view summary
+gh-mirror get --repo owner/repository --number 123 --comments none
+gh-mirror get --repo owner/repository --number 123 --comments page --limit 20
+gh-mirror comments --repo owner/repository --number 123 --kind review --limit 20
+gh-mirror batch owner/repository#123 owner/repository#456
+```
+
+`get` retains the legacy full ticket and all comments by default. Summary view
+omits comments by default; explicit `--comments none`, `page` or `all` controls
+inclusion. Paged comments appear in `comment_page`. The `comments` command supports
+`--kind all|discussion|review`, creation order and generation-bound cursors.
+Summary comment previews stop at 1,024 Unicode characters and report `truncated`;
+`--view full` preserves complete text and raw JSON. Comment IDs are strings, keeping
+large numeric IDs intact and distinguishing discussion/review kinds. `batch` reads
+up to 100 identities from one generation without comments, defaults to summaries,
+and returns explicit `missing` identities. Repeat identities are de-duplicated.
 
 Inspect labels, milestones, native issue types/fields, or project data:
 
@@ -332,6 +412,8 @@ Inspect labels, milestones, native issue types/fields, or project data:
 gh-mirror catalog --kind labels --scope owner/repository
 gh-mirror catalog --kind issue_fields --scope owner
 gh-mirror catalog --kind projects --scope owner
+# Enable bounded catalog pages; continue with --cursor from next_cursor:
+gh-mirror catalog --kind labels --scope owner/repository --limit 30
 ```
 
 | Catalog kinds | Scope |
@@ -368,18 +450,35 @@ curl 'http://127.0.0.1:8787/v1/search?q=socket+timeout&repo=owner/repository'
 curl 'http://127.0.0.1:8787/v1/issues/owner/repository/123'
 ```
 
-| GET endpoint | Purpose |
+| Endpoint | Purpose |
 | --- | --- |
 | `/health` | Health check |
 | `/v1/status` | Generation, scope, coverage, and freshness |
-| `/v1/search?q=...` | Search; supports `repo`, `state`, `label`, `type`, `kind`, `project`, and `limit` |
-| `/v1/issues` | Paginated listing; same filters plus `cursor`, without `q` |
-| `/v1/issues/{owner}/{repo}/{number}` | Issue, comments, and metadata |
-| `/v1/catalog?kind=...&scope=...` | Catalog data |
+| `GET /v1/search?q=...` | Search modes, source selection, shared filters, sorting, evidence, counts/facets and cursor |
+| `GET /v1/issues` | Paginated listing with shared filters, projection and ordering |
+| `GET /v1/issues/{owner}/{repo}/{number}` | Ticket; `view`, `comments`, `limit`, `cursor`, `comment_kind` control size |
+| `GET /v1/issues/{owner}/{repo}/{number}/comments` | Bounded comments; `kind`, `view`, `order`, `limit`, `cursor` |
+| `POST /v1/issues/batch` | Up to 100 ticket identities; JSON `tickets` and optional `view` |
+| `GET /v1/catalog?kind=...&scope=...` | Add `limit`/`cursor` for bounded pages; legacy calls return the full catalog |
 | `/v1/projects?owner=...&number=...` | Project catalog record and collection status |
 | `/v1/candidates?repo=...&number=...&limit=...` | Possible duplicate issues |
 | `/snapshots/latest` | Latest snapshot manifest |
 | `/snapshots/{filename}` | Immutable snapshot file |
+
+REST uses `match`, `prefix`, repeated `in` and `exclude_words` parameters for search.
+`count` and `facets` are booleans. For example:
+
+```sh
+curl 'http://127.0.0.1:8787/v1/search?q=Acme+timeout&match=all&count=true&facets=true&limit=20'
+curl 'http://127.0.0.1:8787/v1/issues/owner/repository/123?view=summary'
+curl -X POST 'http://127.0.0.1:8787/v1/issues/batch' -H 'Content-Type: application/json' \
+  --data '{"tickets":[{"repo":"owner/repository","number":123}],"view":"summary"}'
+```
+
+Errors contain `error` and a machine-readable `code`: invalid input is HTTP 400
+(`invalid_query`), missing resources 404 (`not_found`), stale generation cursors 409
+(`stale_cursor`) and internal failures 500 (`internal_error`). Local query upgrades
+require no GitHub requests, database migrations or full collection rebuild.
 
 Non-loopback listeners require `GH_MIRROR_API_TOKEN`; requests then use
 `Authorization: Bearer <token>`. Setting the token enables authentication for all
@@ -404,8 +503,61 @@ The stdio command is `gh-mirror --db /path/to/mirror.sqlite mcp`; stdout contain
 only protocol traffic. The HTTP server also provides Streamable HTTP MCP at
 `http://127.0.0.1:8787/mcp`, with the same bearer authentication as REST.
 
-The seven read-only tools are `list_issues`, `search_issues`, `get_issue`, `get_catalog`,
-`get_project`, `find_duplicate_candidates`, and `get_sync_status`.
+The ten read-only tools are `list_issues`, `search_issues`, `get_issue`, `get_issues`,
+`list_comments`, `get_catalog`, `list_catalog`, `get_project`,
+`find_duplicate_candidates`, and `get_sync_status`. Each advertises the schema of
+its structured output envelope; preserved GitHub JSON remains unconstrained.
+Use `list_catalog` for bounded pages and `get_catalog` for a legacy complete catalog.
+A compact workflow is search, inspect evidence, batch-fetch selected summaries,
+then fetch only the required ticket details or comment pages.
+
+## Evaluate retrieval
+
+Supply local relevance judgments against an existing mirror or immutable snapshot:
+
+```json
+{
+  "cases": [
+    {
+      "name": "Known socket timeout tickets",
+      "search": {"query": "socket timeout", "match": "phrase"},
+      "relevant": [{"repo": "owner/repository", "number": 123}]
+    },
+    {
+      "name": "Known duplicate pair",
+      "candidates": {"repo": "owner/repository", "number": 123},
+      "relevant": [{"repo": "owner/repository", "number": 456}]
+    }
+  ]
+}
+```
+
+```sh
+gh-mirror --db ./mirror.sqlite evaluate --cases ./judgments.json
+```
+
+Each case requires exactly one search/candidate request and judged relevant ticket
+identities. Evaluation retrieves the top 20, reports Precision@10 (relevant hits
+divided by 10) and Recall@20 (retrieved relevant tickets divided by all judged
+relevant tickets), separate search/candidate averages and observed p50/p95 latency.
+Sparse judgments cap attainable Precision@10; judge all relevant results rather
+than treating unjudged tickets as evidence of poor ranking. Evaluation fails if the
+mirror generation changes and returns metrics without ticket content. It performs
+no collection or remote model calls.
+
+Versioned synthetic retrieval fixtures and a local benchmark live under
+`internal/store`. They cover phrase search, labels plus comments, short technical
+terms, same/cross-repository duplicate candidates and distractors. Run them with:
+
+```sh
+go test ./internal/store -run TestRetrievalEvaluation -v
+go test ./internal/store -run '^$' -bench BenchmarkLocalQuery -benchtime=3x
+```
+
+Synthetic scores establish regression behavior, not real-world duplicate quality.
+SQLite remains the only required retrieval engine. Use representative judgments
+from your repositories to decide whether optional semantic retrieval or reranking
+justifies additional models, storage and deployment dependencies.
 
 ## Share a snapshot
 
