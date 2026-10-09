@@ -230,7 +230,7 @@ type SearchOptions struct {
 	Exclude int    `json:"-"`
 }
 
-// Match identifies an issue and the best matching issue or comment document.
+// Match identifies an issue and its best matching issue, label, or comment document.
 type Match struct {
 	Repo      string  `json:"repo"`
 	Number    int     `json:"number"`
