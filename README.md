@@ -47,6 +47,7 @@ retain their defaults:
   "fields": true,
   "projects": true,
   "max_requests": 3000,
+  "workers": 4,
   "overlap": "5m",
   "enrichment_interval": "1h",
   "reconcile_interval": "24h"
@@ -87,6 +88,38 @@ collection. Use `sync --publish=false` if you only need the local database.
 and enrichment timestamps. A failed collection rolls back its data, indexes, and
 checkpoints together, leaving the previous successful generation available.
 
+Sync uses four coordinated workers by default. Independent issue/comment listings
+and batches of ticket metadata run in parallel; each pagination chain follows its
+next cursor in order. Set `workers` in the configuration or override it for one run:
+
+```sh
+gh-mirror sync --workers 4
+gh-mirror sync --workers 1
+```
+
+The allowed range is 1–16. Workers share one request budget and rate-limit pause.
+Parallel fetching uses the same bulk requests as serial collection. Use one worker
+when you need serial requests or encounter secondary rate limits.
+
+Stop with Ctrl-C and rerun the same command to resume automatically. Completed
+REST pages and GraphQL responses are committed immediately to
+`<database>.sync.sqlite`, including nested pagination. In-flight requests may need
+to be repeated. Saved responses cost no API requests on resume; the progress display
+and JSON result (`resumed_responses`) report how many were reused. The original sync
+start time is retained, so the next incremental update can catch changes made
+during the interruption. After a long interruption, run sync again to catch up.
+
+Keep the database directory on persistent storage, including the pending file and
+its SQLite sidecars. This private staging data is removed after a successful commit
+and is excluded from published snapshots. Readers continue seeing the last complete
+generation until the resumed sync finishes. Worker-count and request-budget changes
+preserve pending work; changes to scope, upstream, collection settings, full mode,
+or credentials start a new session. To explicitly discard unfinished work, use:
+
+```sh
+gh-mirror sync --restart
+```
+
 Progress appears on stderr immediately, without `--debug`. In a terminal it
 refreshes a live display with the current phase, repository, pages and records,
 elapsed time, HTTP request budget, conditional cache hits, and GitHub's remaining
@@ -96,7 +129,7 @@ once their record totals are known:
 ```text
 gh-mirror sync | elapsed 12s
 ⠹ Hydrating issue metadata | [======--------------] 100/300
-Received: 300 issues, 840 comments | repository 1/1
+Received: 300 issues, 840 comments | repository 1/1 | workers 4/4
 API: 19/3000 requests | 0 cached | GitHub remaining: 4981
 ```
 
@@ -299,8 +332,9 @@ Changed or new issues are hydrated in batches. Reusable listings use conditional
 requests; a 304 still counts as a request.
 
 Each sync reports its actual HTTP attempt count. Pagination, GraphQL, and retries
-share `max_requests`; exhausting the budget or encountering a long rate-limit wait
-fails collection so a later run can retry. Longer refresh intervals reduce requests
+share `max_requests` across workers; exhausting the budget or encountering a long
+rate-limit wait stops collection and retains completed fetches for the next run.
+The budget applies separately to each invocation. Longer refresh intervals reduce requests
 at the cost of older field, project, or deletion information.
 
 ## Development and diagnostics
@@ -326,3 +360,7 @@ Collection uses GitHub's [repository issue listing](https://docs.github.com/en/r
 [project items](https://docs.github.com/en/rest/projects/items). The REST version is
 `2026-03-10`. Feature availability on GitHub Enterprise Server may differ; unsupported
 enabled features fail rather than being reported as empty complete catalogs.
+Request coordination follows GitHub's
+[rate-limit guidance](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api).
+GitHub [recommends serial requests](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api)
+to reduce secondary rate limits; `--workers 1` selects that mode.

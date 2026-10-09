@@ -5,6 +5,7 @@
   "fields": true,
   "projects": true,
   "max_requests": 3000,
+  "workers": 4,
   "enrichment_interval": "1h",
   "reconcile_interval": "24h"
 }

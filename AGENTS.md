@@ -12,6 +12,8 @@ callbacks. `internal/github` performs bounded read-only upstream requests and pa
 `internal/collect` synchronizes configured resources. `internal/store` owns the SQLite
 schema, transactions, FTS5 index, and queries. `internal/snapshot` publishes and acquires
 immutable databases. `internal/service` shares local queries between REST and MCP.
+`internal/checkpoint` durably stages completed responses outside the mirror transaction
+so interrupted syncs resume across process boundaries.
 
 GitHub remains authoritative. Never issue upstream mutations. Preserve raw payloads,
 all accessible comments, native issue types, multiple assignees, unused labels, and
@@ -23,6 +25,18 @@ from issues. Bootstrap uses 100-record REST pages and 50-node GraphQL batches sh
 across repositories. Hydrate only changed tickets on deltas; reconcile catalogs,
 projects, fields and relationships on the configured enrichment interval. Expose
 that timestamp separately. Never retain non-reusable since-response cache entries. Full reconciliation removes stale issues, comments, and memberships.
+
+Workers share concurrency permits, budget reservations, retry pauses, and serialized
+progress callbacks. Parallelize independent listings and hydration batches; follow
+dependent pagination sequentially. Apply hydration results serially and join workers
+before ending the collection transaction. One worker must support serial collection.
+Save completed responses in the private `<database>.sync.sqlite` checkpoint with
+FULL synchronous durability, including delta pages. This temporary resume store is
+separate from the reusable conditional cache. Keep the original collection-start
+watermark on resume. Fingerprint scope/settings/credential identity without storing
+credentials; worker/budget changes preserve pending work. Initialize and clean up
+sessions under the collector lock. Never discard staged work before the mirror commits
+or delete another collector's session. Snapshot exports exclude pending work.
 
 Readers open existing databases without migrations or writes. Publish standalone
 SQLite exports, never copies of live WAL databases. Complete and validate the export
@@ -39,6 +53,8 @@ pages, records, hydration batches, HTTP attempts, conditional hits, and retry wa
 without extra GitHub requests. Show bounded progress only for known local totals.
 Stop refreshes on success, failure, and cancellation. Diagnostic logs must not
 interleave with animated frames.
+Count interleaved listing records independently and report active workers and resumed
+responses separately from HTTP attempts.
 
 Dependencies are justified by the accepted design: Cobra is required by standards;
 modernc.org/sqlite provides embedded SQLite/FTS5 without CGO; the official MCP SDK

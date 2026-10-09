@@ -84,9 +84,34 @@ rate-limit reset headers, and respect cancellation. Requests have deadlines and 
 shared per-sync budget. Trace logs record resource/count/status metadata without
 credentials or ticket bodies. No upstream mutation API exists.
 
+Fetch concurrency defaults to four workers and is bounded to 1–16 through `workers`
+or `sync --workers`. Independent issue/comment listings and 50-node hydration batches
+run concurrently; dependent pagination remains sequential. One client coordinates
+REST, GraphQL, retries, budget reservations, and rate-limit pauses. Worker failures
+cancel and join the pool before the collection transaction can end. Hydration
+results are applied serially. One worker selects serial collection.
+
+Completed REST pages (including resolved conditional bodies, ETags, and next links)
+and successful GraphQL data are committed to a separate private SQLite checkpoint
+at `<database>.sync.sqlite` with FULL synchronous durability. Interrupted collection
+rolls back the visible mirror while retaining these fetches, even across process
+termination. Resume replays saved responses and requests only missing work; reused
+responses do not consume the current invocation's request budget. Pending work keeps
+its original collection start timestamp so the next delta can cover changes made
+while collection was stopped. Only a completed sync advances visible coverage.
+
+An opaque session fingerprint covers the previous generation, scope, upstreams,
+collection settings, full mode, credential identity, and checkpoint format version.
+Credentials themselves are never persisted. Changed worker count or request budget
+does not invalidate a session; incompatible settings replace pending work.
+`sync --restart` discards the unfinished session explicitly. Session setup and cleanup
+hold the live database's collector lock; cleanup verifies session ownership after
+the mirror commit. Checkpoints are excluded from snapshots and removed after success.
+
 Sync reports progress on stderr by default, starting before database setup. A
 terminal receives a refreshed display of phase, repository, listing counts,
 elapsed time, request usage, conditional cache hits, and rate-limit information.
+It also reports active/configured workers and saved responses reused on resume.
 Known indexing/hydration totals have progress bars; listings with unknown totals
 have a spinner. Explicit callbacks carry activity from the collector and client
 without additional upstream calls. Status refreshes during slow requests, retries,
@@ -156,6 +181,10 @@ unused/removed labels, native fields and nested pagination, archived/draft proje
 items, request counts, failure rollback, collector exclusion, complete local retrieval,
 REST/MCP parity, snapshot isolation, failed publication, checksum/freshness/scope errors,
 and acquisition across local and HTTP transports. Tests do not access live GitHub.
+Concurrency tests verify worker bounds, a shared budget, coordinated retry waits,
+queued cancellation, and unchanged bootstrap request counts. Recovery tests reopen
+databases after interrupted pages/batches and budget exhaustion, verify that the old
+generation remains visible, and check original watermarks and session invalidation.
 
 Embeddings, webhooks, attachment downloads, GitHub App token minting, object-storage
 upload clients, and automatic snapshot retention are future extensions. Existing
