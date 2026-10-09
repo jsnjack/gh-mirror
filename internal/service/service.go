@@ -153,7 +153,7 @@ func (s *Service) Handler() http.Handler {
 			respond(w, nil, err)
 			return
 		}
-		out, err := s.Store.FindCandidates(r.Context(), store.CandidateOptions{Repo: q.Get("repo"), Number: number, QueryFilters: filters, PageOptions: page, Limit: limit, Cursor: q.Get("cursor"), IncludeComments: comments, IncludeLabels: labels, CommentLimit: commentLimit})
+		out, err := s.Store.FindCandidates(r.Context(), store.CandidateOptions{Engine: q.Get("engine"), Repo: q.Get("repo"), Number: number, QueryFilters: filters, PageOptions: page, Limit: limit, Cursor: q.Get("cursor"), IncludeComments: comments, IncludeLabels: labels, CommentLimit: commentLimit})
 		respond(w, out, err)
 	})
 	mux.HandleFunc("GET /snapshots/latest", func(w http.ResponseWriter, r *http.Request) {
@@ -212,6 +212,9 @@ func respond(w http.ResponseWriter, out any, err error) {
 		if errors.Is(err, store.ErrInvalidQuery) {
 			code, category = http.StatusBadRequest, "invalid_query"
 		}
+		if errors.Is(err, store.ErrSemanticUnavailable) {
+			code, category = http.StatusServiceUnavailable, "semantic_index_unavailable"
+		}
 		if errors.Is(err, store.ErrCursorConflict) {
 			code, category = http.StatusConflict, "stale_cursor"
 		}
@@ -248,7 +251,7 @@ func (s *Service) MCP() *mcp.Server {
 		out, err := s.Store.List(ctx, input)
 		return nil, out, err
 	})
-	mcp.AddTool(server, tool("search_issues", "Search local tickets with any/all/phrase literal modes, scoped sources, exclusions, filters, ranking evidence and pagination. all spans the ticket; phrase stays in one source. Lower BM25 scores rank first. Follow next_cursor with identical options.", store.SearchResult{}), func(ctx context.Context, _ *mcp.CallToolRequest, input store.SearchOptions) (*mcp.CallToolResult, store.SearchResult, error) {
+	mcp.AddTool(server, tool("search_issues", "Search local tickets using lexical, semantic or hybrid engine. Lexical supports any/all/phrase and prefix. Semantic uses bundled offline MiniLM; hybrid fuses lexical and semantic rankings. Read ranking for score meaning. Semantic engines require a complete compatible local index. Follow next_cursor with identical options.", store.SearchResult{}), func(ctx context.Context, _ *mcp.CallToolRequest, input store.SearchOptions) (*mcp.CallToolResult, store.SearchResult, error) {
 		out, err := s.Store.Search(ctx, input)
 		return nil, out, err
 	})
@@ -264,7 +267,7 @@ func (s *Service) MCP() *mcp.Server {
 		out, err := s.Store.Project(ctx, input.Owner, input.Number)
 		return nil, out, err
 	})
-	mcp.AddTool(server, tool("find_duplicate_candidates", "Find related local tickets using distinctive seed terms, technical acronyms and optional labels/comments. Defaults to the seed repository; repositories can widen scope. Include closed history. Scores are retrieval scores, not duplicate probabilities; follow next_cursor with identical options.", store.SearchResult{}), func(ctx context.Context, _ *mcp.CallToolRequest, input store.CandidateOptions) (*mcp.CallToolResult, store.SearchResult, error) {
+	mcp.AddTool(server, tool("find_duplicate_candidates", "Find related local tickets using lexical, semantic or hybrid engine and optional labels/comments. Defaults to the seed repository; repositories can widen scope. Include closed history. Scores are retrieval scores, not duplicate probabilities; follow next_cursor with identical options.", store.SearchResult{}), func(ctx context.Context, _ *mcp.CallToolRequest, input store.CandidateOptions) (*mcp.CallToolResult, store.SearchResult, error) {
 		out, err := s.Store.FindCandidates(ctx, input)
 		return nil, out, err
 	})

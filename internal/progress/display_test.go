@@ -283,3 +283,19 @@ func (b *lockedBuffer) String() string {
 	defer b.mu.Unlock()
 	return b.b.String()
 }
+
+func TestIndexProgress(t *testing.T) {
+	var output bytes.Buffer
+	display, err := NewOperation(&output, false, "index")
+	if err != nil {
+		t.Fatal(err)
+	}
+	display.Report(Event{Phase: "Indexing semantic documents", Completed: 3, Total: 10, Workers: 4, Active: 4})
+	if err := display.Finish(context.Canceled); err != nil {
+		t.Fatal(err)
+	}
+	text := output.String()
+	if !strings.Contains(text, "Index cancelled; rerun index to resume") || !strings.Contains(text, "3/10") || !strings.Contains(text, "CPU workers 4/4") || strings.Contains(text, "GitHub") || strings.Contains(text, "API:") {
+		t.Fatal("misleading offline progress", text)
+	}
+}

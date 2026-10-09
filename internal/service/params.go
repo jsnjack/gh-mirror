@@ -60,7 +60,7 @@ func searchParams(q url.Values) (store.SearchOptions, error) {
 	if err != nil {
 		return store.SearchOptions{}, err
 	}
-	o := store.SearchOptions{Query: q.Get("q"), Repo: q.Get("repo"), State: q.Get("state"), Label: q.Get("label"), Type: q.Get("type"), Kind: q.Get("kind"), Project: q.Get("project"), QueryFilters: f, PageOptions: p, Match: q.Get("match"), In: q["in"], ExcludeWords: q["exclude_words"], Cursor: q.Get("cursor")}
+	o := store.SearchOptions{Engine: q.Get("engine"), Query: q.Get("q"), Repo: q.Get("repo"), State: q.Get("state"), Label: q.Get("label"), Type: q.Get("type"), Kind: q.Get("kind"), Project: q.Get("project"), QueryFilters: f, PageOptions: p, Match: q.Get("match"), In: q["in"], ExcludeWords: q["exclude_words"], Cursor: q.Get("cursor")}
 	if len(q["repo"]) > 1 {
 		o.Repo = ""
 	}

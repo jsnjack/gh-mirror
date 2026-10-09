@@ -45,20 +45,30 @@ type Display struct {
 	err                      error
 	stop, stopped            chan struct{}
 	finished                 bool
+	operation                string
 }
 
 // New starts immediate status reporting and animates only a terminal writer.
 func New(writer io.Writer, animate bool) (*Display, error) {
+	return NewOperation(writer, animate, "sync")
+}
+
+// NewOperation reports collection or standalone offline indexing activity.
+func NewOperation(writer io.Writer, animate bool, operation string) (*Display, error) {
 	interactive := false
 	if fd, ok := writer.(interface{ Fd() uintptr }); ok && animate && os.Getenv("TERM") != "dumb" {
 		interactive = isatty.IsTerminal(fd.Fd()) || isatty.IsCygwinTerminal(fd.Fd())
 	}
-	return newDisplay(writer, interactive)
+	return startDisplay(writer, interactive, operation)
 }
 
 func newDisplay(writer io.Writer, interactive bool) (*Display, error) {
+	return startDisplay(writer, interactive, "sync")
+}
+func startDisplay(writer io.Writer, interactive bool, operation string) (*Display, error) {
 	now := time.Now()
 	d := &Display{writer: writer, interactive: interactive, started: now, phaseStarted: now, columns: func() int { return terminalWidth(writer) }, phase: "Opening database", received: map[string]int{}, stop: make(chan struct{}), stopped: make(chan struct{})}
+	d.operation = operation
 	d.render(time.Now(), "")
 	if d.err != nil {
 		return nil, d.err
@@ -174,6 +184,15 @@ func (d *Display) Finish(result error) error {
 	} else if result != nil {
 		status = "Sync failed"
 	}
+	if d.operation == "index" {
+		status = "Index complete"
+		if result != nil {
+			status = "Index failed"
+		}
+		if errors.Is(result, context.Canceled) {
+			status = "Index cancelled; rerun index to resume"
+		}
+	}
 	d.render(time.Now(), status)
 	return d.err
 }
@@ -234,13 +253,19 @@ func (d *Display) render(now time.Time, status string) {
 	if d.remaining != "" {
 		quota = "GitHub remaining: " + d.remaining
 	}
+	if d.operation == "index" {
+		counters = ""
+		requests = fmt.Sprintf("CPU workers %d/%d active", d.active, d.workers)
+		quota = ""
+		resume = ""
+	}
 	var text string
 	if d.interactive {
 		var b strings.Builder
 		if d.lines > 0 {
 			fmt.Fprintf(&b, "\x1b[%dA", d.lines)
 		}
-		header := fmt.Sprintf("gh-mirror sync | elapsed %s", elapsed)
+		header := fmt.Sprintf("gh-mirror %s | elapsed %s", d.operation, elapsed)
 		if status != "" {
 			header = status + " | elapsed " + elapsed.String()
 			activity = "Last phase: " + activity
@@ -278,6 +303,9 @@ func (d *Display) render(now time.Time, status string) {
 			activity = status + " | last phase: " + activity
 		}
 		text = fmt.Sprintf("gh-mirror | %s | %s | %s | elapsed %s | %s", activity, counters, requests, elapsed, quota)
+		if d.operation == "index" {
+			text = fmt.Sprintf("gh-mirror index | %s | elapsed %s | %s", activity, elapsed, requests)
+		}
 		if resume != "" {
 			text += " | " + resume
 		}

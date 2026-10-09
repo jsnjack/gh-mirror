@@ -18,6 +18,7 @@ import (
 	"gh-mirror/internal/collect"
 	"gh-mirror/internal/config"
 	"gh-mirror/internal/diagnostics"
+	"gh-mirror/internal/embedding"
 	"gh-mirror/internal/progress"
 	"gh-mirror/internal/service"
 	"gh-mirror/internal/snapshot"
@@ -71,6 +72,7 @@ func init() {
 		return nil
 	}
 	addCollection()
+	addIndex()
 	addQueries()
 	addSnapshots()
 	addServers()
@@ -113,9 +115,12 @@ func closeStore(ctx context.Context, db *store.Store) {
 	}
 }
 func addCollection() {
-	var full, publish, quiet, restart bool
-	var workers int
+	var full, publish, quiet, restart, index bool
+	var workers, indexWorkers int
 	command := &cobra.Command{Use: "sync", Short: "Bootstrap or incrementally collect the configured repositories", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) (runErr error) {
+		if indexWorkers < 1 || indexWorkers > 16 {
+			return fmt.Errorf("index workers must be between 1 and 16")
+		}
 		if command.Flags().Changed("workers") {
 			settings.Workers = workers
 			if err := settings.Validate(); err != nil {
@@ -148,6 +153,15 @@ func addCollection() {
 		if err != nil {
 			return fmt.Errorf("collect GitHub data: %w", err)
 		}
+		if index {
+			if _, err := db.Index(command.Context(), embedding.Default, store.IndexOptions{Workers: indexWorkers, Progress: report}); err != nil {
+				return fmt.Errorf("index collected mirror: %w", err)
+			}
+			result.Status, err = db.Status(command.Context())
+			if err != nil {
+				return err
+			}
+		}
 		var manifest *snapshot.Manifest
 		if publish {
 			report.Send(progress.Event{Phase: "Publishing snapshot"})
@@ -171,6 +185,8 @@ func addCollection() {
 		}{Result: result, Snapshot: manifest})
 	}}
 	command.Flags().IntVar(&workers, "workers", config.DefaultWorkers, "Maximum parallel GitHub requests (1–16; overrides configuration)")
+	command.Flags().BoolVar(&index, "index", true, "Incrementally index bundled MiniLM vectors after collection")
+	command.Flags().IntVar(&indexWorkers, "index-workers", 4, "Parallel offline inference workers (1–16)")
 	command.Flags().BoolVar(&restart, "restart", false, "Discard pending fetches and start a new sync")
 	command.Flags().BoolVar(&full, "full", false, "Force complete inventories and enrichment")
 	command.Flags().BoolVar(&publish, "publish", true, "Publish a standalone snapshot after collection")
@@ -196,6 +212,7 @@ func addQueries() {
 		return output(command, out)
 	}}
 	command.Flags().StringVar(&search.Repo, "repo", "", "Filter repository owner/name")
+	command.Flags().StringVar(&search.Engine, "engine", "lexical", "Search using lexical, semantic or hybrid retrieval")
 	command.Flags().StringVar(&search.State, "state", "", "Filter open or closed")
 	command.Flags().StringVar(&search.Label, "label", "", "Filter label name")
 	command.Flags().StringVar(&search.Type, "type", "", "Filter native issue type name")
@@ -225,6 +242,7 @@ func addQueries() {
 		command.Flags().IntVar(&number, "number", 0, "Issue number")
 		command.Flags().IntVar(&limit, "limit", 30, "Maximum candidate results (1–100)")
 		if kind == "candidates" {
+			command.Flags().StringVar(&candidates.Engine, "engine", "lexical", "Retrieve candidates using lexical, semantic or hybrid search")
 			command.Flags().StringArrayVar(&candidates.Repositories, "repositories", nil, "Search these repositories; repeat (default seed repo)")
 			command.Flags().BoolVar(&includeLabels, "include-labels", true, "Use attached labels in seed terms")
 			command.Flags().BoolVar(&candidates.IncludeComments, "include-comments", false, "Use recent seed comments")

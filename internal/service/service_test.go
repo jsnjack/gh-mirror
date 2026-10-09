@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"gh-mirror/internal/embedding"
 	"gh-mirror/internal/store"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -202,4 +203,64 @@ func TestListener(t *testing.T) {
 			t.Fatal(Address(server.Listener))
 		}
 	})
+}
+
+func TestOfflineSearchEngines(t *testing.T) {
+	ctx := context.Background()
+	svc := fixture(t)
+	response := httptest.NewRecorder()
+	svc.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/search?q=connection&engine=hybrid", nil))
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "semantic_index_unavailable") {
+		t.Fatal("missing typed unavailable error", response.Code, response.Body.String())
+	}
+	if _, err := svc.Store.Index(ctx, embedding.Default, store.IndexOptions{Workers: 4}); err != nil {
+		t.Fatal(err)
+	}
+	a, b := mcp.NewInMemoryTransports()
+	server, err := svc.MCP().Connect(ctx, a, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := server.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	client := mcp.NewClient(&mcp.Implementation{Name: "offline-test", Version: "test"}, nil)
+	session, err := client.Connect(ctx, b, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := session.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	for _, engine := range []string{"semantic", "hybrid"} {
+		t.Run(engine, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			svc.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/search?q=socket&engine="+engine+"&in=body&limit=1", nil))
+			if response.Code != http.StatusOK {
+				t.Fatal(response.Code, response.Body.String())
+			}
+			result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "search_issues", Arguments: map[string]any{"query": "socket", "engine": engine, "in": []string{"body"}, "limit": 1}})
+			if err != nil || result.IsError {
+				t.Fatal("MCP engine error", result, err)
+			}
+			raw, err := json.Marshal(result.StructuredContent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got, want any
+			if err := json.Unmarshal(raw, &got); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &want); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatal("REST/MCP semantic parity failure")
+			}
+		})
+	}
 }

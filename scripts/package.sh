@@ -13,7 +13,7 @@ for release_os in linux darwin; do
     echo "Building $release_os/$release_arch" >&2
     CGO_ENABLED=0 GOOS="$release_os" GOARCH="$release_arch" \
       go build -trimpath -ldflags="-X gh-mirror/cmd.Version=$release_version" -o "$release_stage/gh-mirror" .
-    tar -czf "dist/gh-mirror_${release_os}_${release_arch}.tar.gz" -C "$release_stage" gh-mirror -C "$PWD" README.md
+    tar -czf "dist/gh-mirror_${release_os}_${release_arch}.tar.gz" -C "$release_stage" gh-mirror -C "$PWD" README.md internal/embedding/NOTICE internal/embedding/assets/LICENSE
   done
 done
 (cd dist && sha256sum gh-mirror_{linux,darwin}_{amd64,arm64}.tar.gz > checksums.txt)
