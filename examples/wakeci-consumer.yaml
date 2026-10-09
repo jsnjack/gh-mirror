@@ -1,0 +1,23 @@
+desc: Acquire a private mirror before the gh-tidy analysis tasks
+params:
+  - REPOSITORY: owner/repository
+  - ISSUE_NUMBER: "123"
+
+tasks:
+  - name: Acquire pinned mirror
+    run: >-
+      /home/client/bin/gh-mirror acquire
+      --source /home/client/gh-mirror/snapshots/latest.json
+      --dest "${WAKE_BUILD_WORKSPACE}/mirror.sqlite"
+      --repo "${REPOSITORY}"
+      --max-age 2h > mirror-manifest.json
+
+  - name: Retrieve local candidates
+    run: >-
+      /home/client/bin/gh-mirror
+      --db "${WAKE_BUILD_WORKSPACE}/mirror.sqlite"
+      candidates --repo "${REPOSITORY}" --number "${ISSUE_NUMBER}"
+      > duplicate-candidates.json
+
+timeout: 10m
+concurrency: 1

@@ -1,0 +1,14 @@
+desc: Refresh the persistent GitHub mirror and publish a verified snapshot
+
+tasks:
+  - name: Collect and publish mirror
+    run: >-
+      /home/client/bin/gh-mirror
+      --config /home/client/gh-mirror/config.json
+      sync > mirror-manifest.json
+    env:
+      GITHUB_TOKEN: "{{ secrets.GITHUB_KEY }}"
+
+timeout: 20m
+interval: "@every 15m"
+concurrency: 1

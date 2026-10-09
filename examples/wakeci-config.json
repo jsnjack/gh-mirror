@@ -1,0 +1,10 @@
+{
+  "repositories": ["owner/repository"],
+  "database": "/home/client/gh-mirror/state.sqlite",
+  "snapshot_dir": "/home/client/gh-mirror/snapshots",
+  "fields": true,
+  "projects": true,
+  "max_requests": 3000,
+  "enrichment_interval": "1h",
+  "reconcile_interval": "24h"
+}
