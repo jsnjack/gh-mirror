@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 )
 
 type fixture struct {
+	mu                    sync.Mutex
 	t                     *testing.T
 	url                   string
 	stage                 string
@@ -40,6 +42,8 @@ func emptyConnection(nodes []any, next bool, cursor string) map[string]any {
 	return map[string]any{"nodes": nodes, "pageInfo": map[string]any{"hasNextPage": next, "endCursor": cursor}}
 }
 func (f *fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.requests++
 	if r.Method != http.MethodGet && (r.Method != http.MethodPost || r.URL.Path != "/graphql") {
 		f.t.Error("unexpected upstream method", r.Method)
@@ -239,7 +243,7 @@ func TestCollection(t *testing.T) {
 			}
 			db, c, f, started := setup(t, count)
 			ctx := context.Background()
-			initial, err := syncAt(ctx, db, c, false, started, nil)
+			initial, err := syncAt(ctx, db, c, Options{}, started)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -254,7 +258,7 @@ func TestCollection(t *testing.T) {
 					f.projectCursorOverflow = true
 					f.repeatProjectCursor = name == "project cursor rollback"
 				}
-				out, err := syncAt(ctx, db, c, true, started.Add(time.Hour), nil)
+				out, err := syncAt(ctx, db, c, Options{Full: true}, started.Add(time.Hour))
 				if name == "project cursor rollback" {
 					if err == nil {
 						t.Fatal("repeated project cursor committed")
@@ -283,7 +287,7 @@ func TestCollection(t *testing.T) {
 				f.url = newServer.URL
 				f.count = 1
 				f.timestamp = started.Add(-time.Hour).Format(time.RFC3339)
-				out, err := syncAt(ctx, db, c, false, started.Add(10*time.Minute), nil)
+				out, err := syncAt(ctx, db, c, Options{}, started.Add(10*time.Minute))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -323,7 +327,7 @@ func TestCollection(t *testing.T) {
 			case "incremental two requests":
 				f.stage = "delta"
 				f.timestamp = started.Add(10 * time.Minute).Format(time.RFC3339)
-				out, err := syncAt(ctx, db, c, false, started.Add(10*time.Minute), nil)
+				out, err := syncAt(ctx, db, c, Options{}, started.Add(10*time.Minute))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -336,7 +340,7 @@ func TestCollection(t *testing.T) {
 				}
 			case "deletion inventories":
 				f.stage = "delete"
-				out, err := syncAt(ctx, db, c, true, started.Add(time.Hour), nil)
+				out, err := syncAt(ctx, db, c, Options{Full: true}, started.Add(time.Hour))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -360,7 +364,7 @@ func TestCollection(t *testing.T) {
 				case "budget rollback":
 					c.MaxRequests = 1
 				}
-				if _, err := syncAt(ctx, db, c, true, started.Add(time.Hour), nil); err == nil {
+				if _, err := syncAt(ctx, db, c, Options{Full: true}, started.Add(time.Hour)); err == nil {
 					t.Fatal("failed collection unexpectedly committed")
 				}
 				after, err := db.Status(ctx)
@@ -371,7 +375,7 @@ func TestCollection(t *testing.T) {
 					t.Fatal("failure advanced state", after)
 				}
 			case "changed issue batching":
-				out, err := syncAt(ctx, db, c, false, started.Add(10*time.Minute), nil)
+				out, err := syncAt(ctx, db, c, Options{}, started.Add(10*time.Minute))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -379,7 +383,7 @@ func TestCollection(t *testing.T) {
 					t.Fatal("unchanged overlapping issue data triggered hydration", out.Requests)
 				}
 				f.timestamp = started.Add(20 * time.Minute).Format(time.RFC3339)
-				out, err = syncAt(ctx, db, c, false, started.Add(20*time.Minute), nil)
+				out, err = syncAt(ctx, db, c, Options{}, started.Add(20*time.Minute))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -396,7 +400,9 @@ func TestSharedOwnerBatches(t *testing.T) {
 		db, c, f, started := setup(t, 2)
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path == "/repos/o/s/issues" {
+				f.mu.Lock()
 				f.requests++
+				f.mu.Unlock()
 				out := []any{}
 				for _, n := range []int{3, 4} {
 					issue := f.issue(n)
@@ -409,7 +415,9 @@ func TestSharedOwnerBatches(t *testing.T) {
 				return
 			}
 			if r.URL.Path == "/repos/o/s/issues/comments" {
+				f.mu.Lock()
 				f.requests++
+				f.mu.Unlock()
 				if err := json.NewEncoder(w).Encode([]any{}); err != nil {
 					t.Error(err)
 				}
@@ -430,7 +438,7 @@ func TestSharedOwnerBatches(t *testing.T) {
 		c.APIURL = server.URL
 		c.GraphQLURL = server.URL + "/graphql"
 		c.Repositories = []string{"o/r", "o/s"}
-		out, err := syncAt(context.Background(), db, c, false, started, nil)
+		out, err := syncAt(context.Background(), db, c, Options{}, started)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -465,9 +473,9 @@ func TestSyncProgress(t *testing.T) {
 	t.Run("pages and metadata batches retain the request budget", func(t *testing.T) {
 		db, c, _, _ := setup(t, 251)
 		var events []progress.Event
-		result, err := Sync(context.Background(), db, c, false, func(event progress.Event) {
+		result, err := Sync(context.Background(), db, c, Options{Progress: func(event progress.Event) {
 			events = append(events, event)
-		})
+		}})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -477,7 +485,7 @@ func TestSyncProgress(t *testing.T) {
 			if event.Phase != "" {
 				phase = event.Phase
 			}
-			if phase == progress.FetchingIssues && event.Page > 0 {
+			if event.Resource == progress.FetchingIssues && event.Page > 0 {
 				issuePages, issues = event.Page, event.Records
 			}
 			hydrated += event.Advance

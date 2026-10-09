@@ -55,12 +55,12 @@ func projectInventory(ctx context.Context, c *github.Client, id string) ([]json.
 	}
 }
 func projectItems(ctx context.Context, c *github.Client, base, id string, query url.Values) ([]json.RawMessage, error) {
-	c.Progress.Send(progress.Event{Phase: "Inventorying project items", Scope: base})
+	c.Report(progress.Event{Phase: "Inventorying project items", Scope: base})
 	inventory, err := projectInventory(ctx, c, id)
 	if err != nil {
 		return nil, fmt.Errorf("collect complete project inventory: %w", err)
 	}
-	c.Progress.Send(progress.Event{Phase: "Fetching project items", Scope: base})
+	c.Report(progress.Event{Phase: "Fetching project items", Scope: base})
 	items, err := c.List(ctx, base+"/items?"+query.Encode())
 	if err != nil {
 		return nil, fmt.Errorf("list projected project values: %w", err)

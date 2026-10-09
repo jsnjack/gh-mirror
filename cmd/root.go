@@ -113,8 +113,15 @@ func closeStore(ctx context.Context, db *store.Store) {
 	}
 }
 func addCollection() {
-	var full, publish, quiet bool
+	var full, publish, quiet, restart bool
+	var workers int
 	command := &cobra.Command{Use: "sync", Short: "Bootstrap or incrementally collect the configured repositories", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) (runErr error) {
+		if command.Flags().Changed("workers") {
+			settings.Workers = workers
+			if err := settings.Validate(); err != nil {
+				return fmt.Errorf("validate sync settings: %w", err)
+			}
+		}
 		var report progress.Reporter
 		var display *progress.Display
 		if !quiet {
@@ -137,7 +144,7 @@ func addCollection() {
 			return err
 		}
 		defer closeStore(command.Context(), db)
-		result, err := collect.Sync(command.Context(), db, settings, full, report)
+		result, err := collect.Sync(command.Context(), db, settings, collect.Options{Full: full, Restart: restart, Progress: report})
 		if err != nil {
 			return fmt.Errorf("collect GitHub data: %w", err)
 		}
@@ -163,6 +170,8 @@ func addCollection() {
 			Snapshot *snapshot.Manifest `json:"snapshot,omitempty"`
 		}{Result: result, Snapshot: manifest})
 	}}
+	command.Flags().IntVar(&workers, "workers", config.DefaultWorkers, "Maximum parallel GitHub requests (1–16; overrides configuration)")
+	command.Flags().BoolVar(&restart, "restart", false, "Discard pending fetches and start a new sync")
 	command.Flags().BoolVar(&full, "full", false, "Force complete inventories and enrichment")
 	command.Flags().BoolVar(&publish, "publish", true, "Publish a standalone snapshot after collection")
 	command.Flags().BoolVar(&quiet, "quiet", false, "Suppress sync progress; retain JSON output and errors")

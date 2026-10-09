@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -14,7 +15,9 @@ import (
 	"strings"
 	"time"
 
+	"gh-mirror/internal/checkpoint"
 	"gh-mirror/internal/config"
+	"gh-mirror/internal/diagnostics"
 	"gh-mirror/internal/github"
 	"gh-mirror/internal/progress"
 	"gh-mirror/internal/store"
@@ -24,13 +27,22 @@ import (
 type Result struct {
 	Status   store.Status `json:"status"`
 	Requests int          `json:"requests"`
+	Resumed  int          `json:"resumed_responses"`
+}
+
+// Options controls full collection, pending work, and activity reporting.
+type Options struct {
+	Full     bool
+	Restart  bool
+	Progress progress.Reporter
 }
 
 // Sync collects complete listings initially and overlapping deltas thereafter.
-func Sync(ctx context.Context, db *store.Store, c config.Config, full bool, report progress.Reporter) (Result, error) {
-	return syncAt(ctx, db, c, full, time.Now().UTC(), report)
+func Sync(ctx context.Context, db *store.Store, c config.Config, options Options) (Result, error) {
+	return syncAt(ctx, db, c, options, time.Now().UTC())
 }
-func syncAt(ctx context.Context, db *store.Store, c config.Config, full bool, started time.Time, report progress.Reporter) (Result, error) {
+func syncAt(ctx context.Context, db *store.Store, c config.Config, options Options, started time.Time) (Result, error) {
+	full, report := options.Full, options.Progress
 	var result Result
 	report.Send(progress.Event{Phase: "Checking checkpoints", Limit: c.MaxRequests})
 	if err := c.Validate(); err != nil {
@@ -57,10 +69,25 @@ func syncAt(ctx context.Context, db *store.Store, c config.Config, full bool, st
 	if err != nil {
 		return result, fmt.Errorf("encode scope: %w", err)
 	}
+	var pending *checkpoint.Store
+	var signature string
+	pendingPath := db.Path + ".sync.sqlite"
 	err = db.Update(ctx, func(w *store.Writer) error {
 		old, err := w.Status(ctx)
 		if err != nil {
 			return fmt.Errorf("load collector checkpoints: %w", err)
+		}
+		signature, err = sessionSignature(c, repos, old.Generation, full, os.Getenv(c.TokenEnv))
+		if err != nil {
+			return err
+		}
+		pending, err = checkpoint.Open(ctx, pendingPath, signature, started, options.Restart)
+		if err != nil {
+			return fmt.Errorf("open pending sync: %w", err)
+		}
+		started = pending.Started
+		if pending.Resuming {
+			report.Send(progress.Event{Phase: "Resuming interrupted sync", Saved: pending.Saved})
 		}
 		prior, err := json.Marshal(old.Repositories)
 		if err != nil {
@@ -79,6 +106,7 @@ func syncAt(ctx context.Context, db *store.Store, c config.Config, full bool, st
 		}
 		client := github.New(c.APIURL, c.GraphQLURL, os.Getenv(c.TokenEnv), c.MaxRequests, c.Workers, w)
 		client.Progress = report
+		client.Checkpoint = pending
 		owners := map[string]bool{}
 		ownerTypes := map[string]bool{}
 		withFields, withoutFields := []store.IssueRef{}, []store.IssueRef{}
@@ -101,14 +129,28 @@ func syncAt(ctx context.Context, db *store.Store, c config.Config, full bool, st
 				query.Set("since", since)
 				commentQuery.Set("since", since)
 			}
-			report.Send(progress.Event{Phase: progress.FetchingIssues, Scope: repo, Repository: repository + 1, Repositories: len(repos)})
-			issues, err := client.List(ctx, "/repos/"+repo+"/issues?"+query.Encode())
-			if err != nil {
-				return fmt.Errorf("collect issues for %s: %w", repo, err)
+			client.Report(progress.Event{Phase: "Fetching issues and comments", Scope: repo, Repository: repository + 1, Repositories: len(repos)})
+			type listing struct {
+				index   int
+				records []json.RawMessage
 			}
+			lists := [2][]json.RawMessage{}
+			paths := []string{"/repos/" + repo + "/issues?" + query.Encode(), "/repos/" + repo + "/issues/comments?" + commentQuery.Encode()}
+			resources := []string{progress.FetchingIssues, progress.FetchingComments}
+			err := parallelFetch(ctx, c.Workers, len(paths), func(ctx context.Context, index int) (listing, error) {
+				items, err := client.ListWithProgress(ctx, paths[index], progress.Event{Resource: resources[index], Scope: repo})
+				if err != nil {
+					return listing{}, fmt.Errorf("collect %s for %s: %w", resources[index], repo, err)
+				}
+				return listing{index, items}, nil
+			}, func(result listing) error { lists[result.index] = result.records; return nil })
+			if err != nil {
+				return err
+			}
+			issues, comments := lists[0], lists[1]
 			seenIssues := map[int]bool{}
 			changed := []store.IssueRef{}
-			report.Send(progress.Event{Phase: "Indexing issues", Scope: repo, Total: len(issues)})
+			client.Report(progress.Event{Phase: "Indexing issues", Scope: repo, Total: len(issues)})
 			for i, raw := range issues {
 				ref, err := w.PutIssue(ctx, repo, raw)
 				if err != nil {
@@ -119,16 +161,11 @@ func syncAt(ctx context.Context, db *store.Store, c config.Config, full bool, st
 					changed = append(changed, ref)
 				}
 				if (i+1)%100 == 0 || i+1 == len(issues) {
-					report.Send(progress.Event{Completed: i + 1, Total: len(issues)})
+					client.Report(progress.Event{Completed: i + 1, Total: len(issues)})
 				}
 			}
-			report.Send(progress.Event{Phase: progress.FetchingComments, Scope: repo})
-			comments, err := client.List(ctx, "/repos/"+repo+"/issues/comments?"+commentQuery.Encode())
-			if err != nil {
-				return fmt.Errorf("collect comments for %s: %w", repo, err)
-			}
 			seenComments := map[string]bool{}
-			report.Send(progress.Event{Phase: "Indexing comments", Scope: repo, Total: len(comments)})
+			client.Report(progress.Event{Phase: "Indexing comments", Scope: repo, Total: len(comments)})
 			for i, raw := range comments {
 				o, err := store.Object(raw)
 				if err != nil {
@@ -152,11 +189,11 @@ func syncAt(ctx context.Context, db *store.Store, c config.Config, full bool, st
 				}
 				seenComments[store.Identity(o, "id")] = true
 				if (i+1)%100 == 0 || i+1 == len(comments) {
-					report.Send(progress.Event{Completed: i + 1, Total: len(comments)})
+					client.Report(progress.Event{Completed: i + 1, Total: len(comments)})
 				}
 			}
 			if inventory {
-				report.Send(progress.Event{Phase: "Reconciling inventories", Scope: repo})
+				client.Report(progress.Event{Phase: "Reconciling inventories", Scope: repo})
 				if err := w.Reconcile(ctx, repo, seenIssues, seenComments); err != nil {
 					return fmt.Errorf("reconcile %s: %w", repo, err)
 				}
@@ -166,7 +203,7 @@ func syncAt(ctx context.Context, db *store.Store, c config.Config, full bool, st
 				owner := strings.Split(repo, "/")[0]
 				organization, known := ownerTypes[owner]
 				if !known {
-					report.Send(progress.Event{Phase: "Reading repository owner", Scope: repo})
+					client.Report(progress.Event{Phase: "Reading repository owner", Scope: repo})
 					raw, err := client.Get(ctx, "/repos/"+repo)
 					if err != nil {
 						return fmt.Errorf("read repository owner: %w", err)
@@ -240,17 +277,17 @@ func syncAt(ctx context.Context, db *store.Store, c config.Config, full bool, st
 			slog.DebugContext(ctx, "collected repository", "repo", repo, "issues", len(issues), "comments", len(comments), "full", inventory, "enrichment", refresh)
 		}
 		if total := len(withFields) + len(withoutFields); total > 0 {
-			report.Send(progress.Event{Phase: "Hydrating issue metadata", Total: total})
+			client.Report(progress.Event{Phase: "Hydrating issue metadata", Total: total})
 		}
 		for _, group := range []struct {
 			refs   []store.IssueRef
 			fields bool
 		}{{withFields, true}, {withoutFields, false}} {
-			if err := hydrate(ctx, client, w, group.refs, group.fields, c.Projects); err != nil {
+			if err := hydrate(ctx, client, w, group.refs, group.fields, c.Projects, c.Workers); err != nil {
 				return fmt.Errorf("hydrate ticket batches: %w", err)
 			}
 		}
-		report.Send(progress.Event{Phase: "Committing mirror"})
+		client.Report(progress.Event{Phase: "Committing mirror"})
 		if refresh {
 			if err := w.SetMetadata(ctx, "enriched_at", started.Format(time.RFC3339Nano)); err != nil {
 				return err
@@ -261,15 +298,26 @@ func syncAt(ctx context.Context, db *store.Store, c config.Config, full bool, st
 				return err
 			}
 		}
-		result.Requests = client.Requests()
+		result.Requests, result.Resumed = client.Requests(), client.Resumed()
 		result.Status, err = w.Status(ctx)
 		if err != nil {
 			return fmt.Errorf("read collected mirror status: %w", err)
 		}
 		return nil
 	})
+	if pending != nil {
+		if closeErr := pending.Close(); closeErr != nil {
+			err = errors.Join(err, closeErr)
+		}
+	}
 	if err != nil {
 		return result, fmt.Errorf("synchronize GitHub mirror: %w", err)
+	}
+	// Cleanup takes the collector lock again: another process may already own a newer session.
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+	defer cancel()
+	if err := db.Update(cleanupCtx, func(*store.Writer) error { return checkpoint.Discard(cleanupCtx, pendingPath, signature) }); err != nil {
+		slog.Log(ctx, diagnostics.TraceLevel, "retain completed sync checkpoint", "error", err)
 	}
 	return result, nil
 }
@@ -281,7 +329,7 @@ func due(timestamp string, now time.Time, interval time.Duration) bool {
 	return err != nil || now.Sub(last) >= interval
 }
 func catalog(ctx context.Context, c *github.Client, w *store.Writer, kind, scope, path string) error {
-	c.Progress.Send(progress.Event{Phase: "Refreshing " + strings.ReplaceAll(kind, "_", " "), Scope: scope})
+	c.Report(progress.Event{Phase: "Refreshing " + strings.ReplaceAll(kind, "_", " "), Scope: scope})
 	items, err := c.List(ctx, path)
 	if err != nil {
 		return fmt.Errorf("collect %s catalog: %w", kind, err)
@@ -292,7 +340,7 @@ func catalog(ctx context.Context, c *github.Client, w *store.Writer, kind, scope
 	return nil
 }
 func projects(ctx context.Context, c *github.Client, w *store.Writer, owner string, organization bool) error {
-	c.Progress.Send(progress.Event{Phase: "Listing projects", Scope: owner})
+	c.Report(progress.Event{Phase: "Listing projects", Scope: owner})
 	prefix := "/users/"
 	if organization {
 		prefix = "/orgs/"
@@ -315,7 +363,7 @@ func projects(ctx context.Context, c *github.Client, w *store.Writer, owner stri
 			return fmt.Errorf("invalid project number")
 		}
 		scope := owner + "/" + number
-		c.Progress.Send(progress.Event{Phase: "Fetching project fields", Scope: scope})
+		c.Report(progress.Event{Phase: "Fetching project fields", Scope: scope})
 		fields, err := c.List(ctx, base+"/"+number+"/fields?per_page=100")
 		if err != nil {
 			return fmt.Errorf("list project fields: %w", err)
