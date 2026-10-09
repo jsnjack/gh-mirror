@@ -271,6 +271,72 @@ from snapshots and status. Permission changes on an unchanged token still requir
 or upstream API host automatically forces complete collection and removes data
 outside the new scope.
 
+## Offline semantic and hybrid search
+
+The executable includes MiniLM L6 weights, its WordPiece tokenizer and model
+configuration (about 91 MB of model assets). Inference runs in Go on the CPU.
+The first use extracts verified bundled assets into
+`$XDG_CACHE_HOME/gh-mirror/models/` (default `~/.cache/gh-mirror/models/`).
+That cache directory must be writable on first use. `gh-mirror model` reports the
+pinned model, revision, dimensionality and compatibility fingerprint.
+
+Build vectors for an existing mirror without requesting GitHub data:
+
+```sh
+gh-mirror index
+gh-mirror index --workers 8
+gh-mirror search 'file transfers get stuck indefinitely' --engine semantic
+gh-mirror search 'Acme attachments fail after reconnecting' --engine hybrid --label 'client:Acme'
+gh-mirror candidates --repo owner/repository --number 123 --engine hybrid
+```
+
+`sync` now incrementally indexes vectors after committing collection and before
+publishing its snapshot. `--index-workers` controls CPU concurrency separately from
+GitHub request workers; both default to four. Use `sync --index=false` to skip vector
+indexing. Queries use `--engine lexical` by default.
+
+Indexing shows document progress, throughput, an ETA and active workers on stderr.
+Completed passages are committed as they finish. Interrupt with Ctrl-C and rerun
+`index` to resume. Unchanged documents are skipped; changed documents reuse identical
+passages and encode their new passages. Metadata-only changes do not re-encode text.
+Deleted tickets/comments remove their vectors. Model or chunking changes rebuild
+only the derived local vector index, without refetching GitHub data.
+
+Titles, bodies, labels, discussion comments and inline review comments are indexed
+as separate passages. Long text is split at the tokenizer's 256-token budget with
+small overlaps, preserving its tail. Semantic evidence includes passage similarity
+and byte offsets into the indicated field. Seed-based semantic candidates reuse
+stored vectors for the entire seed title/body and selected labels/comments, avoiding
+another inference pass. Recent seed comments remain opt-in and bounded.
+
+`semantic` uses exact cosine similarity, with higher scores ranking first. `hybrid`
+combines independent literal and semantic rankings using reciprocal rank fusion
+(`1/(60+rank)` from each ranking). Results report the algorithm, `semantic_score`
+and, where present, `lexical_score`. These scores are not duplicate probabilities.
+Semantic retrieval ranks every eligible ticket with a selected indexed passage;
+low-ranked results can be unrelated. Inspect evidence and bound the returned page.
+
+Repository, label, state, project, author, date and other ticket filters work with
+all three engines. `--in`, exclusions, counts, facets, views and pagination also
+work with semantic/hybrid search. Literal `--match all`, `--match phrase` and
+`--prefix` require the lexical engine. Natural-language queries are limited to
+16,384 bytes and 16 passages; hybrid queries allow at most 512 literal terms.
+An incomplete or incompatible index produces an explicit error with instructions
+to run `index`; REST returns 503 with code `semantic_index_unavailable`.
+`status.semantic` reports coverage, pending documents and model compatibility.
+Semantic cursors also bind the vector generation and model fingerprint.
+
+Snapshots include completed vectors in the same SQLite file. CI consumers acquire
+that file and search offline with the same binary. They do not need a separate model
+service or rebuild a complete compatible index. Exports omit incomplete/obsolete
+passages while the collector retains its private resumable work. Existing schema-1
+snapshots remain readable for lexical queries; `index` performs a local schema-2
+migration. Older gh-mirror binaries cannot open schema-2 snapshots.
+
+MiniLM is English-oriented. Hybrid search is useful for retaining exact client labels
+and technical terms. The [model research](docs/semantic-model-research.md) compares
+compact and larger alternatives, licenses and measurements on the target hardware.
+
 ## Query locally
 
 Search issue titles, bodies, attached label names, and comments:
@@ -287,7 +353,7 @@ Queries return JSON on stdout. The default `--match any` joins literal words wit
 OR. `--match all` requires every word somewhere in the selected ticket: a label and
 a separate comment can satisfy it together. `--match phrase` requires consecutive
 words in one source. Punctuation is tokenized; operators in the query are literal
-words. Queries exceeding 32 terms or 16,384 bytes fail explicitly.
+words. Lexical queries exceeding 32 terms or 16,384 bytes fail explicitly.
 
 ```sh
 gh-mirror search 'Acme timeout' --match all --count --facets
@@ -447,6 +513,7 @@ Query it from another terminal:
 ```sh
 curl 'http://127.0.0.1:8787/v1/status'
 curl 'http://127.0.0.1:8787/v1/search?q=socket+timeout&repo=owner/repository'
+curl 'http://127.0.0.1:8787/v1/search?q=file+transfers+get+stuck&engine=hybrid&limit=10'
 curl 'http://127.0.0.1:8787/v1/issues/owner/repository/123'
 ```
 
@@ -465,7 +532,8 @@ curl 'http://127.0.0.1:8787/v1/issues/owner/repository/123'
 | `/snapshots/latest` | Latest snapshot manifest |
 | `/snapshots/{filename}` | Immutable snapshot file |
 
-REST uses `match`, `prefix`, repeated `in` and `exclude_words` parameters for search.
+REST accepts `engine=lexical|semantic|hybrid` for search and candidates. It also
+uses `match`, `prefix`, repeated `in` and `exclude_words` parameters for search.
 `count` and `facets` are booleans. For example:
 
 ```sh
@@ -477,8 +545,10 @@ curl -X POST 'http://127.0.0.1:8787/v1/issues/batch' -H 'Content-Type: applicati
 
 Errors contain `error` and a machine-readable `code`: invalid input is HTTP 400
 (`invalid_query`), missing resources 404 (`not_found`), stale generation cursors 409
-(`stale_cursor`) and internal failures 500 (`internal_error`). Local query upgrades
-require no GitHub requests, database migrations or full collection rebuild.
+(`stale_cursor`), unavailable semantic indexes 503 (`semantic_index_unavailable`)
+and internal failures 500 (`internal_error`). Lexical query upgrades work against
+existing snapshots. Semantic engines require a compatible local index; building
+it migrates the local schema without requesting GitHub data.
 
 Non-loopback listeners require `GH_MIRROR_API_TOKEN`; requests then use
 `Authorization: Bearer <token>`. Setting the token enables authentication for all
@@ -508,6 +578,8 @@ The ten read-only tools are `list_issues`, `search_issues`, `get_issue`, `get_is
 `find_duplicate_candidates`, and `get_sync_status`. Each advertises the schema of
 its structured output envelope; preserved GitHub JSON remains unconstrained.
 Use `list_catalog` for bounded pages and `get_catalog` for a legacy complete catalog.
+`search_issues` and `find_duplicate_candidates` accept an `engine` argument with
+the same three choices as REST and the CLI.
 A compact workflow is search, inspect evidence, batch-fetch selected summaries,
 then fetch only the required ticket details or comment pages.
 
@@ -556,7 +628,7 @@ go test ./internal/store -run '^$' -bench BenchmarkLocalQuery -benchtime=3x
 
 Synthetic scores establish regression behavior, not real-world duplicate quality.
 SQLite remains the only required retrieval engine. Use representative judgments
-from your repositories to decide whether optional semantic retrieval or reranking
+from your repositories to compare lexical, semantic and hybrid retrieval or decide whether reranking
 justifies additional models, storage and deployment dependencies.
 
 ## Share a snapshot

@@ -2,19 +2,20 @@
 
 ## Purpose
 
-gh-mirror collects GitHub ticket data into a local SQLite database for gh-tidy,
-personal tools, and small organizations. GitHub remains the source of truth.
-Duplicate candidate discovery uses local indexes; ticket changes remain the
-responsibility of gh-tidy and its existing review, refresh, and recovery gates.
+gh-mirror collects GitHub ticket data into a local SQLite database for personal
+tools and small organizations. GitHub remains the source of truth. Duplicate
+candidate discovery and queries use local indexes; upstream changes belong to the
+consumer and its review/recovery workflow.
 
 ## Deployment
 
 The application is a Go executable built without CGO. It requires no external
-database, search engine, queue, or embedding model. Cobra follows workspace
+database, search engine, queue, or model service. MiniLM weights and tokenizer are
+bundled for pure Go CPU inference. Cobra follows workspace
 standards. modernc.org/sqlite supplies SQLite and FTS5 without platform-specific
 C libraries. The official Go MCP SDK handles stdio and Streamable HTTP.
 
-The CLI supports `sync`, `search`, `get`, `candidates`, `catalog`, `status`, `snapshot`,
+The CLI supports `sync`, `index`, `model`, `search`, `get`, `candidates`, `catalog`, `status`, `snapshot`,
 `acquire`, `list`, `scope`, `serve`, and `mcp`. All commands inherit `--config`/`-c`, `--debug`/`-d`,
 and `--trace`. The root supports `--version`. Configuration is JSON under the XDG
 configuration directory. Durable data uses the XDG data directory. Tokens are
@@ -270,7 +271,7 @@ before checkpointing; refetch invalid legacy responses without discarding good w
 
 GitHub Actions checks formatting, vet, build, race tests and lint. Tagged releases
 require a version matching monova and package CGO-free Linux/macOS binaries for
-amd64 and arm64 with SHA-256 checksums. Package only the executable and README.
+amd64 and arm64 with SHA-256 checksums. Package the executable, README and bundled model notices/license.
 
 ## Query and result expansion
 
@@ -289,5 +290,59 @@ warnings, typed REST errors and documented MCP output envelopes. Preserve legacy
 full reads as explicit or existing compatibility paths. Improve duplicate term
 selection using local document frequency, technical identifiers and optional seed
 labels/comments; evaluate candidate recall and search precision on versioned local
-fixtures. A semantic layer requires evidence from that evaluation before adding
-model or deployment dependencies.
+fixtures. Bundled semantic/hybrid search is explicitly required; use the same
+evaluation format to compare retrieval quality.
+
+## Bundled offline vectors
+
+Embed the pinned Apache-2.0 all-MiniLM-L6-v2 safetensors, WordPiece vocabulary,
+configuration, checksum provenance and license in the executable. Use pinned
+rembed Go/assembly inference, FP32 mean pooling and L2 normalization, with 384
+coordinates. Extract verified bundled bytes to a private XDG cache directory;
+load only its absolute existing path, never a remote model ID. No model download,
+model service, CGO, shared library or GPU/NPU driver is required at runtime.
+The model research and hardware measurements live in semantic-model-research.md.
+
+SQL schema 2 adds semantic document state and little-endian FP32 passage vectors.
+Writers migrate schema 1 locally; readers accept both schemas without writing.
+Collection compatibility remains version 1. Keep the model/tokenizer, inference,
+pooling, precision and chunking fingerprint separate from collection identity.
+Schema-2 snapshots require a compatible new reader binary.
+
+Split title/body and label/comment/review sources into passages of at most 256
+WordPiece tokens including framing, with a 2,048-rune character cap, 32-rune overlap and original byte offsets.
+Preserve long-document tails. Index with bounded independent CPU workers, default
+four, and FULL synchronous SQLite commits. Resume completed passages after errors,
+interrupts and process restarts. Text edits invalidate completeness but keep reusable
+passages locally; metadata-only updates retain vectors. Match reusable text exactly
+within its field and model. Guard checkpoint commits against changed source text
+and model identity. Deletions cascade. Exports remove incomplete/obsolete passages
+and compact the file; completed vectors travel in the SQLite snapshot and its
+manifest records embedding fingerprint, dimension and index generation.
+
+`index` performs local indexing only. `sync` indexes after the collection commit and
+before publication by default, with `--index=false` available and separate
+`--index-workers`. A failure during indexing retains committed collection and
+completed vectors; rerun `index` to finish without new upstream requests. Progress
+uses stderr, reports known document totals, rate, ETA and active CPU workers, and
+stops on completion/cancellation/failure.
+
+CLI, REST and MCP accept lexical (default), semantic and hybrid engines. Semantic
+queries average normalized query passage embeddings and use exact cosine scanning
+over filtered vectors, selecting the best passage per ticket. Semantic duplicate
+candidates reuse weighted stored seed vectors: title 4, body 1, labels 1.5 and
+bounded recent comments 0.5, averaging passages within each source family before
+normalizing. Hybrid combines independent lexical and semantic ticket ranks with
+reciprocal rank fusion constant 60. Preserve exact ticket filters, source scopes,
+exclusions, counts, facets, projections, evidence and deterministic pagination.
+Report score meanings and component scores; semantic/hybrid default to descending
+relevance. Evidence includes field, source, byte offsets, cosine similarity and
+stored comment/review context. Candidate seeds are excluded from results.
+
+Reject incomplete or incompatible selected indexing coverage explicitly; never
+silently fall back or omit pending tickets. REST uses 503 semantic_index_unavailable.
+Reject lexical-only phrase/all/prefix controls on semantic engines. Bound ordinary
+queries to 16 KiB, 16 semantic passages and 512 hybrid literal terms. Bind semantic
+cursors to collection generation, vector generation, model and effective options.
+Status reports durable document/chunk coverage and compatibility. Query tools remain
+read-only and never initiate indexing or GitHub requests.

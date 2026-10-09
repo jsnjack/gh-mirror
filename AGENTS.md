@@ -124,8 +124,9 @@ measurable progress; unknown totals and retry waits do not show an ETA.
 CI runs format, vet, build, race tests and lint on pushes and pull requests. Tagged
 releases run those checks before packaging CGO-free Linux/macOS amd64/arm64 binaries,
 verifying SHA-256 checksums and publishing assets. `make release` uses monova's
-version and includes only the executable and README; never package collector data
-or user configuration. Release workflows grant write permissions only to publication.
+version and includes the executable, README and bundled model notices/license;
+never package collector data or user configuration. Release workflows grant write
+permissions only to publication.
 
 Dependencies are justified by the accepted design: Cobra is required by standards;
 modernc.org/sqlite provides embedded SQLite/FTS5 without CGO; the official MCP SDK
@@ -139,8 +140,9 @@ selected ticket, and phrase mode requires consecutive terms in one document.
 Compile only generated, escaped FTS expressions. Report term limits explicitly.
 Search/list support deterministic sorting, summary/full projections and optional
 counts/facets before pagination. Preserve legacy raw fields and score meanings;
-attach bounded evidence and a ranking description. Query-only enhancements must
-work against existing snapshots without migrations or upstream requests.
+attach bounded evidence and a ranking description. Lexical query enhancements must
+work against existing snapshots without migrations or upstream requests; semantic
+engines explicitly require a compatible local vector index.
 Comment pages separate discussion and review kinds, preserve large numeric IDs as
 strings and namespace cursors independently from ticket pages. Compact comment
 previews limit Unicode characters and report truncation; full view retains raw
@@ -159,3 +161,31 @@ uses explicit local relevance judgments, reports P@10 with a fixed denominator o
 10 and Recall@20, and fails on generation changes. Synthetic fixtures test retrieval
 semantics; their scores do not establish quality on real tickets. Benchmark broad,
 selective and candidate queries before changing query plans or adding dependencies.
+
+`internal/embedding` embeds the pinned Apache-2.0 MiniLM L6 weights/tokenizer and
+verifies assets before loading their absolute local cache path with pinned rembed.
+The dependency is justified by explicitly requested pure Go offline inference;
+never pass remote model IDs or silently download assets at runtime. FP32, mean
+pooling, L2 normalization, tokenizer and 256-token/2048-rune/32-rune-overlap chunking
+form one fingerprint. Validate tokenizer IDs and vectors against attributed reference data.
+
+Schema 2 adds semantic state/vectors; writer migration from schema 1 is local and
+transactional. Readers accept schema 1 for lexical queries and schema 2 without
+migrations. Keep CollectionVersion unchanged for this derived index. Index only
+pending documents, reuse identical passages after edits, and checkpoint vectors
+with FULL durability. Guard writes against changed text/model; cascade deletions.
+Incomplete states are excluded from semantic queries and stripped from exports,
+which retain completed vectors and record model identity in manifests. Local
+resumable passages remain in the collector database. Query-only paths never index.
+
+`index` works offline. `sync` indexes after collection commits and before publishing,
+unless --index=false; CPU workers are bounded separately from GitHub workers.
+Progress names standalone indexing correctly and retains stderr/stdout separation.
+Semantic/hybrid queries share ticket filters and result contracts. Use exact filtered
+cosine scans and independent lexical/semantic rank fusion (k=60); higher scores rank
+first. Report source offsets/similarity and typed 503 errors for missing/incomplete
+indexes. Bind vector cursors to vector generation and fingerprint as well as collection
+and query. Semantic candidates reuse weighted cached seed vectors. Keep lexical
+behavior and score direction unchanged. Research model alternatives against primary
+sources and target-hardware measurements; synthetic retrieval fixtures do not prove
+production duplicate accuracy.
