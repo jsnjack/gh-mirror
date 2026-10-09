@@ -278,6 +278,9 @@ func (w *Writer) PutComment(ctx context.Context, repo string, number int, raw js
 	if id == "" || Text(o, "updated_at") == "" || Text(o, "html_url") == "" {
 		return fmt.Errorf("incomplete upstream comment in %s#%d", repo, number)
 	}
+	if Text(o, "pull_request_url") != "" {
+		id = "review:" + id
+	}
 	result, err := w.tx.ExecContext(ctx, `INSERT INTO comments(id,repo,number,body,updated_at,url,payload) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET repo=excluded.repo,number=excluded.number,body=excluded.body,updated_at=excluded.updated_at,url=excluded.url,payload=excluded.payload WHERE excluded.updated_at>comments.updated_at OR (excluded.updated_at=comments.updated_at AND (excluded.payload<>comments.payload OR excluded.repo<>comments.repo OR excluded.number<>comments.number))`, id, repo, number, Text(o, "body"), Text(o, "updated_at"), Text(o, "html_url"), string(raw))
 	if err != nil {
 		return fmt.Errorf("upsert comment %s: %w", id, err)

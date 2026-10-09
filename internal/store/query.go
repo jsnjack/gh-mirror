@@ -24,16 +24,17 @@ type Coverage struct {
 
 // Status identifies the committed generation and collection scope.
 type Status struct {
-	Upstream          string     `json:"upstream"`
-	EnrichedAt        string     `json:"enriched_at"`
-	SchemaVersion     int        `json:"schema_version"`
-	CollectionVersion int        `json:"collection_version"`
-	Generation        string     `json:"generation"`
-	CollectedAt       string     `json:"collected_at"`
-	Repositories      []string   `json:"repositories"`
-	Coverage          []Coverage `json:"coverage"`
-	Issues            int        `json:"issues"`
-	Comments          int        `json:"comments"`
+	RepositoryOptions map[string]json.RawMessage `json:"repository_options"`
+	Upstream          string                     `json:"upstream"`
+	EnrichedAt        string                     `json:"enriched_at"`
+	SchemaVersion     int                        `json:"schema_version"`
+	CollectionVersion int                        `json:"collection_version"`
+	Generation        string                     `json:"generation"`
+	CollectedAt       string                     `json:"collected_at"`
+	Repositories      []string                   `json:"repositories"`
+	Coverage          []Coverage                 `json:"coverage"`
+	Issues            int                        `json:"issues"`
+	Comments          int                        `json:"comments"`
 }
 type querier interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
@@ -41,7 +42,7 @@ type querier interface {
 }
 
 func status(ctx context.Context, q querier) (Status, error) {
-	s := Status{SchemaVersion: SchemaVersion, CollectionVersion: LegacyCollectionVersion, Repositories: []string{}, Coverage: []Coverage{}}
+	s := Status{RepositoryOptions: map[string]json.RawMessage{}, SchemaVersion: SchemaVersion, CollectionVersion: LegacyCollectionVersion, Repositories: []string{}, Coverage: []Coverage{}}
 	rows, err := q.QueryContext(ctx, "SELECT key,value FROM metadata")
 	if err != nil {
 		return s, fmt.Errorf("read generation: %w", err)
@@ -52,6 +53,10 @@ func status(ctx context.Context, q querier) (Status, error) {
 			return s, finishRows(rows, err)
 		}
 		switch k {
+		case "repository_options":
+			if err := json.Unmarshal([]byte(v), &s.RepositoryOptions); err != nil {
+				return s, finishRows(rows, fmt.Errorf("decode repository options: %w", err))
+			}
 		case "collection_version":
 			version, err := strconv.Atoi(v)
 			if err != nil {
@@ -137,7 +142,7 @@ func (w *Writer) ResetScope(ctx context.Context, repos []string, resetCatalog, r
 		return fmt.Errorf("read old scope: %w", err)
 	}
 	if resetData {
-		for _, query := range []string{"DELETE FROM issues", "DELETE FROM sync_status"} {
+		for _, query := range []string{"DELETE FROM issues", "DELETE FROM sync_status", "DELETE FROM issue_inventory"} {
 			if _, err := w.tx.ExecContext(ctx, query); err != nil {
 				return fmt.Errorf("reset upstream records: %w", err)
 			}
@@ -156,7 +161,7 @@ func (w *Writer) ResetScope(ctx context.Context, repos []string, resetCatalog, r
 			}
 		}
 		if !found {
-			for _, query := range []string{"DELETE FROM issues WHERE repo=?", "DELETE FROM sync_status WHERE repo=?"} {
+			for _, query := range []string{"DELETE FROM issues WHERE repo=?", "DELETE FROM sync_status WHERE repo=?", "DELETE FROM issue_inventory WHERE repo=?"} {
 				if _, err := w.tx.ExecContext(ctx, query, r); err != nil {
 					return fmt.Errorf("remove old scope: %w", err)
 				}

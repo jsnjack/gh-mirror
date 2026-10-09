@@ -14,6 +14,17 @@ schema, transactions, FTS5 index, and queries. `internal/snapshot` publishes and
 immutable databases. `internal/service` shares local queries between REST and MCP.
 `internal/checkpoint` durably stages completed responses outside the mirror transaction
 so interrupted syncs resume across process boundaries.
+`repository_options` resolves eleven boolean resource switches per repository; omitted
+flags in an explicit entry are false. Repositories without entries retain legacy
+global defaults. `scope` prints effective options and committed status records them.
+Filter shared issue/comment listings locally; retain only identity/kind for excluded
+tickets in private `issue_inventory` to avoid fetching each comment parent. Exports
+remove this inventory. PR review comments use the bulk repository endpoint, default
+to disabled, and use namespaced IDs to avoid collisions with discussion comments.
+Changing ticket/comment scope reconciles only that repository;
+catalog/metadata changes rehydrate it without forcing full listings. Group hydration
+by fields/projects/relationships and share owner catalogs only when enabled by at
+least one repository. Explicit equivalent defaults preserve pending fingerprints.
 
 Index attached label names as separate full-text documents for each issue, with
 the issue URL as their source and the same weight as titles. Keep raw issue titles

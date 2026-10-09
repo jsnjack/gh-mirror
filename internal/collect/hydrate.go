@@ -51,11 +51,11 @@ type hydratedIssue struct {
 	values, extra json.RawMessage
 }
 
-func hydrate(ctx context.Context, c *github.Client, w *store.Writer, refs []store.IssueRef, fields, projects bool, workers int) error {
+func hydrate(ctx context.Context, c *github.Client, w *store.Writer, refs []store.IssueRef, fields, projects, relationships bool, workers int) error {
 	return parallelFetch(ctx, workers, (len(refs)+49)/50,
 		func(ctx context.Context, index int) ([]hydratedIssue, error) {
 			start := index * 50
-			return fetchBatch(ctx, c, refs[start:min(start+50, len(refs))], fields, projects)
+			return fetchBatch(ctx, c, refs[start:min(start+50, len(refs))], fields, projects, relationships)
 		},
 		func(batch []hydratedIssue) error {
 			for _, issue := range batch {
@@ -68,17 +68,23 @@ func hydrate(ctx context.Context, c *github.Client, w *store.Writer, refs []stor
 		})
 }
 
-func fetchBatch(ctx context.Context, c *github.Client, batch []store.IssueRef, fields, projects bool) ([]hydratedIssue, error) {
+func fetchBatch(ctx context.Context, c *github.Client, batch []store.IssueRef, fields, projects, relationships bool) ([]hydratedIssue, error) {
 	out := make([]hydratedIssue, 0, len(batch))
 	ids := []string{}
 	for _, ref := range batch {
 		ids = append(ids, ref.NodeID)
 	}
-	names := []string{"subIssues", "blockedBy", "blocking"}
+	names := []string{}
+	if relationships {
+		names = append(names, "subIssues", "blockedBy", "blocking")
+	}
 	if fields {
 		names = append(names, "issueFieldValues")
 	}
-	issueSelection := `parent { ` + related + ` } `
+	issueSelection := ""
+	if relationships {
+		issueSelection = `parent { ` + related + ` } `
+	}
 	for _, name := range names {
 		issueSelection += selection(name, "") + " "
 	}
@@ -90,12 +96,13 @@ func fetchBatch(ctx context.Context, c *github.Client, batch []store.IssueRef, f
 	// GraphQL forbids empty selection sets when project collection is disabled.
 	if !projects {
 		query = strings.ReplaceAll(query, "... on PullRequest{}", "")
+		query = strings.ReplaceAll(query, "... on Issue{}", "")
 	}
 	var data struct {
 		Nodes []json.RawMessage `json:"nodes"`
 	}
 	if err := c.GraphQLValidated(ctx, query, map[string]any{"ids": ids}, &data, func(raw json.RawMessage) error {
-		return validateBatch(raw, batch, names, projects)
+		return validateBatch(raw, batch, names, projects, relationships)
 	}); err != nil {
 		return nil, fmt.Errorf("batch issue metadata: %w", err)
 	}
@@ -120,7 +127,7 @@ func fetchBatch(ctx context.Context, c *github.Client, batch []store.IssueRef, f
 		nodeNames := []string{}
 		if expected == "Issue" {
 			nodeNames = append(nodeNames, names...)
-			if _, ok := object["parent"]; !ok {
+			if _, ok := object["parent"]; relationships && !ok {
 				return nil, fmt.Errorf("GraphQL issue is missing parent observation")
 			}
 		}
@@ -202,7 +209,7 @@ func validateConnection(raw json.RawMessage) (connection, error) {
 	return page, nil
 }
 
-func validateBatch(raw json.RawMessage, batch []store.IssueRef, names []string, projects bool) error {
+func validateBatch(raw json.RawMessage, batch []store.IssueRef, names []string, projects, relationships bool) error {
 	var data struct {
 		Nodes []json.RawMessage `json:"nodes"`
 	}
@@ -227,10 +234,10 @@ func validateBatch(raw json.RawMessage, batch []store.IssueRef, names []string, 
 		connections := []string{}
 		if expected == "Issue" {
 			parent, ok := object["parent"]
-			if !ok {
+			if relationships && !ok {
 				return fmt.Errorf("GraphQL issue is missing parent observation")
 			}
-			if string(parent) != "null" {
+			if relationships && string(parent) != "null" {
 				if _, err := store.Object(parent); err != nil {
 					return fmt.Errorf("invalid parent observation: %w", err)
 				}

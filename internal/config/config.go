@@ -23,21 +23,22 @@ const MaxWorkers = 16
 
 // Config defines collection scope, paths, and environment variable names.
 type Config struct {
-	Repositories       []string `json:"repositories"`
-	Database           string   `json:"database"`
-	SnapshotDir        string   `json:"snapshot_dir"`
-	APIURL             string   `json:"api_url"`
-	GraphQLURL         string   `json:"graphql_url"`
-	TokenEnv           string   `json:"token_env"`
-	APITokenEnv        string   `json:"api_token_env"`
-	Listen             string   `json:"listen"`
-	Fields             bool     `json:"fields"`
-	Projects           bool     `json:"projects"`
-	MaxRequests        int      `json:"max_requests"`
-	Workers            int      `json:"workers"`
-	Overlap            string   `json:"overlap"`
-	EnrichmentInterval string   `json:"enrichment_interval"`
-	ReconcileInterval  string   `json:"reconcile_interval"`
+	Repositories       []string         `json:"repositories"`
+	RepositoryOptions  map[string]Scope `json:"repository_options,omitempty"`
+	Database           string           `json:"database"`
+	SnapshotDir        string           `json:"snapshot_dir"`
+	APIURL             string           `json:"api_url"`
+	GraphQLURL         string           `json:"graphql_url"`
+	TokenEnv           string           `json:"token_env"`
+	APITokenEnv        string           `json:"api_token_env"`
+	Listen             string           `json:"listen"`
+	Fields             bool             `json:"fields"`
+	Projects           bool             `json:"projects"`
+	MaxRequests        int              `json:"max_requests"`
+	Workers            int              `json:"workers"`
+	Overlap            string           `json:"overlap"`
+	EnrichmentInterval string           `json:"enrichment_interval"`
+	ReconcileInterval  string           `json:"reconcile_interval"`
 }
 
 // DefaultPath returns the XDG configuration filename.
@@ -108,6 +109,21 @@ func (c Config) Validate() error {
 			return fmt.Errorf("invalid or repeated repository %q", repo)
 		}
 		seen[strings.ToLower(repo)] = true
+	}
+	for repo := range c.RepositoryOptions {
+		found := false
+		for _, configured := range c.Repositories {
+			if repo == configured {
+				found = true
+			}
+		}
+		if !found {
+			return fmt.Errorf("repository_options key %q must match a configured repository", repo)
+		}
+		scope := c.Scope(repo)
+		if !scope.Issues && !scope.PullRequests {
+			return fmt.Errorf("repository %s must enable issues or pull_requests", repo)
+		}
 	}
 	if c.Database == "" || c.SnapshotDir == "" || c.TokenEnv == "" || c.APITokenEnv == "" || c.MaxRequests < 1 {
 		return fmt.Errorf("paths, token environment names and positive max_requests are required")

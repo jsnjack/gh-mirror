@@ -178,6 +178,9 @@ func addCollection() {
 	root.AddCommand(command)
 }
 func addQueries() {
+	root.AddCommand(&cobra.Command{Use: "scope", Short: "Show resolved true/false collection options per repository", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+		return output(command, settings.Scopes())
+	}})
 	var search store.SearchOptions
 	command := &cobra.Command{Use: "search WORDS", Short: "Search local issues and comments", Args: cobra.ExactArgs(1), RunE: func(command *cobra.Command, args []string) error {
 		db, err := open(true)

@@ -24,6 +24,10 @@ CREATE TABLE IF NOT EXISTS comments (
  FOREIGN KEY(repo,number) REFERENCES issues(repo,number) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS comments_issue ON comments(repo,number);
+CREATE TABLE IF NOT EXISTS issue_inventory (
+ repo TEXT NOT NULL, number INTEGER NOT NULL, kind TEXT NOT NULL,
+ PRIMARY KEY(repo,number)
+);
 CREATE TABLE IF NOT EXISTS catalog (
  kind TEXT NOT NULL, scope TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL CHECK(json_valid(payload)),
  PRIMARY KEY(kind,scope,id)

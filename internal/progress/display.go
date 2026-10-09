@@ -111,7 +111,7 @@ func (d *Display) Report(event Event) {
 		switch resource {
 		case FetchingIssues:
 			d.issues += event.Records - previous
-		case FetchingComments:
+		case FetchingComments, FetchingReviewComments:
 			d.comments += event.Records - previous
 		}
 		d.page, d.records = event.Page, event.Records

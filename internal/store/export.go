@@ -41,6 +41,15 @@ func (s *Store) Export(ctx context.Context, path string) (exportErr error) {
 	if _, err := db.ExecContext(ctx, "DELETE FROM responses; DELETE FROM metadata WHERE key='credential_identity'"); err != nil {
 		return fmt.Errorf("remove collector data from export: %w", err)
 	}
+	var inventory int
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE name='issue_inventory'").Scan(&inventory); err != nil {
+		return fmt.Errorf("inspect exported inventory: %w", err)
+	}
+	if inventory != 0 {
+		if _, err := db.ExecContext(ctx, "DELETE FROM issue_inventory"); err != nil {
+			return fmt.Errorf("remove private kind inventory: %w", err)
+		}
+	}
 	// Rebuild the exported file so deleted payloads cannot remain in free pages.
 	if _, err := db.ExecContext(ctx, "VACUUM"); err != nil {
 		return fmt.Errorf("compact sanitized export: %w", err)

@@ -6,8 +6,11 @@ import "time"
 // FetchingIssues identifies issue pages whose records count toward the sync total.
 const FetchingIssues = "Fetching issues"
 
-// FetchingComments identifies comment pages whose records count toward the sync total.
+// FetchingComments identifies discussion comment pages counted toward the sync total.
 const FetchingComments = "Fetching comments"
+
+// FetchingReviewComments identifies inline PR review comment pages counted toward the sync total.
+const FetchingReviewComments = "Fetching review comments"
 
 // Event describes a phase, listing page, completed batch, or HTTP attempt.
 type Event struct {
