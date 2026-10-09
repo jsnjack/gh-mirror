@@ -1,4 +1,5 @@
 /bin/
+.monova.history
 *.sqlite
 *.sqlite-*
 /data/
