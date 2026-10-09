@@ -120,6 +120,20 @@ does not invalidate a session; incompatible settings replace pending work.
 hold the live database's collector lock; cleanup verifies session ownership after
 the mirror commit. Checkpoints are excluded from snapshots and removed after success.
 
+The persisted `collection_version` identifies data compatibility independently of
+release and physical SQL schema versions. Missing metadata denotes legacy version 1.
+Increment `store.CollectionVersion` when collection or normalization changes make
+existing data unsafe for deltas. A mismatch automatically forces complete issue and
+comment inventories plus metadata/catalog enrichment, resets incompatible stored
+records and conditional responses within the transaction, and reports the reason.
+The effective full mode and target collection version identify the pending session.
+Version-1 fingerprints retain their original encoding to preserve legacy work.
+Only a successful commit records the target version; interruption retains the old
+published generation and resumable fetches for the rebuild. After success, the next
+sync returns to ordinary incremental operation. Compatible code changes do not
+change this contract version. Generic API/network failures do not cause a rebuild.
+Physical SQL schema compatibility is checked separately before collection.
+
 Sync reports progress on stderr by default, starting before database setup. A
 terminal receives a refreshed display of phase, repository, listing counts,
 elapsed time, request usage, conditional cache hits, and rate-limit information.

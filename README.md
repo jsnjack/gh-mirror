@@ -91,6 +91,16 @@ collection. Use `sync --publish=false` if you only need the local database.
 and enrichment timestamps. A failed collection rolls back its data, indexes, and
 checkpoints together, leaving the previous successful generation available.
 
+`collection_version` records data compatibility separately from the application
+release and SQLite schema. When an incompatible collection upgrade changes this
+version, sync automatically rebuilds all configured repositories and metadata,
+clears incompatible cached responses, and reports why a full sync is required.
+The previous mirror stays available until the rebuild commits. Interrupted
+rebuilds resume automatically, then later runs return to incremental updates.
+Compatible code changes retain existing data and pending work. Existing mirrors
+without this metadata are treated as version 1 and do not need an extra fetch.
+Network errors and rate limits preserve progress; they do not trigger a full rebuild.
+
 Sync uses four coordinated workers by default. Independent issue/comment listings
 and batches of ticket metadata run in parallel; each pagination chain follows its
 next cursor in order. Set `workers` in the configuration or override it for one run:
