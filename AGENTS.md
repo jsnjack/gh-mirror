@@ -141,3 +141,12 @@ Search/list support deterministic sorting, summary/full projections and optional
 counts/facets before pagination. Preserve legacy raw fields and score meanings;
 attach bounded evidence and a ranking description. Query-only enhancements must
 work against existing snapshots without migrations or upstream requests.
+Comment pages separate discussion and review kinds, preserve large numeric IDs as
+strings and namespace cursors independently from ticket pages. Compact comment
+previews limit Unicode characters and report truncation; full view retains raw
+payloads. Batch reads use one transaction, omit comments and report missing IDs.
+Legacy full ticket/catalog reads remain; clients opt into bounded pages. MCP schemas
+describe stable output envelopes with unconstrained raw upstream JSON. REST uses
+400 for invalid input, 404 for absent resources, 409 for stale generation cursors
+and 500 for internal failures. Query warnings explain disabled, stale and uncollected
+resources without making network requests.

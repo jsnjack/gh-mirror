@@ -1,13 +1,29 @@
 package cmd
 
 import (
+	"fmt"
 	"gh-mirror/internal/store"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
 
 func queryFlags(command *cobra.Command, f *store.QueryFilters, p *store.PageOptions) {
+	var fields []string
 	flags := command.Flags()
+	flags.StringArrayVar(&fields, "field", nil, "Require collected field name=value; repeat")
+	run := command.RunE
+	command.RunE = func(command *cobra.Command, args []string) error {
+		f.FieldValues = nil
+		for _, raw := range fields {
+			name, value, ok := strings.Cut(raw, "=")
+			if !ok || name == "" {
+				return fmt.Errorf("--field requires name=value")
+			}
+			f.FieldValues = append(f.FieldValues, store.FieldFilter{Name: name, Value: value})
+		}
+		return run(command, args)
+	}
 	flags.StringArrayVar(&f.Repositories, "repositories", nil, "Include repository owner/name; repeat for several")
 	flags.StringArrayVar(&f.LabelsAll, "labels-all", nil, "Require each exact label; repeat")
 	flags.StringArrayVar(&f.LabelsAny, "labels-any", nil, "Require any exact label; repeat")

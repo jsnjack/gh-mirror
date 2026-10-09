@@ -212,13 +212,21 @@ func addQueries() {
 
 	root.AddCommand(command)
 	addList()
+	addReads()
 	for _, kind := range []string{"get", "candidates"} {
 		var repo string
 		var number, limit int
+		var read store.ReadOptions
 		command := &cobra.Command{Use: kind, Short: "Read local ticket data or retrieve duplicate candidates", Args: cobra.NoArgs}
 		command.Flags().StringVar(&repo, "repo", "", "Repository owner/name")
 		command.Flags().IntVar(&number, "number", 0, "Issue number")
 		command.Flags().IntVar(&limit, "limit", 30, "Maximum candidate results (1–100)")
+		if kind == "get" {
+			command.Flags().StringVar(&read.View, "view", "full", "Return summary or full raw ticket")
+			command.Flags().StringVar(&read.Comments, "comments", "", "Include none, page or legacy all comments")
+			command.Flags().StringVar(&read.Cursor, "cursor", "", "Continue a comment page")
+			command.Flags().StringVar(&read.CommentKind, "comment-kind", "", "Filter discussion or review comments in page mode")
+		}
 		command.RunE = func(command *cobra.Command, _ []string) error {
 			if !config.ValidRepository(repo) || number < 1 {
 				return fmt.Errorf("valid --repo and positive --number are required")
@@ -230,7 +238,11 @@ func addQueries() {
 			defer closeStore(command.Context(), db)
 			var out any
 			if kind == "get" {
-				out, err = db.Get(command.Context(), repo, number)
+				read.Repo, read.Number = repo, number
+				if command.Flags().Changed("limit") {
+					read.Limit = limit
+				}
+				out, err = db.Read(command.Context(), read)
 			} else {
 				out, err = db.Candidates(command.Context(), repo, number, limit)
 			}
@@ -242,6 +254,8 @@ func addQueries() {
 		root.AddCommand(command)
 	}
 	var kind, scope string
+	var catalogLimit int
+	var catalogCursor string
 	catalog := &cobra.Command{Use: "catalog", Short: "Read labels, milestones, issue fields/types or project catalogs", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
 		if kind == "" || scope == "" {
 			return fmt.Errorf("--kind and --scope are required")
@@ -251,7 +265,12 @@ func addQueries() {
 			return err
 		}
 		defer closeStore(command.Context(), db)
-		out, err := db.Catalog(command.Context(), kind, scope)
+		var out store.CatalogResult
+		if command.Flags().Changed("limit") || catalogCursor != "" {
+			out, err = db.CatalogPage(command.Context(), store.CatalogOptions{Kind: kind, Scope: scope, Limit: catalogLimit, Cursor: catalogCursor})
+		} else {
+			out, err = db.Catalog(command.Context(), kind, scope)
+		}
 		if err != nil {
 			return fmt.Errorf("read local catalog: %w", err)
 		}
@@ -259,6 +278,8 @@ func addQueries() {
 	}}
 	catalog.Flags().StringVar(&kind, "kind", "", "Catalog name")
 	catalog.Flags().StringVar(&scope, "scope", "", "Repository, owner or owner/project-number")
+	catalog.Flags().IntVar(&catalogLimit, "limit", 30, "Enable pagination with this page size (1–100)")
+	catalog.Flags().StringVar(&catalogCursor, "cursor", "", "Continue next_cursor")
 	root.AddCommand(catalog)
 	root.AddCommand(&cobra.Command{Use: "status", Short: "Read generation, scope and coverage", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
 		db, err := open(true)

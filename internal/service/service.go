@@ -46,6 +46,7 @@ func ValidateListen(address, token string) error {
 // Handler creates authenticated REST, snapshot, and Streamable HTTP MCP routes.
 func (s *Service) Handler() http.Handler {
 	mux := http.NewServeMux()
+	s.readRoutes(mux)
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		status, err := s.Store.Status(r.Context())
 		if err == nil && status.Generation == "" {
@@ -82,11 +83,29 @@ func (s *Service) Handler() http.Handler {
 			respond(w, nil, badInput("invalid issue identity"))
 			return
 		}
-		out, err := s.Store.Get(r.Context(), repo, number)
+		q := r.URL.Query()
+		limit, err := intParam(q, "limit", 0)
+		if err != nil {
+			respond(w, nil, err)
+			return
+		}
+		out, err := s.Store.Read(r.Context(), store.ReadOptions{Repo: repo, Number: number, View: q.Get("view"), Comments: q.Get("comments"), CommentKind: q.Get("comment_kind"), Limit: limit, Cursor: q.Get("cursor")})
 		respond(w, out, err)
 	})
 	mux.HandleFunc("GET /v1/catalog", func(w http.ResponseWriter, r *http.Request) {
-		out, err := s.Store.Catalog(r.Context(), r.URL.Query().Get("kind"), r.URL.Query().Get("scope"))
+		q := r.URL.Query()
+		var out store.CatalogResult
+		var err error
+		if q.Has("limit") || q.Has("cursor") {
+			limit, e := intParam(q, "limit", 30)
+			if e != nil {
+				respond(w, nil, e)
+				return
+			}
+			out, err = s.Store.CatalogPage(r.Context(), store.CatalogOptions{Kind: q.Get("kind"), Scope: q.Get("scope"), Limit: limit, Cursor: q.Get("cursor")})
+		} else {
+			out, err = s.Store.Catalog(r.Context(), q.Get("kind"), q.Get("scope"))
+		}
 		respond(w, out, err)
 	})
 	mux.HandleFunc("GET /v1/projects", func(w http.ResponseWriter, r *http.Request) {
@@ -196,43 +215,44 @@ type projectInput struct {
 	Number int    `json:"number"`
 }
 
-func tool(name, description string) *mcp.Tool {
+func tool(name, description string, result any) *mcp.Tool {
 	destructive, openWorld := false, false
-	// Raw upstream JSON has variable shapes; the SDK infers RawMessage as a byte array.
-	return &mcp.Tool{Name: name, Description: description, OutputSchema: map[string]any{"type": "object"}, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}
+	// Describe stable envelopes while leaving preserved upstream JSON unconstrained.
+	return &mcp.Tool{Name: name, Description: description, OutputSchema: outputSchema(result), Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, DestructiveHint: &destructive, OpenWorldHint: &openWorld}}
 }
 
 // MCP creates local read tools; tool calls never fetch upstream data.
 func (s *Service) MCP() *mcp.Server {
 	server := mcp.NewServer(&mcp.Implementation{Name: "gh-mirror", Version: s.Version}, nil)
-	mcp.AddTool(server, tool("list_issues", "List local tickets with repository, state, label, type, kind and project owner/number filters. Follow next_cursor with the same filters; cursors pin a mirror generation."), func(ctx context.Context, _ *mcp.CallToolRequest, input store.ListOptions) (*mcp.CallToolResult, store.ListResult, error) {
+	mcp.AddTool(server, tool("list_issues", "List local tickets with repository, state, label, type, kind and project owner/number filters. Follow next_cursor with the same filters; cursors pin a mirror generation.", store.ListResult{}), func(ctx context.Context, _ *mcp.CallToolRequest, input store.ListOptions) (*mcp.CallToolResult, store.ListResult, error) {
 		out, err := s.Store.List(ctx, input)
 		return nil, out, err
 	})
-	mcp.AddTool(server, tool("search_issues", "Search local issue titles, bodies, label names and all conversation comments using literal words."), func(ctx context.Context, _ *mcp.CallToolRequest, input store.SearchOptions) (*mcp.CallToolResult, store.SearchResult, error) {
+	mcp.AddTool(server, tool("search_issues", "Search local tickets with any/all/phrase literal modes, scoped sources, exclusions, filters, ranking evidence and pagination. all spans the ticket; phrase stays in one source. Lower BM25 scores rank first. Follow next_cursor with identical options.", store.SearchResult{}), func(ctx context.Context, _ *mcp.CallToolRequest, input store.SearchOptions) (*mcp.CallToolResult, store.SearchResult, error) {
 		out, err := s.Store.Search(ctx, input)
 		return nil, out, err
 	})
-	mcp.AddTool(server, tool("get_issue", "Read a complete local issue, comments, fields and collection coverage."), func(ctx context.Context, _ *mcp.CallToolRequest, input issueInput) (*mcp.CallToolResult, store.Issue, error) {
-		out, err := s.Store.Get(ctx, input.Repo, input.Number)
+	mcp.AddTool(server, tool("get_issue", "Read a local ticket. Use view=summary for compact metadata, comments=none to omit comments, or comments=page with limit/cursor/comment_kind for bounded comments. Legacy full reads include all comments.", store.Issue{}), func(ctx context.Context, _ *mcp.CallToolRequest, input store.ReadOptions) (*mcp.CallToolResult, store.Issue, error) {
+		out, err := s.Store.Read(ctx, input)
 		return nil, out, err
 	})
-	mcp.AddTool(server, tool("get_catalog", "Read labels, milestones, issue_types, issue_fields or projects for a scope."), func(ctx context.Context, _ *mcp.CallToolRequest, input catalogInput) (*mcp.CallToolResult, store.CatalogResult, error) {
+	mcp.AddTool(server, tool("get_catalog", "Read labels, milestones, issue_types, issue_fields or projects for a scope.", store.CatalogResult{}), func(ctx context.Context, _ *mcp.CallToolRequest, input catalogInput) (*mcp.CallToolResult, store.CatalogResult, error) {
 		out, err := s.Store.Catalog(ctx, input.Kind, input.Scope)
 		return nil, out, err
 	})
-	mcp.AddTool(server, tool("get_project", "Read a local owner's project catalog record and collection status."), func(ctx context.Context, _ *mcp.CallToolRequest, input projectInput) (*mcp.CallToolResult, store.ProjectResult, error) {
+	mcp.AddTool(server, tool("get_project", "Read a local owner's project catalog record and collection status.", store.ProjectResult{}), func(ctx context.Context, _ *mcp.CallToolRequest, input projectInput) (*mcp.CallToolResult, store.ProjectResult, error) {
 		out, err := s.Store.Project(ctx, input.Owner, input.Number)
 		return nil, out, err
 	})
-	mcp.AddTool(server, tool("find_duplicate_candidates", "Rank related local issues including closed history; scores are retrieval scores, not duplicate probabilities."), func(ctx context.Context, _ *mcp.CallToolRequest, input issueInput) (*mcp.CallToolResult, store.SearchResult, error) {
+	mcp.AddTool(server, tool("find_duplicate_candidates", "Rank related local issues including closed history; scores are retrieval scores, not duplicate probabilities.", store.SearchResult{}), func(ctx context.Context, _ *mcp.CallToolRequest, input issueInput) (*mcp.CallToolResult, store.SearchResult, error) {
 		out, err := s.Store.Candidates(ctx, input.Repo, input.Number, input.Limit)
 		return nil, out, err
 	})
-	mcp.AddTool(server, tool("get_sync_status", "Read generation, scope, collection timestamps and coverage."), func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, store.Status, error) {
+	mcp.AddTool(server, tool("get_sync_status", "Read generation, scope, collection timestamps and coverage.", store.Status{}), func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, store.Status, error) {
 		out, err := s.Store.Status(ctx)
 		return nil, out, err
 	})
+	s.readTools(server)
 	return server
 }
 

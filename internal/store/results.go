@@ -118,6 +118,15 @@ func projectName(raw string) string {
 
 func queryWarnings(s Status, f filters, p PageOptions, in []string) []Warning {
 	out := []Warning{}
+	requested := append([]string{}, f.Repositories...)
+	if f.Repo != "" {
+		requested = append(requested, f.Repo)
+	}
+	for _, repo := range requested {
+		if !slices.Contains(s.Repositories, repo) {
+			out = append(out, Warning{"repository_not_collected", repo, "repository", "Requested repository is not part of this mirror."})
+		}
+	}
 	age := 24 * time.Hour
 	if p.MaxEnrichmentAge != "" {
 		if d, err := time.ParseDuration(p.MaxEnrichmentAge); err == nil {
@@ -149,11 +158,17 @@ func queryWarnings(s Status, f filters, p PageOptions, in []string) []Warning {
 			}
 		}
 		for _, resource := range resources {
-			enabled := true
+			enabled := resource != "reviews"
 			if options != nil {
 				switch resource {
 				case "comments":
 					enabled = options["issue_comments"] || options["pull_request_comments"]
+					if f.Kind == "issue" {
+						enabled = options["issue_comments"]
+					}
+					if f.Kind == "pull_request" {
+						enabled = options["pull_request_comments"]
+					}
 				case "reviews":
 					enabled = options["pull_request_review_comments"]
 				default:
@@ -211,7 +226,7 @@ func facets(ctx context.Context, q querier, cte, selected string, args []any) (*
 	}{
 		{`SELECT value,count(*) FROM (SELECT DISTINCT i.repo,i.number,json_extract(l.value,'$.name') value FROM selected s JOIN issues i USING(repo,number),json_each(i.payload,'$.labels') l) WHERE value IS NOT NULL GROUP BY value ORDER BY count(*) DESC,value LIMIT 101`, &out.Labels},
 		{`SELECT json_extract(i.payload,'$.type.name') value,count(*) FROM selected s JOIN issues i USING(repo,number) WHERE value IS NOT NULL GROUP BY value ORDER BY count(*) DESC,value LIMIT 101`, &out.Types},
-		{`SELECT value,count(*) FROM (SELECT DISTINCT i.repo,i.number,json_extract(p.value,'$.project.url') value FROM selected s JOIN issues i USING(repo,number),json_each(i.extra,'$.projectItems') p) WHERE value IS NOT NULL GROUP BY value ORDER BY count(*) DESC,value LIMIT 101`, &out.Projects},
+		{`SELECT value,count(*) FROM (SELECT DISTINCT i.repo,i.number,CASE WHEN instr(json_extract(p.value,'$.project.url'),'/orgs/')>0 THEN replace(substr(json_extract(p.value,'$.project.url'),instr(json_extract(p.value,'$.project.url'),'/orgs/')+6),'/projects/','/') WHEN instr(json_extract(p.value,'$.project.url'),'/users/')>0 THEN replace(substr(json_extract(p.value,'$.project.url'),instr(json_extract(p.value,'$.project.url'),'/users/')+7),'/projects/','/') END value FROM selected s JOIN issues i USING(repo,number),json_each(i.extra,'$.projectItems') p) WHERE value IS NOT NULL GROUP BY value ORDER BY count(*) DESC,value LIMIT 101`, &out.Projects},
 	}
 	for _, d := range definitions {
 		rows, err := q.QueryContext(ctx, cte+",selected AS ("+selected+") "+d.query, args...)
@@ -222,9 +237,6 @@ func facets(ctx context.Context, q querier, cte, selected string, args []any) (*
 			var b Bucket
 			if err := rows.Scan(&b.Value, &b.Count); err != nil {
 				return nil, finishRows(rows, err)
-			}
-			if d.dest == &out.Projects {
-				b.Value = projectName(b.Value)
 			}
 			*d.dest = append(*d.dest, b)
 		}

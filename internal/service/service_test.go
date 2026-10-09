@@ -81,7 +81,7 @@ func TestRESTMCPParity(t *testing.T) {
 				}
 			}()
 			tools, err := session.ListTools(ctx, nil)
-			if err != nil || len(tools.Tools) != 7 {
+			if err != nil || len(tools.Tools) != 10 {
 				t.Fatal("MCP tools", tools, err)
 			}
 			for _, tool := range tools.Tools {

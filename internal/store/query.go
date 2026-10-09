@@ -177,14 +177,16 @@ func (w *Writer) ResetScope(ctx context.Context, repos []string, resetCatalog, r
 
 // Issue contains complete raw upstream records plus independent GraphQL observations.
 type Issue struct {
-	Repo     string            `json:"repo"`
-	Number   int               `json:"number"`
-	Kind     string            `json:"kind"`
-	Payload  json.RawMessage   `json:"issue,omitempty"`
-	Comments []json.RawMessage `json:"comments"`
-	Fields   json.RawMessage   `json:"fields,omitempty"`
-	Extra    json.RawMessage   `json:"extra,omitempty"`
-	Status   Status            `json:"status"`
+	Summary     *TicketSummary    `json:"summary,omitempty"`
+	CommentPage *CommentResult    `json:"comment_page,omitempty"`
+	Repo        string            `json:"repo"`
+	Number      int               `json:"number"`
+	Kind        string            `json:"kind"`
+	Payload     json.RawMessage   `json:"issue,omitempty"`
+	Comments    []json.RawMessage `json:"comments"`
+	Fields      json.RawMessage   `json:"fields,omitempty"`
+	Extra       json.RawMessage   `json:"extra,omitempty"`
+	Status      Status            `json:"status"`
 }
 
 func get(ctx context.Context, q querier, repo string, number int) (Issue, error) {
@@ -223,8 +225,11 @@ func (s *Store) Get(ctx context.Context, repo string, number int) (Issue, error)
 
 // CatalogResult preserves complete catalog records and generation coverage.
 type CatalogResult struct {
-	Items  []json.RawMessage `json:"items"`
-	Status Status            `json:"status"`
+	Warnings   []Warning         `json:"warnings"`
+	NextCursor string            `json:"next_cursor"`
+	HasMore    bool              `json:"has_more"`
+	Items      []json.RawMessage `json:"items"`
+	Status     Status            `json:"status"`
 }
 
 // Catalog retrieves a complete named catalog for a repository, owner, or project scope.
