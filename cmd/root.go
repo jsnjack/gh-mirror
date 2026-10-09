@@ -277,7 +277,7 @@ func addSnapshots() {
 	}})
 	var source, dest string
 	var repos []string
-	var maxAge time.Duration
+	var maxAge, maxEnrichmentAge time.Duration
 	command := &cobra.Command{Use: "acquire", Short: "Verify and install one private snapshot for a CI job", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
 		if len(repos) == 0 {
 			repos = settings.Repositories
@@ -285,7 +285,7 @@ func addSnapshots() {
 		if source == "" {
 			source = settings.SnapshotDir + string(os.PathSeparator) + "latest.json"
 		}
-		out, err := snapshot.Acquire(command.Context(), snapshot.Options{Source: source, Destination: dest, Repositories: repos, MaxAge: maxAge, Token: os.Getenv(settings.APITokenEnv)})
+		out, err := snapshot.Acquire(command.Context(), snapshot.Options{Source: source, Destination: dest, Repositories: repos, MaxAge: maxAge, MaxEnrichmentAge: maxEnrichmentAge, Token: os.Getenv(settings.APITokenEnv)})
 		if err != nil {
 			return fmt.Errorf("acquire CI snapshot: %w", err)
 		}
@@ -295,6 +295,7 @@ func addSnapshots() {
 	command.Flags().StringVar(&dest, "dest", "", "Private destination database (required)")
 	command.Flags().StringSliceVar(&repos, "repo", nil, "Exact required repository scope")
 	command.Flags().DurationVar(&maxAge, "max-age", 2*time.Hour, "Maximum collection age")
+	command.Flags().DurationVar(&maxEnrichmentAge, "max-enrichment-age", 0, "Maximum metadata enrichment age (0 disables the check)")
 	root.AddCommand(command)
 }
 func addServers() {

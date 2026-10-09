@@ -29,13 +29,14 @@ var filenamePattern = regexp.MustCompile(`^mirror-[A-Za-z0-9_-]+\.sqlite$`)
 
 // Manifest pins a complete database file, checksum, collection time, and scope.
 type Manifest struct {
-	Filename      string   `json:"filename"`
-	SHA256        string   `json:"sha256"`
-	SchemaVersion int      `json:"schema_version"`
-	Generation    string   `json:"generation"`
-	CollectedAt   string   `json:"collected_at"`
-	EnrichedAt    string   `json:"enriched_at"`
-	Repositories  []string `json:"repositories"`
+	Filename          string   `json:"filename"`
+	SHA256            string   `json:"sha256"`
+	SchemaVersion     int      `json:"schema_version"`
+	CollectionVersion int      `json:"collection_version"`
+	Generation        string   `json:"generation"`
+	CollectedAt       string   `json:"collected_at"`
+	EnrichedAt        string   `json:"enriched_at"`
+	Repositories      []string `json:"repositories"`
 }
 
 func remove(path string) {
@@ -78,6 +79,9 @@ func inspect(ctx context.Context, path string) (store.Status, error) {
 	}
 	if s.Generation == "" || s.CollectedAt == "" || len(s.Repositories) == 0 || len(s.Coverage) != len(s.Repositories) {
 		return s, fmt.Errorf("snapshot has no complete committed collection")
+	}
+	if s.CollectionVersion != store.CollectionVersion {
+		return s, fmt.Errorf("unsupported snapshot collection version %d; run sync with a compatible collector", s.CollectionVersion)
 	}
 	for _, c := range s.Coverage {
 		if c.CollectedAt != s.CollectedAt || c.Fields == "" || c.Projects == "" {
@@ -131,7 +135,7 @@ func Publish(ctx context.Context, db *store.Store, dir string) (Manifest, error)
 	if err != nil {
 		return m, fmt.Errorf("checksum exported mirror: %w", err)
 	}
-	m = Manifest{Filename: "mirror-" + s.Generation + "-" + hash[:12] + ".sqlite", SHA256: hash, SchemaVersion: store.SchemaVersion, Generation: s.Generation, CollectedAt: s.CollectedAt, EnrichedAt: s.EnrichedAt, Repositories: s.Repositories}
+	m = Manifest{Filename: "mirror-" + s.Generation + "-" + hash[:12] + ".sqlite", SHA256: hash, SchemaVersion: store.SchemaVersion, CollectionVersion: s.CollectionVersion, Generation: s.Generation, CollectedAt: s.CollectedAt, EnrichedAt: s.EnrichedAt, Repositories: s.Repositories}
 	if !ValidFilename(m.Filename) {
 		return m, fmt.Errorf("invalid snapshot generation identity")
 	}
@@ -211,6 +215,12 @@ func decode(body []byte) (Manifest, error) {
 	if err := json.Unmarshal(body, &m); err != nil {
 		return m, fmt.Errorf("decode snapshot manifest: %w", err)
 	}
+	if m.CollectionVersion == 0 {
+		m.CollectionVersion = store.LegacyCollectionVersion
+	}
+	if m.CollectionVersion != store.CollectionVersion {
+		return m, fmt.Errorf("unsupported snapshot collection version %d", m.CollectionVersion)
+	}
 	if !filenamePattern.MatchString(m.Filename) || m.Generation == "" || m.SchemaVersion != store.SchemaVersion || len(m.Repositories) == 0 || len(m.SHA256) != 64 {
 		return m, fmt.Errorf("invalid filename, checksum, schema or scope in manifest")
 	}
@@ -225,17 +235,18 @@ func decode(body []byte) (Manifest, error) {
 
 // Options constrains snapshot acquisition by transport, scope, and maximum age.
 type Options struct {
-	Source       string
-	Destination  string
-	Token        string
-	Repositories []string
-	MaxAge       time.Duration
+	Source           string
+	Destination      string
+	Token            string
+	Repositories     []string
+	MaxAge           time.Duration
+	MaxEnrichmentAge time.Duration
 }
 
 // Acquire verifies one resolved generation and installs a private local database.
 func Acquire(ctx context.Context, o Options) (Manifest, error) {
 	var m Manifest
-	if o.MaxAge <= 0 || o.Destination == "" || o.Source == "" || len(o.Repositories) == 0 {
+	if o.MaxAge <= 0 || o.MaxEnrichmentAge < 0 || o.Destination == "" || o.Source == "" || len(o.Repositories) == 0 {
 		return m, fmt.Errorf("source, destination, required repositories and positive maximum age are required")
 	}
 	remote := strings.HasPrefix(o.Source, "https://") || strings.HasPrefix(o.Source, "http://")
@@ -253,12 +264,13 @@ func Acquire(ctx context.Context, o Options) (Manifest, error) {
 	if err != nil {
 		return m, fmt.Errorf("validate snapshot manifest: %w", err)
 	}
-	collected, err := time.Parse(time.RFC3339Nano, m.CollectedAt)
-	if err != nil {
-		return m, fmt.Errorf("parse collection time: %w", err)
+	if err := validateAge(m.CollectedAt, o.MaxAge, "collection"); err != nil {
+		return m, err
 	}
-	if time.Since(collected) > o.MaxAge || time.Until(collected) > 5*time.Minute {
-		return m, fmt.Errorf("snapshot is stale or has a future collection timestamp")
+	if o.MaxEnrichmentAge > 0 {
+		if err := validateAge(m.EnrichedAt, o.MaxEnrichmentAge, "enrichment"); err != nil {
+			return m, err
+		}
 	}
 	if !sameScope(m.Repositories, o.Repositories) {
 		return m, fmt.Errorf("snapshot repository scope does not match required scope")
@@ -334,7 +346,7 @@ func Acquire(ctx context.Context, o Options) (Manifest, error) {
 	if err != nil {
 		return m, fmt.Errorf("validate private snapshot: %w", err)
 	}
-	if s.Generation != m.Generation || s.CollectedAt != m.CollectedAt || s.EnrichedAt != m.EnrichedAt || !sameScope(s.Repositories, m.Repositories) {
+	if s.Generation != m.Generation || s.CollectionVersion != m.CollectionVersion || s.CollectedAt != m.CollectedAt || s.EnrichedAt != m.EnrichedAt || !sameScope(s.Repositories, m.Repositories) {
 		return m, fmt.Errorf("snapshot embedded metadata does not match manifest")
 	}
 	for _, suffix := range []string{"-wal", "-shm"} {
@@ -351,6 +363,17 @@ func Acquire(ctx context.Context, o Options) (Manifest, error) {
 		return m, fmt.Errorf("persist private snapshot: %w", err)
 	}
 	return m, nil
+}
+
+func validateAge(timestamp string, maximum time.Duration, resource string) error {
+	when, err := time.Parse(time.RFC3339Nano, timestamp)
+	if err != nil {
+		return fmt.Errorf("parse snapshot %s time: %w", resource, err)
+	}
+	if time.Since(when) > maximum || time.Until(when) > 5*time.Minute {
+		return fmt.Errorf("snapshot %s is stale or has a future timestamp", resource)
+	}
+	return nil
 }
 func sameScope(a, b []string) bool {
 	left := append([]string{}, a...)

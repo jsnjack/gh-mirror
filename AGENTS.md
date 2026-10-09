@@ -88,6 +88,10 @@ verifies checksum, scope, schema and freshness, and installs a private local cop
 Exports remove all conditional response caches and local credential identity, then
 compact the private export to remove deleted payload bytes. Prune disabled field
 and project caches and obsolete full-item caches inside successful sync transactions.
+Snapshot manifests include collection version; legacy manifests default to version
+1. Publication and acquisition reject incompatible collection contracts and compare
+the embedded version. Optional `acquire --max-enrichment-age` constrains metadata
+freshness independently of comment/issue collection age.
 Credentials come from named environment variables and never enter the database,
 stdout, request bodies, or trace logs. HTTP listeners outside loopback require an
 API bearer token. Read tools never trigger collection or expose arbitrary SQL.
