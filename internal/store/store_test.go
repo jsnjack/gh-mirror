@@ -6,9 +6,41 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
+
+func TestCollectionVersion(t *testing.T) {
+	for _, name := range []string{"legacy", "current", "other contract", "malformed"} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			db := testStore(t)
+			version := LegacyCollectionVersion
+			if name != "legacy" {
+				version = CollectionVersion
+				if name == "other contract" {
+					version++
+				}
+				value := strconv.Itoa(version)
+				if name == "malformed" {
+					value = "invalid"
+				}
+				if err := db.Update(ctx, func(w *Writer) error { return w.SetMetadata(ctx, "collection_version", value) }); err != nil {
+					t.Fatal(err)
+				}
+			}
+			status, err := db.Status(ctx)
+			if name == "malformed" {
+				if err == nil || !strings.Contains(err.Error(), "parse collection version") {
+					t.Fatal("malformed version was silently accepted", status, err)
+				}
+			} else if err != nil || status.CollectionVersion != version {
+				t.Fatal("incorrect collection compatibility metadata", status, err)
+			}
+		})
+	}
+}
 
 func testStore(t *testing.T) *Store {
 	t.Helper()

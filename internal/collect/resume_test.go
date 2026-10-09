@@ -46,7 +46,7 @@ func TestMembershipUpgrade(t *testing.T) {
 			}
 			c.Projects = enabled
 			pendingAt := started.Add(10 * time.Minute)
-			signature, err := sessionSignature(c, c.Repositories, initial.Status.Generation, false, os.Getenv(c.TokenEnv))
+			signature, err := sessionSignature(c, c.Repositories, initial.Status.Generation, false, os.Getenv(c.TokenEnv), store.CollectionVersion)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -158,7 +158,7 @@ func TestResumeSync(t *testing.T) {
 			if err != nil || after.Generation != old.Generation || after.Issues != old.Issues {
 				t.Fatal("partial data became visible", after, err)
 			}
-			signature, err := sessionSignature(c, c.Repositories, old.Generation, false, os.Getenv(c.TokenEnv))
+			signature, err := sessionSignature(c, c.Repositories, old.Generation, false, os.Getenv(c.TokenEnv), store.CollectionVersion)
 			if err != nil {
 				t.Fatal(err)
 			}

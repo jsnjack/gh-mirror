@@ -42,6 +42,10 @@ func Sync(ctx context.Context, db *store.Store, c config.Config, options Options
 	return syncAt(ctx, db, c, options, time.Now().UTC())
 }
 func syncAt(ctx context.Context, db *store.Store, c config.Config, options Options, started time.Time) (Result, error) {
+	return syncVersion(ctx, db, c, options, started, store.CollectionVersion)
+}
+
+func syncVersion(ctx context.Context, db *store.Store, c config.Config, options Options, started time.Time, version int) (Result, error) {
 	full, report := options.Full, options.Progress
 	var result Result
 	report.Send(progress.Event{Phase: "Checking checkpoints", Limit: c.MaxRequests})
@@ -77,7 +81,13 @@ func syncAt(ctx context.Context, db *store.Store, c config.Config, options Optio
 		if err != nil {
 			return fmt.Errorf("load collector checkpoints: %w", err)
 		}
-		signature, err = sessionSignature(c, repos, old.Generation, full, os.Getenv(c.TokenEnv))
+		incompatible := old.Generation != "" && old.CollectionVersion != version
+		if incompatible {
+			full = true
+			report.Send(progress.Event{Phase: "Collection version changed; full sync required", Scope: fmt.Sprintf("v%d -> v%d", old.CollectionVersion, version)})
+			slog.DebugContext(ctx, "rebuild incompatible collection", "previous", old.CollectionVersion, "current", version)
+		}
+		signature, err = sessionSignature(c, repos, old.Generation, full, os.Getenv(c.TokenEnv), version)
 		if err != nil {
 			return err
 		}
@@ -110,7 +120,7 @@ func syncAt(ctx context.Context, db *store.Store, c config.Config, options Optio
 				refresh = true
 			}
 		}
-		if err := w.ResetScope(ctx, repos, refresh, old.Upstream != strings.TrimRight(c.APIURL, "/")); err != nil {
+		if err := w.ResetScope(ctx, repos, refresh, incompatible || old.Upstream != strings.TrimRight(c.APIURL, "/")); err != nil {
 			return fmt.Errorf("reset collection scope: %w", err)
 		}
 		client := github.New(c.APIURL, c.GraphQLURL, os.Getenv(c.TokenEnv), c.MaxRequests, c.Workers, w)
@@ -322,7 +332,7 @@ func syncAt(ctx context.Context, db *store.Store, c config.Config, options Optio
 				return err
 			}
 		}
-		for key, value := range map[string]string{"upstream": strings.TrimRight(c.APIURL, "/"), "repositories": string(scope), "generation": rand.Text(), "collected_at": started.Format(time.RFC3339Nano)} {
+		for key, value := range map[string]string{"upstream": strings.TrimRight(c.APIURL, "/"), "repositories": string(scope), "generation": rand.Text(), "collected_at": started.Format(time.RFC3339Nano), "collection_version": strconv.Itoa(version)} {
 			if err := w.SetMetadata(ctx, key, value); err != nil {
 				return err
 			}

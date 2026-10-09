@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -23,15 +24,16 @@ type Coverage struct {
 
 // Status identifies the committed generation and collection scope.
 type Status struct {
-	Upstream      string     `json:"upstream"`
-	EnrichedAt    string     `json:"enriched_at"`
-	SchemaVersion int        `json:"schema_version"`
-	Generation    string     `json:"generation"`
-	CollectedAt   string     `json:"collected_at"`
-	Repositories  []string   `json:"repositories"`
-	Coverage      []Coverage `json:"coverage"`
-	Issues        int        `json:"issues"`
-	Comments      int        `json:"comments"`
+	Upstream          string     `json:"upstream"`
+	EnrichedAt        string     `json:"enriched_at"`
+	SchemaVersion     int        `json:"schema_version"`
+	CollectionVersion int        `json:"collection_version"`
+	Generation        string     `json:"generation"`
+	CollectedAt       string     `json:"collected_at"`
+	Repositories      []string   `json:"repositories"`
+	Coverage          []Coverage `json:"coverage"`
+	Issues            int        `json:"issues"`
+	Comments          int        `json:"comments"`
 }
 type querier interface {
 	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
@@ -39,7 +41,7 @@ type querier interface {
 }
 
 func status(ctx context.Context, q querier) (Status, error) {
-	s := Status{SchemaVersion: SchemaVersion, Repositories: []string{}, Coverage: []Coverage{}}
+	s := Status{SchemaVersion: SchemaVersion, CollectionVersion: LegacyCollectionVersion, Repositories: []string{}, Coverage: []Coverage{}}
 	rows, err := q.QueryContext(ctx, "SELECT key,value FROM metadata")
 	if err != nil {
 		return s, fmt.Errorf("read generation: %w", err)
@@ -50,6 +52,12 @@ func status(ctx context.Context, q querier) (Status, error) {
 			return s, finishRows(rows, err)
 		}
 		switch k {
+		case "collection_version":
+			version, err := strconv.Atoi(v)
+			if err != nil {
+				return s, finishRows(rows, fmt.Errorf("parse collection version: %w", err))
+			}
+			s.CollectionVersion = version
 		case "upstream":
 			s.Upstream = v
 		case "enriched_at":

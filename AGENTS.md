@@ -35,6 +35,17 @@ full reconciliation, and include it in batched hydration. On deltas, check the s
 inventory first. Recovery fetches use the shared budget and durable resume checkpoint;
 inaccessible or mismatched parents fail explicitly without dropping comments.
 
+`store.CollectionVersion` defines data compatibility separately from release and SQL
+schema versions. Increment it when collection or normalization changes invalidate
+existing data for incremental updates. Missing metadata means legacy version 1.
+A mismatch forces a full inventory and enrichment rebuild, discards incompatible
+conditional responses, and fingerprints pending work with the target version and
+effective full mode. Keep the legacy version-1 fingerprint unchanged. Persist the
+new version only when collection commits; cancellation or failure preserves the
+previous mirror and resumes completed fetches for the target version. Compatible
+code changes do not bump this version or force collection. Physical SQL schema
+changes remain subject to the separate schema compatibility checks.
+
 Workers share concurrency permits, budget reservations, retry pauses, and serialized
 progress callbacks. Parallelize independent listings and hydration batches; follow
 dependent pagination sequentially. Apply hydration results serially and join workers
