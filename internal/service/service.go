@@ -199,11 +199,11 @@ func (s *Service) MCP() *mcp.Server {
 		out, err := s.Store.Get(ctx, input.Repo, input.Number)
 		return nil, out, err
 	})
-	mcp.AddTool(server, tool("get_catalog", "Read labels, milestones, issue_types, issue_fields, projects, project_fields or project_items for a scope."), func(ctx context.Context, _ *mcp.CallToolRequest, input catalogInput) (*mcp.CallToolResult, store.CatalogResult, error) {
+	mcp.AddTool(server, tool("get_catalog", "Read labels, milestones, issue_types, issue_fields or projects for a scope."), func(ctx context.Context, _ *mcp.CallToolRequest, input catalogInput) (*mcp.CallToolResult, store.CatalogResult, error) {
 		out, err := s.Store.Catalog(ctx, input.Kind, input.Scope)
 		return nil, out, err
 	})
-	mcp.AddTool(server, tool("get_project", "Read a local owner's project including fields, archived and active items."), func(ctx context.Context, _ *mcp.CallToolRequest, input projectInput) (*mcp.CallToolResult, store.ProjectResult, error) {
+	mcp.AddTool(server, tool("get_project", "Read a local owner's project catalog record and collection status."), func(ctx context.Context, _ *mcp.CallToolRequest, input projectInput) (*mcp.CallToolResult, store.ProjectResult, error) {
 		out, err := s.Store.Project(ctx, input.Owner, input.Number)
 		return nil, out, err
 	})

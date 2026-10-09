@@ -30,7 +30,7 @@ func TestParallelSync(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if peak.Load() != int32(workers) || result.Requests != 20 || result.Status.Issues != 251 || result.Status.Comments != 1 {
+			if peak.Load() != int32(workers) || result.Requests != 17 || result.Status.Issues != 251 || result.Status.Comments != 1 {
 				t.Fatal("parallel sync changed coverage or request count", peak.Load(), result)
 			}
 			t.Logf("%d workers: %s, %d requests, peak concurrency %d", workers, time.Since(begin).Round(time.Millisecond), result.Requests, peak.Load())

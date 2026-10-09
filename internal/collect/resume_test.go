@@ -2,7 +2,9 @@ package collect
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -12,6 +14,110 @@ import (
 	"gh-mirror/internal/progress"
 	"gh-mirror/internal/store"
 )
+
+func TestMembershipUpgrade(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		name := "memberships"
+		if !enabled {
+			name = "disabled"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			db, c, f, started := setup(t, 2)
+			initial, err := syncAt(ctx, db, c, Options{}, started)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Model a mirror and pending responses written by the full-item collector.
+			if err := db.Update(ctx, func(w *store.Writer) error {
+				coverage := initial.Status.Coverage[0]
+				coverage.Projects = "complete"
+				if err := w.SetCoverage(ctx, coverage); err != nil {
+					return err
+				}
+				for _, kind := range []string{"project_fields", "project_items"} {
+					if err := w.ReplaceCatalog(ctx, kind, "o/1", []json.RawMessage{json.RawMessage(`{"id":32}`)}); err != nil {
+						return err
+					}
+				}
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			c.Projects = enabled
+			pendingAt := started.Add(10 * time.Minute)
+			signature, err := sessionSignature(c, c.Repositories, initial.Status.Generation, false, os.Getenv(c.TokenEnv))
+			if err != nil {
+				t.Fatal(err)
+			}
+			pending, err := checkpoint.Open(ctx, db.Path+".sync.sqlite", signature, pendingAt, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			overlap, err := time.ParseDuration(c.Overlap)
+			if err != nil {
+				t.Fatal(err)
+			}
+			query := url.Values{"state": {"all"}, "per_page": {"100"}, "sort": {"updated"}, "direction": {"asc"}, "since": {started.Add(-overlap).Format(time.RFC3339)}}
+			for _, key := range []string{
+				"GET:" + c.APIURL + "/repos/o/r/issues?" + query.Encode(),
+				"GET:" + c.APIURL + "/orgs/o/projectsV2/1/items?per_page=100",
+			} {
+				if err := pending.Save(ctx, key, []byte(`{"body":[],"link":"","etag":""}`)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := pending.Close(); err != nil {
+				t.Fatal(err)
+			}
+			f.stage, f.timestamp = "delta", pendingAt.Format(time.RFC3339)
+			result, err := syncAt(ctx, db, c, Options{}, pendingAt.Add(10*time.Minute))
+			if err != nil {
+				t.Fatal(err)
+			}
+			requests := 8
+			if enabled {
+				requests = 1
+			}
+			if result.Resumed != 1 || result.Requests != requests || result.Status.CollectedAt != pendingAt.Format(time.RFC3339Nano) || result.Status.Coverage[0].Projects != name {
+				t.Fatal("upgrade lost the checkpoint or refetched existing memberships", result)
+			}
+			if enabled && result.Status.EnrichedAt != initial.Status.EnrichedAt {
+				t.Fatal("upgrade unnecessarily refreshed enrichment", result.Status)
+			}
+			for _, kind := range []string{"project_fields", "project_items"} {
+				catalog, err := db.Catalog(ctx, kind, "o/1")
+				if err != nil || len(catalog.Items) != 0 {
+					t.Fatal("obsolete project data retained", kind, catalog, err)
+				}
+			}
+			catalog, err := db.Catalog(ctx, "projects", "o")
+			projects, memberships := 0, 0
+			if enabled {
+				projects, memberships = 1, 2
+			}
+			if err != nil || len(catalog.Items) != projects {
+				t.Fatal("project catalog scope incorrect", catalog, err)
+			}
+			issue, err := db.Get(ctx, "o/r", 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var extra struct {
+				ProjectItems []json.RawMessage `json:"projectItems"`
+			}
+			if err := json.Unmarshal(issue.Extra, &extra); err != nil {
+				t.Fatal(err)
+			}
+			if len(extra.ProjectItems) != memberships || len(issue.Comments) != 1 {
+				t.Fatal("upgrade lost ticket data or retained excluded memberships", issue)
+			}
+			if _, err := os.Stat(db.Path + ".sync.sqlite"); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("upgrade retained unused legacy checkpoint", err)
+			}
+		})
+	}
+}
 
 func TestResumeSync(t *testing.T) {
 	for _, name := range []string{"REST page", "metadata batch", "restart", "token change", "scope change", "budget exhausted", "incremental comment"} {
@@ -64,7 +170,7 @@ func TestResumeSync(t *testing.T) {
 			if saved < 1 || !pending.Started.Equal(started) {
 				t.Fatal("interruption lost completed fetches", saved, pending.Started)
 			}
-			if name == "metadata batch" && saved < 15 {
+			if name == "metadata batch" && saved < 12 {
 				t.Fatal("metadata batch was not saved", saved)
 			}
 			if err := pending.Close(); err != nil {
@@ -104,7 +210,7 @@ func TestResumeSync(t *testing.T) {
 					t.Fatal("incompatible work was reused", result)
 				}
 			} else {
-				total := 20
+				total := 17
 				if name == "incremental comment" {
 					total = 2
 				}

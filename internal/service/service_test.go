@@ -39,7 +39,7 @@ func fixture(t *testing.T) *Service {
 				return fmt.Errorf("seed metadata: %w", err)
 			}
 		}
-		for kind, scope := range map[string]string{"labels": "o/r", "projects": "o", "project_fields": "o/1", "project_items": "o/1"} {
+		for kind, scope := range map[string]string{"labels": "o/r", "projects": "o"} {
 			if err := w.ReplaceCatalog(context.Background(), kind, scope, []json.RawMessage{json.RawMessage(`{"id":1,"number":1,"name":"sample"}`)}); err != nil {
 				return fmt.Errorf("seed catalog: %w", err)
 			}

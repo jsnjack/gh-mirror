@@ -16,12 +16,16 @@ immutable databases. `internal/service` shares local queries between REST and MC
 so interrupted syncs resume across process boundaries.
 
 GitHub remains authoritative. Never issue upstream mutations. Preserve raw payloads,
-all accessible comments, native issue types, multiple assignees, unused labels, and
-separate organization issue fields from project fields. Verify bulk project items against the GraphQL inventory including both archived
-states; recover missing projected records by stable ID. Never treat failed pagination,
-inaccessible resources, or unsupported fields as an empty successful collection.
-Only successful collection transactions advance checkpoints. Poll comments separately
-from issues. Bootstrap uses 100-record REST pages and 50-node GraphQL batches shared
+all accessible comments, native issue types, multiple assignees, and unused labels.
+Collect project catalogs and ticket memberships, including archived memberships.
+Do not collect complete project items, draft cards, or project field definitions/values.
+Never treat failed pagination, inaccessible resources, or unsupported fields as an
+empty successful collection.
+Only successful collection transactions advance checkpoints. Record project coverage
+as `memberships` or `disabled`; upgrading older complete project coverage preserves
+existing memberships and removes obsolete catalogs without forcing enrichment.
+Keep compatible request checkpoints when narrowing project collection. Poll comments
+separately from issues. Bootstrap uses 100-record REST pages and 50-node GraphQL batches shared
 across repositories. Hydrate only changed tickets on deltas; reconcile catalogs,
 projects, fields and relationships on the configured enrichment interval. Expose
 that timestamp separately. Never retain non-reusable since-response cache entries. Full reconciliation removes stale issues, comments, and memberships.

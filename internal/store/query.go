@@ -122,7 +122,7 @@ func (w *Writer) SetCoverage(ctx context.Context, c Coverage) error {
 	return nil
 }
 
-// ResetScope removes excluded repositories and resets data when the upstream changes.
+// ResetScope removes excluded resources and resets data when the upstream changes.
 func (w *Writer) ResetScope(ctx context.Context, repos []string, resetCatalog, resetData bool) error {
 	old, err := w.Status(ctx)
 	if err != nil {
@@ -159,6 +159,8 @@ func (w *Writer) ResetScope(ctx context.Context, repos []string, resetCatalog, r
 		if _, err := w.tx.ExecContext(ctx, "DELETE FROM catalog"); err != nil {
 			return fmt.Errorf("reset catalogs: %w", err)
 		}
+	} else if _, err := w.tx.ExecContext(ctx, "DELETE FROM catalog WHERE kind IN ('project_fields','project_items')"); err != nil {
+		return fmt.Errorf("remove obsolete project catalogs: %w", err)
 	}
 	return nil
 }

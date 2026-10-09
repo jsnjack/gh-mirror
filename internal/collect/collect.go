@@ -95,9 +95,18 @@ func syncAt(ctx context.Context, db *store.Store, c config.Config, options Optio
 		}
 		scopeChanged := string(prior) != string(scope) || old.Upstream != strings.TrimRight(c.APIURL, "/")
 		refresh := full || scopeChanged || due(old.EnrichedAt, started, enrichment)
+		projectCoverage := "disabled"
+		if c.Projects {
+			projectCoverage = "memberships"
+		}
 		// Feature changes require rehydration even inside the normal refresh interval.
 		for _, coverage := range old.Coverage {
-			if (coverage.Fields == "disabled") != (!c.Fields) || (coverage.Projects == "disabled") != (!c.Projects) {
+			projectsChanged := coverage.Projects != projectCoverage
+			if c.Projects && coverage.Projects == "complete" {
+				// Full-item mirrors already contain the same ticket membership metadata.
+				projectsChanged = false
+			}
+			if (coverage.Fields == "disabled") != (!c.Fields) || projectsChanged {
 				refresh = true
 			}
 		}
@@ -281,10 +290,6 @@ func syncAt(ctx context.Context, db *store.Store, c config.Config, options Optio
 						previous.Fields = "not_applicable"
 					}
 				}
-				previous.Projects = "disabled"
-				if c.Projects {
-					previous.Projects = "complete"
-				}
 			}
 			if !refresh && len(changed) > 0 {
 				if c.Fields && previous.Fields == "complete" {
@@ -293,6 +298,7 @@ func syncAt(ctx context.Context, db *store.Store, c config.Config, options Optio
 					withoutFields = append(withoutFields, changed...)
 				}
 			}
+			previous.Projects = projectCoverage
 			previous.CollectedAt = started.Format(time.RFC3339Nano)
 			if err := w.SetCoverage(ctx, previous); err != nil {
 				return fmt.Errorf("checkpoint %s: %w", repo, err)
@@ -395,48 +401,6 @@ func projects(ctx context.Context, c *github.Client, w *store.Writer, owner stri
 	}
 	if err := w.ReplaceCatalog(ctx, "projects", owner, items); err != nil {
 		return fmt.Errorf("store project catalog: %w", err)
-	}
-	for _, raw := range items {
-		o, err := store.Object(raw)
-		if err != nil {
-			return fmt.Errorf("decode project: %w", err)
-		}
-		number := store.Identity(o, "number")
-		if n, err := strconv.Atoi(number); err != nil || n < 1 {
-			return fmt.Errorf("invalid project number")
-		}
-		scope := owner + "/" + number
-		c.Report(progress.Event{Phase: "Fetching project fields", Scope: scope})
-		fields, err := c.List(ctx, base+"/"+number+"/fields?per_page=100")
-		if err != nil {
-			return fmt.Errorf("list project fields: %w", err)
-		}
-		if err := w.ReplaceCatalog(ctx, "project_fields", scope, fields); err != nil {
-			return fmt.Errorf("store project fields: %w", err)
-		}
-		ids := []string{}
-		for _, field := range fields {
-			object, err := store.Object(field)
-			if err != nil {
-				return fmt.Errorf("decode project field: %w", err)
-			}
-			id := store.Identity(object, "id")
-			if id == "" {
-				return fmt.Errorf("project field is missing id")
-			}
-			ids = append(ids, id)
-		}
-		query := url.Values{"per_page": {"100"}}
-		if len(ids) > 0 {
-			query.Set("fields", strings.Join(ids, ","))
-		}
-		all, err := projectItems(ctx, c, base+"/"+number, store.Text(o, "node_id"), query)
-		if err != nil {
-			return fmt.Errorf("collect project items: %w", err)
-		}
-		if err := w.ReplaceCatalog(ctx, "project_items", scope, all); err != nil {
-			return fmt.Errorf("store project items: %w", err)
-		}
 	}
 	return nil
 }

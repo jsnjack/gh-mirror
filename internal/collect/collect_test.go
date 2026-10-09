@@ -3,6 +3,7 @@ package collect
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -19,20 +21,19 @@ import (
 )
 
 type fixture struct {
-	mu                    sync.Mutex
-	t                     *testing.T
-	url                   string
-	stage                 string
-	count                 int
-	requests              int
-	queries               int
-	failGraph             bool
-	repeatCursor          bool
-	missingNode           bool
-	timestamp             string
-	omitArchived          bool
-	projectCursorOverflow bool
-	repeatProjectCursor   bool
+	mu                     sync.Mutex
+	t                      *testing.T
+	url                    string
+	stage                  string
+	count                  int
+	requests               int
+	queries                int
+	failGraph              bool
+	repeatCursor           bool
+	missingNode            bool
+	timestamp              string
+	membershipOverflow     bool
+	repeatMembershipCursor bool
 }
 
 func (f *fixture) issue(n int) map[string]any {
@@ -40,6 +41,13 @@ func (f *fixture) issue(n int) map[string]any {
 }
 func emptyConnection(nodes []any, next bool, cursor string) map[string]any {
 	return map[string]any{"nodes": nodes, "pageInfo": map[string]any{"hasNextPage": next, "endCursor": cursor}}
+}
+func projectMembership(archived bool) map[string]any {
+	number, title := 1, "Roadmap"
+	if archived {
+		number, title = 2, "History"
+	}
+	return map[string]any{"id": fmt.Sprint("ITEM_", number), "isArchived": archived, "project": map[string]any{"id": fmt.Sprint("P_", number), "number": number, "title": title, "url": fmt.Sprintf("https://github.com/orgs/o/projects/%d", number)}}
 }
 func (f *fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
@@ -113,32 +121,6 @@ func (f *fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		out = []any{map[string]any{"id": 12, "name": "Priority", "options": []any{map[string]any{"id": 13, "name": "P1"}}}}
 	case "/orgs/o/projectsV2":
 		out = []any{map[string]any{"id": 20, "node_id": "P_1", "number": 1, "title": "Roadmap"}}
-	case "/orgs/o/projectsV2/1/fields":
-		out = []any{map[string]any{"id": 21, "name": "Status"}, map[string]any{"id": 22, "name": "Estimate"}}
-	case "/orgs/o/projectsV2/1/items", "/orgs/o/projectsV2/1/items/32":
-		if r.URL.Query().Get("fields") != "21,22" {
-			f.t.Error("project omitted field values")
-		}
-		if r.URL.Query().Get("q") != "" {
-			f.t.Error("project inventory used an undocumented archive filter")
-		}
-		projectItem := func(id int) map[string]any {
-			var archived any
-			if id == 32 {
-				archived = f.timestamp
-			}
-			return map[string]any{"id": id, "node_id": fmt.Sprintf("PI_%d", id), "archived_at": archived, "content_type": "DraftIssue", "content": map[string]any{"body": "draft body"}, "fields": []any{map[string]any{"id": 21, "value": "Done"}, map[string]any{"id": 22, "value": 8}}}
-		}
-		if strings.HasSuffix(r.URL.Path, "/32") {
-			out = projectItem(32)
-		} else {
-			items := []any{projectItem(31)}
-			if !f.omitArchived {
-				items = append(items, projectItem(32))
-			}
-			out = items
-		}
-
 	case "/graphql":
 		f.queries++
 		var input struct {
@@ -156,27 +138,8 @@ func (f *fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			out = map[string]any{"data": map[string]any{"nodes": []any{}}, "errors": []any{map[string]any{"message": "unsupported"}}}
 			break
 		}
-		if input.Variables.ID == "P_1" {
-			if !strings.Contains(input.Query, "archivedStates:[ARCHIVED,NOT_ARCHIVED]") {
-				f.t.Error("project inventory omitted explicit archived states")
-			}
-			items := []any{map[string]any{"id": "PI_31", "fullDatabaseId": "31", "isArchived": false}, map[string]any{"id": "PI_32", "fullDatabaseId": "32", "isArchived": true}}
-			next := false
-			cursor := ""
-			if f.projectCursorOverflow {
-				if input.Variables.Cursor == "" {
-					items = items[:1]
-					next = true
-					cursor = "project-next"
-				} else {
-					items = items[1:]
-					if f.repeatProjectCursor {
-						next = true
-						cursor = input.Variables.Cursor
-					}
-				}
-			}
-			out = map[string]any{"data": map[string]any{"node": map[string]any{"items": emptyConnection(items, next, cursor)}}}
+		if input.Variables.ID != "" && strings.Contains(input.Query, "projectItems(") {
+			out = map[string]any{"data": map[string]any{"node": map[string]any{"projectItems": emptyConnection([]any{projectMembership(true)}, f.repeatMembershipCursor, input.Variables.Cursor)}}}
 			break
 		}
 		if input.Variables.ID != "" {
@@ -195,7 +158,19 @@ func (f *fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				nodes = append(nodes, nil)
 				continue
 			}
-			nodes = append(nodes, map[string]any{"id": id, "__typename": "Issue", "parent": nil, "subIssues": emptyConnection([]any{}, false, ""), "blockedBy": emptyConnection([]any{}, false, ""), "blocking": emptyConnection([]any{}, false, ""), "issueFieldValues": emptyConnection([]any{map[string]any{"id": "fv1", "value": "P1"}}, id == "I_1", "next"), "projectItems": emptyConnection([]any{map[string]any{"id": "item1", "isArchived": true, "project": map[string]any{"id": "P_1", "number": 1}}}, false, "")})
+			node := map[string]any{"id": id, "__typename": "Issue", "parent": nil, "subIssues": emptyConnection([]any{}, false, ""), "blockedBy": emptyConnection([]any{}, false, ""), "blocking": emptyConnection([]any{}, false, ""), "issueFieldValues": emptyConnection([]any{map[string]any{"id": "fv1", "value": "P1"}}, id == "I_1", "next")}
+			if strings.Contains(input.Query, "projectItems(") {
+				if !strings.Contains(input.Query, "includeArchived:true") {
+					f.t.Error("membership query omitted archived projects")
+				}
+				memberships := []any{projectMembership(false), projectMembership(true)}
+				overflow := f.membershipOverflow && id == "I_1"
+				if overflow {
+					memberships = memberships[:1]
+				}
+				node["projectItems"] = emptyConnection(memberships, overflow, "membership-next")
+			}
+			nodes = append(nodes, node)
 		}
 		out = map[string]any{"data": map[string]any{"nodes": nodes}}
 	default:
@@ -204,7 +179,11 @@ func (f *fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := json.NewEncoder(w).Encode(out); err != nil {
-		f.t.Error(err)
+		if r.Context().Err() != nil || errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) {
+			f.t.Logf("fixture client cancelled response: %v", err)
+		} else {
+			f.t.Error(err)
+		}
 	}
 }
 func setup(t *testing.T, count int) (*store.Store, config.Config, *fixture, time.Time) {
@@ -235,7 +214,7 @@ func setup(t *testing.T, count int) (*store.Store, config.Config, *fixture, time
 	return db, c, f, started
 }
 func TestCollection(t *testing.T) {
-	for _, name := range []string{"bootstrap complete", "bootstrap batching", "incremental two requests", "deletion inventories", "HTTP rollback", "GraphQL rollback", "cursor rollback", "missing node rollback", "budget rollback", "changed issue batching", "upstream change resets records", "archived REST fallback", "project inventory overflow", "project cursor rollback"} {
+	for _, name := range []string{"bootstrap complete", "bootstrap batching", "incremental two requests", "deletion inventories", "HTTP rollback", "GraphQL rollback", "cursor rollback", "missing node rollback", "budget rollback", "changed issue batching", "upstream change resets records", "membership pagination", "membership cursor rollback"} {
 		t.Run(name, func(t *testing.T) {
 			count := 2
 			if name == "bootstrap batching" {
@@ -251,34 +230,37 @@ func TestCollection(t *testing.T) {
 				t.Fatalf("incomplete bootstrap: %+v", initial)
 			}
 			switch name {
-			case "archived REST fallback", "project inventory overflow", "project cursor rollback":
-				if name == "archived REST fallback" {
-					f.omitArchived = true
-				} else {
-					f.projectCursorOverflow = true
-					f.repeatProjectCursor = name == "project cursor rollback"
-				}
+			case "membership pagination", "membership cursor rollback":
+				f.membershipOverflow = true
+				f.repeatMembershipCursor = name == "membership cursor rollback"
 				out, err := syncAt(ctx, db, c, Options{Full: true}, started.Add(time.Hour))
-				if name == "project cursor rollback" {
+				if name == "membership cursor rollback" {
 					if err == nil {
-						t.Fatal("repeated project cursor committed")
+						t.Fatal("repeated membership cursor committed")
 					}
 					after, readErr := db.Status(ctx)
 					if readErr != nil || after.Generation != initial.Status.Generation {
-						t.Fatal("project cursor failure advanced generation", after, readErr)
+						t.Fatal("membership cursor failure advanced generation", after, readErr)
 					}
 					return
 				}
 				if err != nil {
 					t.Fatal(err)
 				}
-				if out.Requests != 14 {
-					t.Fatal("project recovery/overflow requested unexpected data", out.Requests)
+				issue, err := db.Get(ctx, "o/r", 1)
+				if err != nil {
+					t.Fatal(err)
 				}
-				project, err := db.Project(ctx, "o", 1)
-				if err != nil || len(project.Items) != 2 {
-					t.Fatal("archived inventory lost items", project, err)
+				var extra struct {
+					ProjectItems []json.RawMessage `json:"projectItems"`
 				}
+				if err := json.Unmarshal(issue.Extra, &extra); err != nil {
+					t.Fatal(err)
+				}
+				if out.Requests != 11 || len(extra.ProjectItems) != 2 {
+					t.Fatal("membership pagination lost projects or added requests", out.Requests, extra.ProjectItems)
+				}
+
 			case "upstream change resets records":
 				newServer := httptest.NewServer(f)
 				defer newServer.Close()
@@ -317,12 +299,21 @@ func TestCollection(t *testing.T) {
 					}
 				}
 				project, err := db.Project(ctx, "o", 1)
-				if err != nil || len(project.Items) != 2 || len(project.Fields) != 2 {
-					t.Fatal("archived/draft items missing", project, err)
+				if err != nil || !strings.Contains(string(project.Project), "Roadmap") {
+					t.Fatal("unexpected project catalog", project, err)
+				}
+				var extra struct {
+					ProjectItems []json.RawMessage `json:"projectItems"`
+				}
+				if err := json.Unmarshal(issue.Extra, &extra); err != nil {
+					t.Fatal(err)
+				}
+				if len(extra.ProjectItems) != 2 || !strings.Contains(string(extra.ProjectItems[1]), `"isArchived":true`) || !strings.Contains(string(extra.ProjectItems[1]), `"title":"History"`) || initial.Status.Coverage[0].Projects != "memberships" {
+					t.Fatal("missing active/archived memberships or coverage", extra.ProjectItems, initial.Status.Coverage)
 				}
 			case "bootstrap batching":
-				if f.queries != 8 || initial.Requests != 20 {
-					t.Fatalf("expected 6 ticket batches + 1 overflow + 1 project inventory, 20 total requests, got %d and %d", f.queries, initial.Requests)
+				if f.queries != 7 || initial.Requests != 17 {
+					t.Fatalf("expected 6 ticket batches + 1 overflow, 17 total requests, got %d and %d", f.queries, initial.Requests)
 				}
 			case "incremental two requests":
 				f.stage = "delta"
@@ -442,7 +433,7 @@ func TestSharedOwnerBatches(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if out.Requests != 17 || f.queries != 3 || out.Status.Issues != 4 {
+		if out.Requests != 14 || f.queries != 2 || out.Status.Issues != 4 {
 			t.Fatalf("shared owner issued extra requests: %+v, GraphQL=%d", out, f.queries)
 		}
 	})
@@ -491,7 +482,7 @@ func TestSyncProgress(t *testing.T) {
 			hydrated += event.Advance
 			requests = max(requests, event.Requests)
 		}
-		if issuePages != 3 || issues != 251 || hydrated != 251 || requests != 20 || result.Requests != 20 {
+		if issuePages != 3 || issues != 251 || hydrated != 251 || requests != 17 || result.Requests != 17 {
 			t.Fatalf("inaccurate progress or extra upstream requests: pages=%d issues=%d hydrated=%d requests=%d result=%d", issuePages, issues, hydrated, requests, result.Requests)
 		}
 		if phase != "Committing mirror" || result.Status.Generation == "" {
