@@ -123,6 +123,9 @@ func syncVersion(ctx context.Context, db *store.Store, c config.Config, options 
 		if err := w.ResetScope(ctx, repos, refresh, incompatible || old.Upstream != strings.TrimRight(c.APIURL, "/")); err != nil {
 			return fmt.Errorf("reset collection scope: %w", err)
 		}
+		if err := w.PruneResponseCache(ctx, c.Fields, c.Projects); err != nil {
+			return fmt.Errorf("remove excluded cached resources: %w", err)
+		}
 		report.Send(progress.Event{Phase: "Preparing label search index"})
 		if err := w.EnsureLabelIndex(ctx); err != nil {
 			return fmt.Errorf("prepare label search index: %w", err)

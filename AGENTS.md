@@ -74,6 +74,9 @@ Readers open existing databases without migrations or writes. Publish standalone
 SQLite exports, never copies of live WAL databases. Complete and validate the export
 before atomically replacing `latest.json`. Acquisition resolves the manifest once,
 verifies checksum, scope, schema and freshness, and installs a private local copy.
+Exports remove all conditional response caches and local credential identity, then
+compact the private export to remove deleted payload bytes. Prune disabled field
+and project caches and obsolete full-item caches inside successful sync transactions.
 Credentials come from named environment variables and never enter the database,
 stdout, request bodies, or trace logs. HTTP listeners outside loopback require an
 API bearer token. Read tools never trigger collection or expose arbitrary SQL.

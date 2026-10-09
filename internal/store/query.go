@@ -387,14 +387,6 @@ func (s *Store) Catalog(ctx context.Context, kind, scope string) (CatalogResult,
 	return out, err
 }
 
-// Export creates a standalone SQLite snapshot from one consistent read snapshot.
-func (s *Store) Export(ctx context.Context, path string) error {
-	if _, err := s.db.ExecContext(ctx, "VACUUM INTO ?", path); err != nil {
-		return fmt.Errorf("export SQLite snapshot: %w", err)
-	}
-	return nil
-}
-
 // Validate checks database integrity before publication or installation.
 func (s *Store) Validate(ctx context.Context) error {
 	var result string
