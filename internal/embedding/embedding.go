@@ -40,6 +40,9 @@ const maxChunkRunes = 2048
 //go:embed assets
 var assets embed.FS
 
+//go:embed testdata/minilm-golden.json
+var references embed.FS
+
 // Chunk preserves an excerpt and byte offsets into its original text.
 type Chunk struct {
 	Text       string

@@ -180,6 +180,15 @@ form one fingerprint. Validate tokenizer IDs and vectors against attributed refe
 `embedding.GGUF` exports those exact FP32 tensors and vocabulary to llama.cpp's
 BERT format locally, with deterministic metadata and checksum validation. It adds
 no conversion dependencies and does not alter the model fingerprint.
+`embedding.Provider` defaults to the bundled CPU encoder. Opt-in `lemonade-vulkan`
+starts Lemonade's installed llama.cpp Vulkan executable as a dedicated authenticated
+loopback process with `--offline`; do not contact a shared model daemon, download
+models, or inherit LLAMA/GGML inference overrides. Verify full layer offload, exact
+bundled token IDs, reference vectors and a full 256-token passage before accepting
+GPU results. Compatibility requires cosine >=0.9999 and coordinate error <=0.001;
+validate every batch's model, indices, dimensions and normalized finite values.
+Failures retry the same model on CPU and report the reason. Limit CPU fallback
+concurrency across calls; bound GPU batches and queues and join them on shutdown.
 
 Schema 2 adds semantic state/vectors; writer migration from schema 1 is local and
 transactional. Readers accept schema 1 for lexical queries and schema 2 without
