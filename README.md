@@ -371,8 +371,14 @@ configured `workers` value. Standalone `index` also inherits configuration unles
 its `--workers` flag overrides it. The built-in default remains four.
 For example, `sync --workers 8` uses eight for each phase, while
 `sync --workers 8 --index-workers 4` limits CPU indexing to four.
-Use `sync --index=false` to skip vector indexing. Queries use `--engine lexical`
-by default.
+Use `sync --index=false` to skip vector indexing. Search and candidates default
+to hybrid retrieval, combining exact words with similarity in meaning.
+Use `--engine lexical` for literal retrieval or `--engine semantic` for similarity alone.
+When no engine is supplied and the selected vector index is missing, incomplete
+or incompatible, retrieval falls back to lexical with a `search_engine_fallback`
+warning and instructions to run `index`. Results identify the actual engine and
+its score meaning. Explicit `--engine hybrid` or `--engine semantic` require a
+complete compatible index and return an error when it is unavailable.
 
 Indexing shows document progress, throughput, an ETA and active workers on stderr.
 The sync display labels GitHub and CPU workers separately. A bounded document queue
@@ -399,21 +405,27 @@ another inference pass. Recent seed comments remain opt-in and bounded.
 `semantic` uses exact cosine similarity, with higher scores ranking first. `hybrid`
 combines independent literal and semantic rankings using reciprocal rank fusion
 (`1/(60+rank)` from each ranking). Results report the algorithm, `semantic_score`
-and, where present, `lexical_score`. These scores are not duplicate probabilities.
+and, where present, `lexical_score`. These scores are neither relevance percentages
+nor duplicate probabilities.
 Semantic retrieval ranks every eligible ticket with a selected indexed passage;
 low-ranked results can be unrelated. Inspect evidence and bound the returned page.
 
 Repository, label, state, project, author, date and other ticket filters work with
 all three engines. `--in`, exclusions, counts, facets, views and pagination also
 work with semantic/hybrid search. Literal `--match all`, `--match phrase` and
-`--prefix` require the lexical engine. Natural-language queries are limited to
+`--prefix` select lexical retrieval when no engine is supplied, with a
+`search_engine_selected` explanation. They require lexical when an engine is explicit.
+Natural-language queries are limited to
 16,384 bytes and 16 passages; hybrid queries allow at most 512 literal terms.
-An incomplete or incompatible index produces an explicit error with instructions
-to run `index`; REST returns 503 with code `semantic_index_unavailable`.
+For explicit semantic/hybrid requests, an incomplete or incompatible index produces
+an error with instructions to run `index`; REST returns 503 with code
+`semantic_index_unavailable`. Automatic fallback applies only to unavailable vector
+coverage; input errors, inference failures and database errors are returned.
 `status.semantic` reports coverage, pending documents and model compatibility.
 Semantic cursors also bind the vector generation and model fingerprint.
 They bind the actual query vector too: small numerical changes during CPU/GPU
-fallback invalidate pagination with a stale-cursor response. Restart the query
+fallback invalidate pagination with a stale-cursor response. A change between
+lexical and hybrid retrieval also invalidates continuation. Restart the query
 after that response or when continuing a semantic cursor from an older binary.
 
 Snapshots include completed vectors in the same SQLite file. CI consumers acquire
@@ -440,7 +452,8 @@ gh-mirror search 'timeout' --project owner/1 --kind issue
 ```
 
 Queries use readable terminal output or piped JSON; `--format` overrides it.
-The default `--match any` joins literal words with
+Search defaults to hybrid across all collected source fields and both open and
+closed tickets. In lexical retrieval, `--match any` joins literal words with
 OR. `--match all` requires every word somewhere in the selected ticket: a label and
 a separate comment can satisfy it together. `--match phrase` requires consecutive
 words in one source. Punctuation is tokenized; operators in the query are literal
@@ -459,7 +472,7 @@ review comments (`reviews`). Repeat it to select several sources; omitting it
 searches all. Excluded words apply across the selected sources of the whole ticket.
 
 Search returns compact summaries by default. Each match contains the legacy title,
-URL, source, snippet and BM25 score, plus labels, assignees, issue type, milestone,
+URL, source, snippet and the selected engine's score, plus labels, assignees, issue type, milestone,
 author, project identities and timestamps under `summary`. `evidence` contains up
 to three matching sources with the field, excerpt, URL and comment identity/time.
 Inline review evidence also includes stored file/line context and at most 1,024
@@ -476,7 +489,7 @@ are opt-in. Warnings identify uncollected repositories, disabled requested
 resources and stale enrichment; `--max-enrichment-age 2h` changes the default
 24-hour warning threshold for requested fields/projects.
 
-`score` uses SQLite FTS5's [BM25 ranking](https://www.sqlite.org/fts5.html#the_bm25_function).
+With `--engine lexical`, `score` uses SQLite FTS5's [BM25 ranking](https://www.sqlite.org/fts5.html#the_bm25_function).
 Lower, more negative scores rank first. Titles and label names have a weight of five and
 body/comment text a weight of one. Compare scores within the same query; they are
 text relevance values, not percentages or duplicate probabilities.
@@ -623,7 +636,8 @@ curl 'http://127.0.0.1:8787/v1/issues/owner/repository/123'
 | `/snapshots/latest` | Latest snapshot manifest |
 | `/snapshots/{filename}` | Immutable snapshot file |
 
-REST accepts `engine=lexical|semantic|hybrid` for search and candidates. It also
+REST accepts `engine=lexical|semantic|hybrid` for search and candidates; omitting it
+uses hybrid with a warned lexical fallback when vector coverage is unavailable. It also
 uses `match`, `prefix`, repeated `in` and `exclude_words` parameters for search.
 `count` and `facets` are booleans. For example:
 
@@ -670,9 +684,47 @@ The ten read-only tools are `list_issues`, `search_issues`, `get_issue`, `get_is
 its structured output envelope; preserved GitHub JSON remains unconstrained.
 Use `list_catalog` for bounded pages and `get_catalog` for a legacy complete catalog.
 `search_issues` and `find_duplicate_candidates` accept an `engine` argument with
-the same three choices as REST and the CLI.
+the same three choices and hybrid default as REST and the CLI. Read `query.engine`,
+`ranking` and `warnings` to identify the effective engine, score direction and coverage.
 A compact workflow is search, inspect evidence, batch-fetch selected summaries,
 then fetch only the required ticket details or comment pages.
+
+## Retrieve context for ticket evaluation
+
+Agents can use the mirror to investigate behavior, find earlier decisions and
+workarounds, connect a report to previous fixes, and assess its scope. Duplicate
+discovery is one use of the same retrieval and reading tools.
+
+Start with a focused question and any useful exact terms, such as a client label,
+error message or component name. Search includes titles, bodies, attached labels,
+discussion comments and inline reviews by default. Retain closed history when
+looking for resolutions. Repository, project and label filters narrow the context;
+use multiple repositories when support tickets and code history live separately.
+
+```sh
+gh-mirror search 'workaround for downloads after reconnecting' --limit 10
+gh-mirror search 'session token retry fix' --in reviews --limit 10
+gh-mirror search 'file transfer failure' --label 'client:Acme' --evidence-limit 5
+gh-mirror search 'ECONNRESET' --engine lexical
+gh-mirror batch owner/support#123 owner/code#456 --view summary
+gh-mirror get --repo owner/support --number 123 --view full --comments none
+gh-mirror comments --repo owner/support --number 123 --view full --limit 30
+```
+
+For MCP, use `search_issues` for questions and `find_duplicate_candidates` for
+history related to a known seed ticket. Inspect summaries and source-linked
+`evidence`, then use `get_issues` to batch-read selected tickets, `get_issue` with
+`comments=none` for full ticket details, and `list_comments` for bounded discussion
+or review pages. Follow comment cursors if more context is needed. Cite the source
+URLs supporting an assessment and check `status` and `warnings` for stale or disabled
+resources. A search snippet is an excerpt; read the surrounding discussion before
+interpreting a decision or fix.
+
+Scores order potentially useful context. They do not establish relevance, correctness
+or duplicate status, and semantic retrieval can return unrelated low-ranked tickets.
+The initial duplicate-reference benchmark supports the hybrid default, but broader
+ticket-evaluation quality needs reviewed queries about causes, workarounds, decisions
+and fixes. The `evaluate` command accepts those relevance judgments too.
 
 ## Evaluate retrieval
 

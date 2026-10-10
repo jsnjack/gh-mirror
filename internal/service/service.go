@@ -251,7 +251,7 @@ func (s *Service) MCP() *mcp.Server {
 		out, err := s.Store.List(ctx, input)
 		return nil, out, err
 	})
-	mcp.AddTool(server, tool("search_issues", "Search local tickets using lexical, semantic or hybrid engine. Lexical supports any/all/phrase and prefix. Semantic uses bundled offline MiniLM; hybrid fuses lexical and semantic rankings. Read ranking for score meaning. Semantic engines require a complete compatible local index. Follow next_cursor with identical options.", store.SearchResult{}), func(ctx context.Context, _ *mcp.CallToolRequest, input store.SearchOptions) (*mcp.CallToolResult, store.SearchResult, error) {
+	mcp.AddTool(server, tool("search_issues", "Retrieve relevant local ticket context for investigation and evaluation: behavior, decisions, workarounds, fixes and related history. Searches titles, bodies, labels, discussions and reviews; returns compact summaries and source-linked evidence. Defaults to hybrid; missing/incomplete/incompatible indexes fall back to lexical with a warning. All/phrase/prefix select lexical unless an engine is explicit. Explicit semantic/hybrid require a compatible complete index. Inspect ranking and warnings; scores are not relevance probabilities. Use get_issues/get_issue/list_comments for details. Follow next_cursor with identical options.", store.SearchResult{}), func(ctx context.Context, _ *mcp.CallToolRequest, input store.SearchOptions) (*mcp.CallToolResult, store.SearchResult, error) {
 		out, err := s.Store.Search(ctx, input)
 		return nil, out, err
 	})
@@ -267,7 +267,7 @@ func (s *Service) MCP() *mcp.Server {
 		out, err := s.Store.Project(ctx, input.Owner, input.Number)
 		return nil, out, err
 	})
-	mcp.AddTool(server, tool("find_duplicate_candidates", "Find related local tickets using lexical, semantic or hybrid engine and optional labels/comments. Defaults to the seed repository; repositories can widen scope. Include closed history. Scores are retrieval scores, not duplicate probabilities; follow next_cursor with identical options.", store.SearchResult{}), func(ctx context.Context, _ *mcp.CallToolRequest, input store.CandidateOptions) (*mcp.CallToolResult, store.SearchResult, error) {
+	mcp.AddTool(server, tool("find_duplicate_candidates", "Retrieve related history from a seed ticket for evaluation or duplicate investigation. Defaults to hybrid with a warned lexical fallback when the index is unavailable; explicit semantic/hybrid require a complete compatible index. Defaults to the seed repository; repositories can widen scope. Labels are included by default; bounded recent seed comments are opt-in. Includes closed history. Inspect summaries and source evidence; scores do not establish duplicate probability. Follow next_cursor with identical options.", store.SearchResult{}), func(ctx context.Context, _ *mcp.CallToolRequest, input store.CandidateOptions) (*mcp.CallToolResult, store.SearchResult, error) {
 		out, err := s.Store.FindCandidates(ctx, input)
 		return nil, out, err
 	})
