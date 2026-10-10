@@ -49,7 +49,7 @@ func init() {
 	root.PersistentFlags().StringVar(&embeddingBackend, "embedding-backend", "", "Embedding backend: cpu or lemonade-vulkan (defaults to configuration)")
 	root.PersistentFlags().StringVar(&embeddingRuntime, "embedding-runtime", "", "Absolute path to Lemonade's installed Vulkan llama-server")
 	root.PersistentFlags().StringVar(&embeddingDevice, "embedding-device", "", "Vulkan device, such as Vulkan0 (defaults to configuration)")
-	root.PersistentFlags().IntVar(&embeddingBatchSize, "embedding-batch-size", 0, "Maximum Vulkan batch size (1–32; default 16)")
+	root.PersistentFlags().IntVar(&embeddingBatchSize, "embedding-batch-size", 0, "Maximum Vulkan batch size (1–32; default 8)")
 	root.PersistentFlags().StringVar(&outputFormat, "format", "auto", "Output format: auto (text in terminals, JSON when piped), text or json")
 	root.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Verbose diagnostics on stderr")
 	root.PersistentFlags().BoolVar(&trace, "trace", false, "Detailed diagnostics in the temporary gh-mirror.log")

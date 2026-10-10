@@ -97,7 +97,7 @@ func New(ctx context.Context, o Options) (*Provider, error) {
 		return nil, fmt.Errorf("configure embeddings: %w", err)
 	}
 	if o.BatchSize == 0 {
-		o.BatchSize = 16
+		o.BatchSize = 8
 	}
 	if o.Workers == 0 {
 		o.Workers = 4

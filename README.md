@@ -321,7 +321,7 @@ Persist the choice in your configuration:
 ```json
 "embedding": {
   "backend": "lemonade-vulkan",
-  "batch_size": 16,
+  "batch_size": 8,
   "device": "Vulkan0"
 }
 ```
@@ -330,7 +330,7 @@ The default executable is under the user's Lemonade cache at
 `lemonade/bin/llamacpp/vulkan/llama-server` (`.exe` on Windows). Set
 `embedding.runtime` or `--embedding-runtime` to an absolute path if it is installed
 elsewhere. `--embedding-device` selects a numbered Vulkan device;
-`--embedding-batch-size` bounds batches between 1 and 32 passages. Index workers
+`--embedding-batch-size` bounds batches between 1 and 32 passages (default 8). Index workers
 prepare documents and commit results; the GPU queue combines passages from those
 workers, including batches within long documents. REST and MCP use the configured
 encoder for semantic and hybrid queries.
