@@ -658,6 +658,8 @@ go test ./internal/github -run '^$' -bench BenchmarkParallelPagination -benchtim
 ```
 
 Synthetic scores establish regression behavior, not real-world duplicate quality.
+The [measured benchmark and historical duplicate evaluation](docs/benchmark-2026-10-10.md)
+compares the three engines, worker scaling, latency and the limits of sparse judgments.
 SQLite remains the only required retrieval engine. Use representative judgments
 from your repositories to compare lexical, semantic and hybrid retrieval or decide whether reranking
 justifies additional models, storage and deployment dependencies.
