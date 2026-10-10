@@ -38,21 +38,25 @@ type BatchVectorizer interface {
 
 // SemanticStatus reports model identity and durable indexing coverage.
 type SemanticStatus struct {
-	Model            string `json:"model"`
-	Fingerprint      string `json:"fingerprint"`
-	Dimension        int    `json:"dimension"`
-	Generation       string `json:"generation"`
-	Documents        int    `json:"documents"`
-	IndexedDocuments int    `json:"indexed_documents"`
-	PendingDocuments int    `json:"pending_documents"`
-	Chunks           int    `json:"chunks"`
-	IndexedAt        string `json:"indexed_at,omitempty"`
-	Compatible       bool   `json:"compatible"`
+	RepresentationVersion string `json:"representation_version,omitempty"`
+	SharedVectors         int    `json:"shared_vectors,omitempty"`
+	ReusedChunks          int64  `json:"reused_chunks,omitempty"`
+	Model                 string `json:"model"`
+	Fingerprint           string `json:"fingerprint"`
+	Dimension             int    `json:"dimension"`
+	Generation            string `json:"generation"`
+	Documents             int    `json:"documents"`
+	IndexedDocuments      int    `json:"indexed_documents"`
+	PendingDocuments      int    `json:"pending_documents"`
+	Chunks                int    `json:"chunks"`
+	IndexedAt             string `json:"indexed_at,omitempty"`
+	Compatible            bool   `json:"compatible"`
 }
 
 func semanticStatus(ctx context.Context, q querier) (*SemanticStatus, error) {
 	out := &SemanticStatus{Model: embedding.Model}
-	rows, err := q.QueryContext(ctx, "SELECT key,value FROM metadata WHERE key IN ('semantic_model','semantic_generation','semantic_indexed_at')")
+	schemaVersion := "2"
+	rows, err := q.QueryContext(ctx, "SELECT key,value FROM metadata WHERE key IN ('semantic_model','semantic_generation','semantic_indexed_at','representation_version','schema_version')")
 	if err != nil {
 		return nil, fmt.Errorf("read semantic metadata: %w", err)
 	}
@@ -62,6 +66,10 @@ func semanticStatus(ctx context.Context, q querier) (*SemanticStatus, error) {
 			return nil, finishRows(rows, err)
 		}
 		switch k {
+		case "schema_version":
+			schemaVersion = v
+		case "representation_version":
+			out.RepresentationVersion = v
 		case "semantic_model":
 			out.Fingerprint = v
 		case "semantic_generation":
@@ -84,6 +92,11 @@ func semanticStatus(ctx context.Context, q querier) (*SemanticStatus, error) {
 	if err := q.QueryRowContext(ctx, "SELECT count(*) FROM semantic_vectors").Scan(&out.Chunks); err != nil {
 		return nil, fmt.Errorf("count semantic chunks: %w", err)
 	}
+	if schemaVersion == "3" {
+		if err := q.QueryRowContext(ctx, "SELECT count(*) FROM embedding_cache").Scan(&out.SharedVectors); err != nil {
+			return nil, fmt.Errorf("count shared embeddings: %w", err)
+		}
+	}
 	return out, nil
 }
 
@@ -103,9 +116,21 @@ type passage struct {
 func passages(e Vectorizer, d indexDocument) ([]passage, error) {
 	out := []passage{}
 	for _, part := range []struct{ field, text string }{{"title", d.title}, {"body", d.body}} {
-		chunks, err := e.Chunks(part.text)
-		if err != nil {
-			return nil, err
+		spans := []representation.Span{{Start: 0, End: len(part.text)}}
+		if part.field == "body" && strings.HasPrefix(d.id, "issue:") {
+			spans = representation.RetrievalSpans(part.text)
+		}
+		chunks := []embedding.Chunk{}
+		for _, span := range spans {
+			pieces, err := e.Chunks(part.text[span.Start:span.End])
+			if err != nil {
+				return nil, err
+			}
+			for _, c := range pieces {
+				c.Start += span.Start
+				c.End += span.Start
+				chunks = append(chunks, c)
+			}
 		}
 		field := part.field
 		switch {
@@ -122,7 +147,9 @@ func passages(e Vectorizer, d indexDocument) ([]passage, error) {
 	}
 	return out, nil
 }
-func documentHash(d indexDocument) string { return hash([]byte(d.title + "\x00" + d.body)) }
+func documentHash(d indexDocument) string {
+	return hash([]byte(representation.Version + "\x00" + d.title + "\x00" + d.body))
+}
 
 // Index durably indexes only new or changed documents, retaining completed chunks on interruption.
 func (s *Store) Index(ctx context.Context, e Vectorizer, o IndexOptions) (SemanticStatus, error) {
@@ -138,6 +165,8 @@ func (s *Store) Index(ctx context.Context, e Vectorizer, o IndexOptions) (Semant
 	if e.Dim() != embedding.Dimension {
 		return SemanticStatus{}, fmt.Errorf("index dimension %d; expected %d", e.Dim(), embedding.Dimension)
 	}
+	cachedEncoder := &cachingVectorizer{Vectorizer: e, store: s, inflight: map[string]*cachedCall{}}
+	e = cachedEncoder
 	err := s.Update(ctx, func(w *Writer) error {
 		if o.LabelRules != nil {
 			raw, err := json.Marshal(o.LabelRules)
@@ -155,6 +184,21 @@ func (s *Store) Index(ctx context.Context, e Vectorizer, o IndexOptions) (Semant
 				if err := advanceSemantic(ctx, w); err != nil {
 					return err
 				}
+			}
+		}
+		version, err := w.Metadata(ctx, "representation_version")
+		if err != nil {
+			return err
+		}
+		if version != representation.Version {
+			if _, err := w.tx.ExecContext(ctx, "UPDATE semantic_documents SET complete=0"); err != nil {
+				return fmt.Errorf("invalidate local representation: %w", err)
+			}
+			if err := w.SetMetadata(ctx, "representation_version", representation.Version); err != nil {
+				return err
+			}
+			if err := advanceSemantic(ctx, w); err != nil {
+				return err
 			}
 		}
 		old, err := w.Metadata(ctx, "semantic_model")
@@ -194,6 +238,9 @@ func (s *Store) Index(ctx context.Context, e Vectorizer, o IndexOptions) (Semant
 		}
 	}
 	if err := s.Update(ctx, func(w *Writer) error {
+		if _, err := w.tx.ExecContext(ctx, "DELETE FROM embedding_cache WHERE NOT EXISTS(SELECT 1 FROM semantic_vectors v WHERE v.cache_key=embedding_cache.key)"); err != nil {
+			return fmt.Errorf("prune unused shared embeddings: %w", err)
+		}
 		return w.SetMetadata(ctx, "semantic_indexed_at", time.Now().UTC().Format(time.RFC3339Nano))
 	}); err != nil {
 		return SemanticStatus{}, err
@@ -202,6 +249,7 @@ func (s *Store) Index(ctx context.Context, e Vectorizer, o IndexOptions) (Semant
 	if err != nil {
 		return SemanticStatus{}, err
 	}
+	out.ReusedChunks = cachedEncoder.reused.Load()
 	return *out, nil
 }
 
@@ -329,7 +377,7 @@ func (s *Store) indexDocument(ctx context.Context, e Vectorizer, d indexDocument
 			return err
 		}
 		cached := map[string][]byte{}
-		rows, err := w.tx.QueryContext(ctx, `SELECT v.field,v.text,v.vector FROM semantic_vectors v JOIN semantic_documents s ON s.document_id=v.document_id WHERE v.document_id=? AND s.model=?`, d.id, e.ID())
+		rows, err := w.tx.QueryContext(ctx, `SELECT v.field,v.text,COALESCE(v.vector,cache.vector) FROM semantic_vectors v JOIN semantic_documents s ON s.document_id=v.document_id LEFT JOIN embedding_cache cache ON cache.key=v.cache_key WHERE v.document_id=? AND s.model=?`, d.id, e.ID())
 		if err != nil {
 			return fmt.Errorf("read reusable chunk vectors: %w", err)
 		}
@@ -352,11 +400,24 @@ func (s *Store) indexDocument(ctx context.Context, e Vectorizer, d indexDocument
 			return fmt.Errorf("replace stale chunks: %w", err)
 		}
 		for n, c := range chunks {
+			key := embeddingKey(e.ID(), c.Text)
 			raw, ok := cached[c.field+"\x00"+c.Text]
 			if !ok {
-				continue
+				err := w.tx.QueryRowContext(ctx, "SELECT vector FROM embedding_cache WHERE key=?", key).Scan(&raw)
+				if errors.Is(err, sql.ErrNoRows) {
+					continue
+				}
+				if err != nil {
+					return fmt.Errorf("read shared passage: %w", err)
+				}
 			}
-			if _, err := w.tx.ExecContext(ctx, `INSERT INTO semantic_vectors(document_id,chunk,field,start,end,text,vector) VALUES(?,?,?,?,?,?,?)`, d.id, n, c.field, c.Start, c.End, c.Text, raw); err != nil {
+			if _, err := w.tx.ExecContext(ctx, `INSERT INTO embedding_cache(key,vector) VALUES(?,?) ON CONFLICT(key) DO NOTHING`, key, raw); err != nil {
+				return fmt.Errorf("share unchanged passage: %w", err)
+			}
+			if cache, ok := e.(*cachingVectorizer); ok {
+				cache.reused.Add(1)
+			}
+			if _, err := w.tx.ExecContext(ctx, `INSERT INTO semantic_vectors(document_id,chunk,field,start,end,text,cache_key) VALUES(?,?,?,?,?,?,?)`, d.id, n, c.field, c.Start, c.End, c.Text, key); err != nil {
 				return fmt.Errorf("reuse unchanged passage: %w", err)
 			}
 		}
@@ -460,7 +521,7 @@ func (s *Store) indexDocument(ctx context.Context, e Vectorizer, d indexDocument
 			cancel()
 			continue
 		}
-		raw, err := encodeVector(r.vector)
+		_, err := encodeVector(r.vector)
 		if err != nil {
 			if failure == nil {
 				failure = err
@@ -478,7 +539,7 @@ func (s *Store) indexDocument(ctx context.Context, e Vectorizer, d indexDocument
 				return err
 			}
 			c := chunks[r.n]
-			if _, err := w.tx.ExecContext(checkpoint, `INSERT INTO semantic_vectors(document_id,chunk,field,start,end,text,vector) VALUES(?,?,?,?,?,?,?) ON CONFLICT(document_id,chunk) DO NOTHING`, d.id, r.n, c.field, c.Start, c.End, c.Text, raw); err != nil {
+			if _, err := w.tx.ExecContext(checkpoint, `INSERT INTO semantic_vectors(document_id,chunk,field,start,end,text,cache_key) VALUES(?,?,?,?,?,?,?) ON CONFLICT(document_id,chunk) DO NOTHING`, d.id, r.n, c.field, c.Start, c.End, c.Text, embeddingKey(e.ID(), c.Text)); err != nil {
 				return fmt.Errorf("checkpoint vector: %w", err)
 			}
 			return advanceSemantic(checkpoint, w)

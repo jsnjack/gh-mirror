@@ -50,6 +50,15 @@ func (s *Store) Export(ctx context.Context, path string) (exportErr error) {
 			return fmt.Errorf("remove incomplete and obsolete passages from export: %w", err)
 		}
 	}
+	var shared int
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE name='embedding_cache'").Scan(&shared); err != nil {
+		return fmt.Errorf("inspect exported shared embeddings: %w", err)
+	}
+	if shared != 0 {
+		if _, err := db.ExecContext(ctx, "DELETE FROM embedding_cache WHERE NOT EXISTS(SELECT 1 FROM semantic_vectors v WHERE v.cache_key=embedding_cache.key)"); err != nil {
+			return fmt.Errorf("remove unreferenced shared vectors from export: %w", err)
+		}
+	}
 	var inventory int
 	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE name='issue_inventory'").Scan(&inventory); err != nil {
 		return fmt.Errorf("inspect exported inventory: %w", err)

@@ -345,7 +345,9 @@ model service, CGO, shared library or GPU/NPU driver is required at runtime.
 The model research and hardware measurements live in semantic-model-research.md.
 
 SQL schema 2 adds semantic document state and little-endian FP32 passage vectors.
-Writers migrate schema 1 locally; readers accept both schemas without writing.
+Schema 3 shares vectors in a content-addressed SQLite dictionary, using 32-byte
+model/representation/input hashes and separate passage attribution. Writers migrate
+schemas 1 and 2 transactionally; readers accept schemas 1–3 without writing.
 Collection compatibility remains version 1. Keep the model/tokenizer, inference,
 pooling, precision and chunking fingerprint separate from collection identity.
 Schema-2 snapshots require a compatible new reader binary.
@@ -437,3 +439,12 @@ smaller entity boost. Query metadata and match signals explain the component ran
 Best-per-field semantic aggregation prevents repeated comments from multiplying
 weight. Semantic-only scores retain maximum passage cosine semantics. Ranking
 versions bind vector cursors independently of collection/model changes.
+
+Local representation versions invalidate derived document completion without
+changing CollectionVersion or upstream checkpoints. Rebuilds retain reusable
+passages and perform inference only for unseen exact inputs under the same model.
+Body passage extraction excludes empty placeholders and known review checklists
+while preserving original source offsets; lexical documents remain verbatim.
+Shared inference is bounded, batched and coalesced across concurrent workers.
+Completed shared values and source attachments checkpoint with FULL durability.
+Exports prune incomplete attachments and orphaned dictionary entries.

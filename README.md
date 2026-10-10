@@ -438,8 +438,9 @@ Snapshots include completed vectors in the same SQLite file. CI consumers acquir
 that file and search offline with the same binary. They do not need a separate model
 service or rebuild a complete compatible index. Exports omit incomplete/obsolete
 passages while the collector retains its private resumable work. Existing schema-1
-snapshots remain readable for lexical queries; `index` performs a local schema-2
-migration. Older gh-mirror binaries cannot open schema-2 snapshots.
+snapshots remain readable for lexical queries, and schema-2 snapshots remain
+readable with their existing vectors. `index` performs a local schema-3 migration
+for shared embedding storage. Older binaries cannot open schema-3 snapshots.
 
 MiniLM is English-oriented. Hybrid search is useful for retaining exact client labels
 and technical terms. The [model research](docs/semantic-model-research.md) compares
@@ -951,3 +952,19 @@ Run `gh-mirror index` to save rules in the snapshot locally. `sync` also saves
 rules when indexing is enabled. Exact rules override prefix rules; the longest
 matching prefix wins. Attached label catalog definitions accompany context when
 available. Changing rules does not fetch GitHub or change the embedding model.
+
+### Derived indexing and shared embeddings
+
+The local representation version is independent of GitHub collection and the
+embedding model. `index` rebuilds derived passages after representation changes
+without refetching tickets or discarding GitHub response checkpoints. Ticket body
+passages omit empty template answers and known review checklists while retaining
+exact original byte offsets. Raw bodies and the lexical source index are preserved.
+
+Identical embedding inputs share one SQLite vector, keyed by the model fingerprint,
+representation version and exact text. Concurrent indexing workers share in-flight
+inference, including duplicates within batches. Saved vectors survive cancellation;
+resuming reuses completed sources and shared inputs. New vectors store source
+attribution separately from the shared value. Schema-2 vectors remain readable
+and migrate locally; unchanged passage vectors are reused during the first rebuild.
+Exports remove incomplete source passages and unreferenced shared vectors.

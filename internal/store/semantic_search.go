@@ -126,7 +126,11 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 	if err != nil {
 		return out, err
 	}
-	rows, err := q.QueryContext(ctx, `SELECT d.repo,d.number,d.id,d.source,v.field,v.text,v.start,v.end,v.vector,i.updated_at,COALESCE(json_extract(i.payload,'$.created_at'),'') FROM semantic_vectors v JOIN semantic_documents s ON s.document_id=v.document_id JOIN documents d ON d.id=v.document_id JOIN issues i ON i.repo=d.repo AND i.number=d.number WHERE s.complete=1 AND s.model=? AND (`+fieldWhere+`) AND (`+where+`)`, append(append([]any{e.ID()}, fieldArgs...), args...)...)
+	vectorColumn, vectorJoin, err := vectorStorage(ctx, q)
+	if err != nil {
+		return out, err
+	}
+	rows, err := q.QueryContext(ctx, `SELECT d.repo,d.number,d.id,d.source,v.field,v.text,v.start,v.end,`+vectorColumn+`,i.updated_at,COALESCE(json_extract(i.payload,'$.created_at'),'') FROM semantic_vectors v JOIN semantic_documents s ON s.document_id=v.document_id JOIN documents d ON d.id=v.document_id JOIN issues i ON i.repo=d.repo AND i.number=d.number`+vectorJoin+`WHERE s.complete=1 AND s.model=? AND (`+fieldWhere+`) AND (`+where+`)`, append(append([]any{e.ID()}, fieldArgs...), args...)...)
 	if err != nil {
 		return out, fmt.Errorf("scan semantic vectors: %w", err)
 	}
@@ -519,7 +523,11 @@ func seedEmbedding(ctx context.Context, q querier, seed *vectorSeed, e Vectorize
 		holders[n] = "?"
 		args[n] = id
 	}
-	rows, err := q.QueryContext(ctx, `SELECT d.id,COALESCE(s.complete,0),COALESCE(s.model,''),COALESCE(v.field,''),v.vector FROM documents d LEFT JOIN semantic_documents s ON s.document_id=d.id LEFT JOIN semantic_vectors v ON v.document_id=d.id WHERE d.id IN (`+strings.Join(holders, ",")+`) ORDER BY d.id,v.chunk`, args...)
+	vectorColumn, vectorJoin, err := vectorStorage(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.QueryContext(ctx, `SELECT d.id,COALESCE(s.complete,0),COALESCE(s.model,''),COALESCE(v.field,''),`+vectorColumn+` FROM documents d LEFT JOIN semantic_documents s ON s.document_id=d.id LEFT JOIN semantic_vectors v ON v.document_id=d.id`+vectorJoin+`WHERE d.id IN (`+strings.Join(holders, ",")+`) ORDER BY d.id,v.chunk`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read seed vectors: %w", err)
 	}

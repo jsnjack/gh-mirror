@@ -19,10 +19,10 @@ import (
 )
 
 // SchemaVersion identifies compatible mirror databases.
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 // CompatibleSchema accepts current and legacy lexical snapshots.
-func CompatibleSchema(version int) bool { return version == 1 || version == SchemaVersion }
+func CompatibleSchema(version int) bool { return version >= 1 && version <= SchemaVersion }
 
 // ErrNotFound indicates that the requested local resource is absent.
 var ErrNotFound = errors.New("local resource not found")
@@ -112,7 +112,8 @@ func (s *Store) initialize(readOnly bool) error {
 			if err := s.db.QueryRow("SELECT value FROM metadata WHERE key='schema_version'").Scan(&version); err != nil {
 				return fmt.Errorf("inspect existing schema: %w", err)
 			}
-			if version != "1" && version != strconv.Itoa(SchemaVersion) {
+			parsed, parseErr := strconv.Atoi(version)
+			if parseErr != nil || !CompatibleSchema(parsed) {
 				return fmt.Errorf("unsupported database schema %q", version)
 			}
 		}
@@ -121,6 +122,9 @@ func (s *Store) initialize(readOnly bool) error {
 			return fmt.Errorf("begin schema migration: %w", err)
 		}
 		defer rollback(tx)
+		if err := migrateVectorStorage(tx); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(schema + semanticSchema); err != nil {
 			return fmt.Errorf("initialize schema: %w", err)
 		}
@@ -135,7 +139,8 @@ func (s *Store) initialize(readOnly bool) error {
 	if err := s.db.QueryRow("SELECT value FROM metadata WHERE key='schema_version'").Scan(&version); err != nil {
 		return fmt.Errorf("read schema version: %w", err)
 	}
-	if version != "1" && version != strconv.Itoa(SchemaVersion) {
+	parsed, parseErr := strconv.Atoi(version)
+	if parseErr != nil || !CompatibleSchema(parsed) {
 		return fmt.Errorf("unsupported database schema %q", version)
 	}
 	return nil

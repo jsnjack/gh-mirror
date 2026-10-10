@@ -204,9 +204,9 @@ CPU/Vulkan switching preserves fingerprints, collection sessions and saved vecto
 Config `embedding` and persistent flags select backend, runtime, device and batch
 bound; `model --check` verifies the selected runtime offline without opening a mirror.
 
-Schema 2 adds semantic state/vectors; writer migration from schema 1 is local and
-transactional. Readers accept schema 1 for lexical queries and schema 2 without
-migrations. Keep CollectionVersion unchanged for this derived index. Index only
+Schema 2 adds semantic state/vectors; schema 3 stores shared vectors separately
+from source passages. Writer migrations from schemas 1/2 are local and transactional.
+Readers accept schemas 1–3 without migrations. Keep CollectionVersion unchanged for this derived index. Index only
 pending documents, reuse identical passages after edits, and checkpoint vectors
 with FULL durability. Guard writes against changed text/model; cascade deletions.
 Incomplete states are excluded from semantic queries and stripped from exports,
@@ -261,3 +261,12 @@ Entity boosts require topic coverage and are smaller for duplicate candidates;
 never auto-filter other clients. Semantic-only scores remain maximum passage
 cosines, while hybrid semantic ranks combine best passage and best-per-field
 evidence. Bind cursors to the ranking version and keep lexical BM25 unchanged.
+
+`cachingVectorizer` coalesces exact inputs across workers and batches, keyed by
+model fingerprint, representation version and text using compact 32-byte hashes.
+The shared SQLite dictionary checkpoints completed inference before source
+attachments, retaining reusable values on cancellation. Source passages reference
+the dictionary; migration accepts legacy inline BLOBs until the local rebuild
+shares them. Version derived inputs separately from collection. Ticket body
+passages exclude empty sections and known checklists while preserving raw source
+offsets. Exports prune incomplete sources and unreferenced shared vectors.
