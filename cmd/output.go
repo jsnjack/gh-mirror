@@ -60,6 +60,31 @@ func output(command *cobra.Command, value any) error {
 func humanOutput(value any) (string, error) {
 	lines := []string{}
 	switch v := value.(type) {
+	case store.ContextResult:
+		lines = append(lines, fmt.Sprintf("%s#%d  %s", cleanLine(v.Ticket.Repo), v.Ticket.Number, cleanLine(v.Summary.Title)), fmt.Sprintf("%s | %s | %s", cleanLine(v.Summary.State), cleanLine(v.Kind), cleanLine(v.Purpose)), cleanLine(v.Summary.URL), "Labels: "+cleanLine(strings.Join(v.Summary.Labels, ", ")), "", cleanText(v.Description.Text))
+		if v.Description.Truncated {
+			lines = append(lines, "Description truncated; use get --comments none for the original record.")
+		}
+		if len(v.MissingSections) > 0 {
+			lines = append(lines, "Sections absent or empty: "+strings.Join(v.MissingSections, ", "))
+		}
+		for _, c := range v.Comments {
+			lines = append(lines, "", fmt.Sprintf("%s comment %s | %s | %s", cleanLine(c.Kind), cleanLine(c.ID), cleanLine(c.Author), cleanLine(c.CreatedAt)), cleanLine(c.URL), cleanText(c.Body))
+			if c.Truncated {
+				lines = append(lines, "[Comment truncated]")
+			}
+		}
+		for _, r := range v.Related {
+			title := "[Not collected]"
+			if r.Summary != nil {
+				title = r.Summary.Title
+			}
+			lines = append(lines, fmt.Sprintf("%s: %s#%d  %s", cleanLine(r.Reference.Kind), cleanLine(r.Reference.Repo), r.Reference.Number, cleanLine(title)))
+		}
+		lines = append(lines, fmt.Sprintf("Comments: %d/%d | related omitted: %d | source text: %d/%d characters", v.Coverage.CommentsIncluded, v.Coverage.CommentsTotal, v.Coverage.RelatedOmitted, v.Coverage.TextCharacters, v.Coverage.CharacterBudget))
+		for _, warning := range v.Warnings {
+			lines = append(lines, "Warning: "+cleanLine(warning.Message))
+		}
 	case store.SearchResult:
 		engine := v.Query.Engine
 		if engine == "" {
@@ -191,6 +216,15 @@ func preview(text string, limit int) string {
 		return string(runes[:limit-1]) + "…"
 	}
 	return string(runes)
+}
+
+func cleanText(text string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) && r != '\n' && r != '\t' {
+			return ' '
+		}
+		return r
+	}, text)
 }
 
 func humanFields(value any) (string, error) {

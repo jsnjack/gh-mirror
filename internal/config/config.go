@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"gh-mirror/internal/embedding"
+	"gh-mirror/internal/representation"
 )
 
 var repositoryPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
@@ -25,23 +26,24 @@ const MaxWorkers = 16
 
 // Config defines collection scope, paths, and environment variable names.
 type Config struct {
-	Repositories       []string          `json:"repositories"`
-	RepositoryOptions  map[string]Scope  `json:"repository_options,omitempty"`
-	Database           string            `json:"database"`
-	SnapshotDir        string            `json:"snapshot_dir"`
-	APIURL             string            `json:"api_url"`
-	GraphQLURL         string            `json:"graphql_url"`
-	TokenEnv           string            `json:"token_env"`
-	APITokenEnv        string            `json:"api_token_env"`
-	Listen             string            `json:"listen"`
-	Fields             bool              `json:"fields"`
-	Projects           bool              `json:"projects"`
-	MaxRequests        int               `json:"max_requests"`
-	Workers            int               `json:"workers"`
-	Embedding          embedding.Options `json:"embedding,omitempty"`
-	Overlap            string            `json:"overlap"`
-	EnrichmentInterval string            `json:"enrichment_interval"`
-	ReconcileInterval  string            `json:"reconcile_interval"`
+	LabelRules         map[string][]representation.LabelRule `json:"label_rules,omitempty"`
+	Repositories       []string                              `json:"repositories"`
+	RepositoryOptions  map[string]Scope                      `json:"repository_options,omitempty"`
+	Database           string                                `json:"database"`
+	SnapshotDir        string                                `json:"snapshot_dir"`
+	APIURL             string                                `json:"api_url"`
+	GraphQLURL         string                                `json:"graphql_url"`
+	TokenEnv           string                                `json:"token_env"`
+	APITokenEnv        string                                `json:"api_token_env"`
+	Listen             string                                `json:"listen"`
+	Fields             bool                                  `json:"fields"`
+	Projects           bool                                  `json:"projects"`
+	MaxRequests        int                                   `json:"max_requests"`
+	Workers            int                                   `json:"workers"`
+	Embedding          embedding.Options                     `json:"embedding,omitempty"`
+	Overlap            string                                `json:"overlap"`
+	EnrichmentInterval string                                `json:"enrichment_interval"`
+	ReconcileInterval  string                                `json:"reconcile_interval"`
 }
 
 // DefaultPath returns the XDG configuration filename.
@@ -64,7 +66,7 @@ func Load(path string, explicit bool) (Config, error) {
 		dataDir = filepath.Join(home, ".local", "share")
 	}
 	dataDir = filepath.Join(dataDir, "gh-mirror")
-	c := Config{Database: filepath.Join(dataDir, "state.sqlite"), SnapshotDir: filepath.Join(dataDir, "snapshots"), APIURL: "https://api.github.com", GraphQLURL: "https://api.github.com/graphql", TokenEnv: "GITHUB_TOKEN", APITokenEnv: "GH_MIRROR_API_TOKEN", Listen: "127.0.0.1:8787", Fields: true, Projects: true, MaxRequests: 3000, Workers: DefaultWorkers, Overlap: "5m", EnrichmentInterval: "1h", ReconcileInterval: "24h"}
+	c := Config{LabelRules: map[string][]representation.LabelRule{}, Database: filepath.Join(dataDir, "state.sqlite"), SnapshotDir: filepath.Join(dataDir, "snapshots"), APIURL: "https://api.github.com", GraphQLURL: "https://api.github.com/graphql", TokenEnv: "GITHUB_TOKEN", APITokenEnv: "GH_MIRROR_API_TOKEN", Listen: "127.0.0.1:8787", Fields: true, Projects: true, MaxRequests: 3000, Workers: DefaultWorkers, Overlap: "5m", EnrichmentInterval: "1h", ReconcileInterval: "24h"}
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) && !explicit {
@@ -103,6 +105,14 @@ func Load(path string, explicit bool) (Config, error) {
 
 // Validate checks settings before any database or network operation.
 func (c Config) Validate() error {
+	if err := representation.ValidateRules(c.LabelRules); err != nil {
+		return fmt.Errorf("label rules: %w", err)
+	}
+	for repo := range c.LabelRules {
+		if !ValidRepository(repo) {
+			return fmt.Errorf("invalid label_rules repository %q", repo)
+		}
+	}
 	if err := c.Embedding.Validate(); err != nil {
 		return fmt.Errorf("embedding settings: %w", err)
 	}

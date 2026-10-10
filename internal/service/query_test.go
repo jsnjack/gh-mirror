@@ -17,6 +17,8 @@ func TestQueryAPI(t *testing.T) {
 		name, method, path, body string
 		code                     int
 	}{
+		{"context", "GET", "/v1/issues/o/r/1/context?purpose=proofread&max_characters=1000", "", 200},
+		{"invalid context", "GET", "/v1/issues/o/r/1/context?comment_limit=100", "", 400},
 		{"all words", "GET", "/v1/search?q=client+socket&match=all&count=true&facets=true&limit=1", "", 200},
 		{"multiple repositories", "GET", "/v1/issues?repo=o/r&repo=o/s&view=summary", "", 200},
 		{"bad boolean", "GET", "/v1/search?q=socket&count=invalid", "", 400},
@@ -91,6 +93,7 @@ func TestNewMCPTools(t *testing.T) {
 		name  string
 		input any
 	}{
+		{"get_issue_context", store.ContextOptions{Repo: "o/r", Number: 1, Purpose: "classification"}},
 		{"list_comments", store.CommentOptions{Repo: "o/r", Number: 1}},
 		{"get_issues", store.BatchOptions{Tickets: []store.TicketID{{Repo: "o/r", Number: 1}}}},
 		{"list_catalog", store.CatalogOptions{Kind: "labels", Scope: "o/r", Limit: 1}},

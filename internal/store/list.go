@@ -102,6 +102,9 @@ func (s *Store) List(ctx context.Context, o ListOptions) (ListResult, error) {
 			if err != nil {
 				return finishRows(rows, err)
 			}
+			if err := applyLabelRules(ctx, tx, t.Repo, t.Summary); err != nil {
+				return finishRows(rows, err)
+			}
 			if o.View == "full" {
 				t.Payload, t.Fields, t.Extra = raw, fields, extra
 			}

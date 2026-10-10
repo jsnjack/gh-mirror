@@ -901,3 +901,47 @@ Request coordination follows GitHub's
 [rate-limit guidance](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api).
 GitHub [recommends serial requests](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api)
 to reduce secondary rate limits; `--workers 1` selects that mode.
+
+### Ticket context for agents
+
+Use `context` after search to read bounded evidence for evaluating a ticket:
+
+```sh
+gh-mirror context --repo owner/repository --number 123 --query 'session continuation' --format text
+gh-mirror context --repo owner/repository --number 123 --purpose proofread --max-characters 20000
+```
+
+The same view is available at `GET /v1/issues/owner/repository/123/context` and
+through the MCP `get_issue_context` tool. It includes original description text,
+section byte offsets, absent or empty sections, structured label attributes,
+closure and merge metadata, selected relevant and recent comments, and bounded
+one-hop related tickets. References distinguish native relationships, mentions,
+explicit duplicate references and fix references. These are source observations;
+an agent must evaluate whether two tickets describe the same problem.
+
+`--comment-limit`, `--related-limit` and `--max-characters` bound the response.
+Coverage reports omitted comments, relationship expansion and truncated text.
+Proofreading gives the original description priority; other purposes reserve
+space for discussion. Full source records remain available through `get` and
+`comments --view full`. Section extraction preserves Markdown, code and Unicode.
+
+Labels such as `client:Acme`, `feature:continuation` and `comp:browser` expose
+roles and values without discarding their original names. Multiple labels in a
+role remain separate. Configure other conventions per repository:
+
+```json
+{
+  "label_rules": {
+    "owner/repository": [
+      {"prefix": "customer:", "role": "client"},
+      {"label": "account:example", "role": "client", "value": "Example",
+       "aliases": ["Example Ltd"], "description": "Affected customer"}
+    ]
+  }
+}
+```
+
+Run `gh-mirror index` to save rules in the snapshot locally. `sync` also saves
+rules when indexing is enabled. Exact rules override prefix rules; the longest
+matching prefix wins. Attached label catalog definitions accompany context when
+available. Changing rules does not fetch GitHub or change the embedding model.

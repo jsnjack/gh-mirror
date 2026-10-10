@@ -57,6 +57,10 @@ func TestRESTMCPParity(t *testing.T) {
 		name, path, tool string
 		args             map[string]any
 	}{{"list", "/v1/issues?label=client%3AAcme&limit=1", "list_issues", map[string]any{"label": "client:Acme", "limit": 1}}, {"search", "/v1/search?q=acme", "search_issues", map[string]any{"query": "acme"}}, {"get", "/v1/issues/o/r/1", "get_issue", map[string]any{"repo": "o/r", "number": 1}}, {"catalog", "/v1/catalog?kind=labels&scope=o/r", "get_catalog", map[string]any{"kind": "labels", "scope": "o/r"}}, {"project", "/v1/projects?owner=o&number=1", "get_project", map[string]any{"owner": "o", "number": 1}}, {"candidates", "/v1/candidates?repo=o/r&number=1", "find_duplicate_candidates", map[string]any{"repo": "o/r", "number": 1}}, {"status", "/v1/status", "get_sync_status", map[string]any{}}}
+	cases = append(cases, struct {
+		name, path, tool string
+		args             map[string]any
+	}{"context", "/v1/issues/o/r/1/context?purpose=classification&query=socket", "get_issue_context", map[string]any{"repo": "o/r", "number": 1, "purpose": "classification", "query": "socket"}})
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			svc := fixture(t)
@@ -82,7 +86,7 @@ func TestRESTMCPParity(t *testing.T) {
 				}
 			}()
 			tools, err := session.ListTools(ctx, nil)
-			if err != nil || len(tools.Tools) != 10 {
+			if err != nil || len(tools.Tools) != 11 {
 				t.Fatal("MCP tools", tools, err)
 			}
 			for _, tool := range tools.Tools {

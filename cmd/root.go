@@ -195,7 +195,7 @@ func addCollection() {
 		if index {
 			setEmbeddingProgress(report)
 			defer setEmbeddingProgress(nil)
-			if _, err := db.Index(command.Context(), commandEncoder(), store.IndexOptions{Workers: cpuWorkers, Progress: report}); err != nil {
+			if _, err := db.Index(command.Context(), commandEncoder(), store.IndexOptions{Workers: cpuWorkers, Progress: report, LabelRules: settings.LabelRules}); err != nil {
 				return fmt.Errorf("index collected mirror: %w", err)
 			}
 			result.Status, err = db.Status(command.Context())

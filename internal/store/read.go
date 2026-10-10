@@ -104,6 +104,9 @@ func readTicket(ctx context.Context, q querier, repo string, number int, view st
 	if err != nil {
 		return t, err
 	}
+	if err := applyLabelRules(ctx, q, repo, t.Summary); err != nil {
+		return t, err
+	}
 	if view == "full" {
 		t.Payload, t.Fields, t.Extra = raw, fields, extra
 	}

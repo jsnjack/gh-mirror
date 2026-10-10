@@ -8,25 +8,34 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"gh-mirror/internal/representation"
 )
 
 // TicketSummary provides common ticket metadata without a full upstream payload.
 type TicketSummary struct {
-	Title     string   `json:"title"`
-	State     string   `json:"state"`
-	URL       string   `json:"url"`
-	Type      string   `json:"type,omitempty"`
-	Author    string   `json:"author,omitempty"`
-	Labels    []string `json:"labels"`
-	Assignees []string `json:"assignees"`
-	Projects  []string `json:"projects"`
-	Milestone string   `json:"milestone,omitempty"`
-	CreatedAt string   `json:"created_at,omitempty"`
-	UpdatedAt string   `json:"updated_at"`
+	Attributes  []representation.Attribute `json:"attributes"`
+	StateReason string                     `json:"state_reason,omitempty"`
+	ClosedAt    string                     `json:"closed_at,omitempty"`
+	MergedAt    string                     `json:"merged_at,omitempty"`
+	Draft       bool                       `json:"draft,omitempty"`
+	Title       string                     `json:"title"`
+	State       string                     `json:"state"`
+	URL         string                     `json:"url"`
+	Type        string                     `json:"type,omitempty"`
+	Author      string                     `json:"author,omitempty"`
+	Labels      []string                   `json:"labels"`
+	Assignees   []string                   `json:"assignees"`
+	Projects    []string                   `json:"projects"`
+	Milestone   string                     `json:"milestone,omitempty"`
+	CreatedAt   string                     `json:"created_at,omitempty"`
+	UpdatedAt   string                     `json:"updated_at"`
 }
 
 // Evidence identifies the field and source supporting a search match.
 type Evidence struct {
+	Author        string   `json:"author,omitempty"`
+	Truncated     bool     `json:"truncated,omitempty"`
 	Field         string   `json:"field"`
 	Source        string   `json:"source"`
 	Snippet       string   `json:"snippet"`
@@ -64,6 +73,12 @@ type FacetResult struct {
 
 func summarize(raw, extra json.RawMessage) (*TicketSummary, error) {
 	var o struct {
+		StateReason string `json:"state_reason"`
+		ClosedAt    string `json:"closed_at"`
+		Draft       bool   `json:"draft"`
+		PullRequest *struct {
+			MergedAt string `json:"merged_at"`
+		} `json:"pull_request"`
 		Title     string                   `json:"title"`
 		State     string                   `json:"state"`
 		URL       string                   `json:"html_url"`
@@ -90,6 +105,11 @@ func summarize(raw, extra json.RawMessage) (*TicketSummary, error) {
 	}
 	for _, v := range o.Labels {
 		s.Labels = append(s.Labels, v.Name)
+	}
+	s.Attributes = representation.Attributes(s.Labels, nil)
+	s.StateReason, s.ClosedAt, s.Draft = o.StateReason, o.ClosedAt, o.Draft
+	if o.PullRequest != nil {
+		s.MergedAt = o.PullRequest.MergedAt
 	}
 	for _, v := range o.Assignees {
 		s.Assignees = append(s.Assignees, v.Login)

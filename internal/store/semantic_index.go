@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -14,6 +15,7 @@ import (
 
 	"gh-mirror/internal/embedding"
 	"gh-mirror/internal/progress"
+	"gh-mirror/internal/representation"
 )
 
 // ErrSemanticUnavailable indicates that compatible complete vectors are required.
@@ -87,8 +89,9 @@ func semanticStatus(ctx context.Context, q querier) (*SemanticStatus, error) {
 
 // IndexOptions bounds CPU concurrency and reports local indexing progress.
 type IndexOptions struct {
-	Workers  int
-	Progress progress.Reporter
+	LabelRules map[string][]representation.LabelRule
+	Workers    int
+	Progress   progress.Reporter
 }
 
 type indexDocument struct{ id, title, body string }
@@ -123,6 +126,9 @@ func documentHash(d indexDocument) string { return hash([]byte(d.title + "\x00" 
 
 // Index durably indexes only new or changed documents, retaining completed chunks on interruption.
 func (s *Store) Index(ctx context.Context, e Vectorizer, o IndexOptions) (SemanticStatus, error) {
+	if err := representation.ValidateRules(o.LabelRules); err != nil {
+		return SemanticStatus{}, fmt.Errorf("index label rules: %w", err)
+	}
 	if o.Workers == 0 {
 		o.Workers = 4
 	}
@@ -133,6 +139,24 @@ func (s *Store) Index(ctx context.Context, e Vectorizer, o IndexOptions) (Semant
 		return SemanticStatus{}, fmt.Errorf("index dimension %d; expected %d", e.Dim(), embedding.Dimension)
 	}
 	err := s.Update(ctx, func(w *Writer) error {
+		if o.LabelRules != nil {
+			raw, err := json.Marshal(o.LabelRules)
+			if err != nil {
+				return fmt.Errorf("encode label rules: %w", err)
+			}
+			old, err := w.Metadata(ctx, "label_rules")
+			if err != nil {
+				return err
+			}
+			if old != string(raw) {
+				if err := w.SetMetadata(ctx, "label_rules", string(raw)); err != nil {
+					return err
+				}
+				if err := advanceSemantic(ctx, w); err != nil {
+					return err
+				}
+			}
+		}
 		old, err := w.Metadata(ctx, "semantic_model")
 		if err != nil {
 			return err

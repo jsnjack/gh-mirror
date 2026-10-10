@@ -11,6 +11,7 @@ import (
 )
 
 func addReads() {
+	addContext()
 	var comments store.CommentOptions
 	command := &cobra.Command{Use: "comments", Short: "Read a bounded page of ticket comments", Args: cobra.NoArgs, RunE: func(c *cobra.Command, _ []string) error {
 		db, err := open(true)
@@ -59,4 +60,28 @@ func addReads() {
 	}}
 	batch.Flags().StringVar(&view, "view", "summary", "Return compact summaries or full raw ticket records")
 	root.AddCommand(batch)
+}
+
+func addContext() {
+	var options store.ContextOptions
+	command := &cobra.Command{Use: "context", Short: "Read bounded ticket evidence for classification, duplicates or proofreading", Args: cobra.NoArgs, RunE: func(c *cobra.Command, _ []string) error {
+		db, err := open(true)
+		if err != nil {
+			return err
+		}
+		defer closeStore(c.Context(), db)
+		out, err := db.Context(c.Context(), options)
+		if err != nil {
+			return fmt.Errorf("read ticket context: %w", err)
+		}
+		return output(c, out)
+	}}
+	command.Flags().StringVar(&options.Repo, "repo", "", "Repository owner/name")
+	command.Flags().IntVar(&options.Number, "number", 0, "Ticket number")
+	command.Flags().StringVar(&options.Purpose, "purpose", "evaluate", "Select evaluate, classification, duplicates or proofread")
+	command.Flags().StringVar(&options.Query, "query", "", "Select matching discussion alongside recent comments")
+	command.Flags().IntVar(&options.CommentLimit, "comment-limit", 10, "Maximum selected comments (1–50)")
+	command.Flags().IntVar(&options.RelatedLimit, "related-limit", 5, "Maximum expanded related tickets (1–20)")
+	command.Flags().IntVar(&options.MaxCharacters, "max-characters", 12000, "Shared source-text budget (1000–100000 characters)")
+	root.AddCommand(command)
 }

@@ -338,6 +338,9 @@ func lexicalSearch(ctx context.Context, q querier, o SearchOptions) (SearchResul
 		if err != nil {
 			return out, finishRows(rows, err)
 		}
+		if err := applyLabelRules(ctx, q, m.Repo, m.Summary); err != nil {
+			return out, finishRows(rows, err)
+		}
 		m.Evidence = []Evidence{}
 		if o.View == "full" {
 			m.Payload, m.Fields, m.Extra = payload, fields, extra

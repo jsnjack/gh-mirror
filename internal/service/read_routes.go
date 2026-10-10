@@ -14,6 +14,31 @@ import (
 )
 
 func (s *Service) readRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /v1/issues/{owner}/{repo}/{number}/context", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		number, err := strconv.Atoi(r.PathValue("number"))
+		if err != nil {
+			respond(w, nil, badInput("invalid ticket number"))
+			return
+		}
+		comments, err := intParam(q, "comment_limit", 10)
+		if err != nil {
+			respond(w, nil, err)
+			return
+		}
+		related, err := intParam(q, "related_limit", 5)
+		if err != nil {
+			respond(w, nil, err)
+			return
+		}
+		characters, err := intParam(q, "max_characters", 12000)
+		if err != nil {
+			respond(w, nil, err)
+			return
+		}
+		out, err := s.Store.Context(r.Context(), store.ContextOptions{Repo: r.PathValue("owner") + "/" + r.PathValue("repo"), Number: number, Purpose: q.Get("purpose"), Query: q.Get("query"), CommentLimit: comments, RelatedLimit: related, MaxCharacters: characters})
+		respond(w, out, err)
+	})
 	mux.HandleFunc("GET /v1/issues/{owner}/{repo}/{number}/comments", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		number, err := strconv.Atoi(r.PathValue("number"))
@@ -47,6 +72,10 @@ func (s *Service) readRoutes(mux *http.ServeMux) {
 	})
 }
 func (s *Service) readTools(server *mcp.Server) {
+	mcp.AddTool(server, tool("get_issue_context", "Read bounded original ticket text, structured label attributes, section offsets, selected relevant/recent comments and one-hop relationships from one local generation. purpose=evaluate/classification/duplicates/proofread; missing sections are observations, references are not duplicate judgments. Explicit coverage and truncation report omitted material. Query text selects discussion evidence; no upstream requests or embeddings required.", store.ContextResult{}), func(ctx context.Context, _ *mcp.CallToolRequest, input store.ContextOptions) (*mcp.CallToolResult, store.ContextResult, error) {
+		out, err := s.Store.Context(ctx, input)
+		return nil, out, err
+	})
 	mcp.AddTool(server, tool("list_comments", "Read a bounded page of discussion or inline review comments. Summary previews are limited to 1024 characters; full view preserves raw records. Follow next_cursor with the same options.", store.CommentResult{}), func(ctx context.Context, _ *mcp.CallToolRequest, input store.CommentOptions) (*mcp.CallToolResult, store.CommentResult, error) {
 		out, err := s.Store.Comments(ctx, input)
 		return nil, out, err

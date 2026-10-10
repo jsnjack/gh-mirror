@@ -245,3 +245,12 @@ numerical changes reject continuation with the typed stale-cursor error.
 Keep lexical behavior and score direction unchanged. Research model alternatives against primary
 sources and target-hardware measurements; synthetic retrieval fixtures do not prove
 production duplicate accuracy.
+
+`internal/representation` owns local label roles, section byte offsets and typed
+explicit references while keeping upstream text unchanged. Repository `label_rules`
+are saved during local indexing, independent of collection compatibility and model
+identity. Summary metadata promotes state_reason, closed_at, draft and nested PR
+merged_at. `context`, REST issue `/context` and MCP `get_issue_context` share one
+read transaction with source-text budgets, selection/omission coverage and bounded
+one-hop relationships. Exact description text and code remain available; missing
+sections and duplicate references are observations, not model decisions.

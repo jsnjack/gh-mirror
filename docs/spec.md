@@ -409,3 +409,22 @@ queries to 16 KiB, 16 semantic passages and 512 hybrid literal terms. Bind seman
 cursors to collection generation, vector generation, model and effective options.
 Status reports durable document/chunk coverage and compatibility. Query tools remain
 read-only and never initiate indexing or GitHub requests.
+
+## Derived ticket context
+
+`internal/representation` derives label attributes, Markdown sections and explicit
+references from preserved source records. Rules are repository-specific config
+`label_rules`, with one exact label or prefix selector, role, optional value,
+aliases and description. Indexing persists rules in snapshot metadata; readers
+apply them locally. Raw labels remain authoritative and allow multiple values.
+Closure reasons and nested PR merge timestamps are promoted into summaries.
+
+`context`, REST issue `/context` and MCP `get_issue_context` use one read
+transaction. They return original description prefixes with byte offsets,
+section ranges, absent/empty section observations, native and explicit source
+relationships, selected query-matching/recent comments and bounded related
+summaries. The default source-text budget is 12000 Unicode characters, with up to
+10 comments and 5 expanded relationships. Limits and omissions are explicit.
+Code fences do not introduce Markdown sections or issue references. Views require
+neither embeddings nor network calls and work with legacy snapshots. Purpose
+controls source selection, not classification or duplicate decisions.
