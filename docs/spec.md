@@ -244,9 +244,37 @@ queued cancellation, and unchanged bootstrap request counts. Recovery tests reop
 databases after interrupted pages/batches and budget exhaustion, verify that the old
 generation remains visible, and check original watermarks and session invalidation.
 
-Embeddings, webhooks, attachment downloads, GitHub App token minting, object-storage
+Webhooks, attachment downloads, GitHub App token minting, object-storage
 upload clients, and automatic snapshot retention are future extensions. Existing
 installation/PAT credentials can be supplied through the token environment variable.
+
+## Offline embeddings
+
+The binary bundles pinned FP32 MiniLM L6 weights and its WordPiece tokenizer for
+standalone Go CPU inference. Semantic search uses exact filtered cosine scans;
+hybrid search combines independent lexical and semantic ranks. Titles, bodies,
+labels and collected comments produce bounded overlapping passages, with mean
+pooling and L2 normalization. SQLite snapshots contain the compatible vectors.
+
+`index` operates only on local documents. Indexing skips unchanged documents,
+reuses identical passages after edits and durably checkpoints finished vectors.
+Changing the embedding fingerprint rebuilds this derived index without GitHub
+collection or invalidating compatible collection checkpoints.
+
+Optional `embedding.backend: lemonade-vulkan` starts a dedicated authenticated
+loopback process using Lemonade's installed Vulkan runtime. It exports the exact
+bundled FP32 tensors to GGUF locally and sends bundled tokenizer IDs directly.
+Inference is offline after backend installation. GPU batching and CPU fallback
+are bounded; missing devices, incompatible vectors and runtime failures select
+the same bundled CPU model with an explicit reason. Validate full GPU offload,
+reference vectors, full-length passages, response identity, dimensions and unit
+norm before accepting GPU vectors. Backend selection never changes model identity.
+CPU/Vulkan results must have cosine >=0.9999 and coordinate difference <=0.001.
+
+The configured encoder is shared by CLI, REST and MCP query paths. Runtime progress
+reports the actual backend/device, batch size, vector throughput and fallback
+reason while preserving document progress and resume checkpoints. `model --check`
+verifies the selected backend without opening or modifying the mirror.
 
 ## Repository resource options
 

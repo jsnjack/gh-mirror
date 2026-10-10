@@ -330,7 +330,8 @@ The default executable is under the user's Lemonade cache at
 `lemonade/bin/llamacpp/vulkan/llama-server` (`.exe` on Windows). Set
 `embedding.runtime` or `--embedding-runtime` to an absolute path if it is installed
 elsewhere. `--embedding-device` selects a numbered Vulkan device;
-`--embedding-batch-size` bounds batches between 1 and 32 passages (default 8). Index workers
+`--embedding-batch-size` bounds batches between 1 and 32 passages (default 8).
+Index workers
 prepare documents and commit results; the GPU queue combines passages from those
 workers, including batches within long documents. REST and MCP use the configured
 encoder for semantic and hybrid queries.
@@ -349,6 +350,9 @@ document throughput. Switching compatible CPU/Vulkan backends preserves saved
 vectors and checkpoints. A changed model fingerprint rebuilds vectors from stored
 documents through `index`, without GitHub requests. Use `--embedding-backend cpu`
 to override a configured GPU backend.
+The [Vulkan benchmark](docs/vulkan-benchmark-2026-10-10.md) records model
+compatibility, indexing throughput, query latency and interruption tests on
+Ryzen AI / Radeon 890M hardware.
 
 Build vectors for an existing mirror without requesting GitHub data:
 
