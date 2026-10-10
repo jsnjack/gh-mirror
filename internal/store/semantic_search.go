@@ -219,7 +219,11 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 	if err != nil {
 		return out, err
 	}
-	generation := out.Status.Generation + ":" + out.Status.Semantic.Generation + ":" + e.ID()
+	queryBytes, err := encodeVector(queryVector)
+	if err != nil {
+		return out, fmt.Errorf("fingerprint query vector: %w", err)
+	}
+	generation := out.Status.Generation + ":" + out.Status.Semantic.Generation + ":" + e.ID() + ":" + hash(queryBytes)
 	cursor, err := decodeCursor(o.Cursor, "vector_search", sig, generation)
 	if err != nil {
 		return out, err

@@ -228,7 +228,9 @@ Semantic/hybrid queries share ticket filters and result contracts. Use exact fil
 cosine scans and independent lexical/semantic rank fusion (k=60); higher scores rank
 first. Report source offsets/similarity and typed 503 errors for missing/incomplete
 indexes. Bind vector cursors to vector generation and fingerprint as well as collection
-and query. Semantic candidates reuse weighted cached seed vectors. Keep lexical
-behavior and score direction unchanged. Research model alternatives against primary
+and query. Semantic candidates reuse weighted cached seed vectors.
+Bind semantic cursor generations to the actual query-vector hash so backend
+numerical changes reject continuation with the typed stale-cursor error.
+Keep lexical behavior and score direction unchanged. Research model alternatives against primary
 sources and target-hardware measurements; synthetic retrieval fixtures do not prove
 production duplicate accuracy.

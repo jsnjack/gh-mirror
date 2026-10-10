@@ -408,6 +408,9 @@ An incomplete or incompatible index produces an explicit error with instructions
 to run `index`; REST returns 503 with code `semantic_index_unavailable`.
 `status.semantic` reports coverage, pending documents and model compatibility.
 Semantic cursors also bind the vector generation and model fingerprint.
+They bind the actual query vector too: small numerical changes during CPU/GPU
+fallback invalidate pagination with a stale-cursor response. Restart the query
+after that response or when continuing a semantic cursor from an older binary.
 
 Snapshots include completed vectors in the same SQLite file. CI consumers acquire
 that file and search offline with the same binary. They do not need a separate model

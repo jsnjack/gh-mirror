@@ -4,10 +4,50 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+type driftingVectorizer struct {
+	fakeVectorizer
+	drift float32
+}
+
+func (e *driftingVectorizer) Embed(ctx context.Context, text string) ([]float32, error) {
+	v, err := e.fakeVectorizer.Embed(ctx, text)
+	if err != nil {
+		return nil, err
+	}
+	v[0] = float32(math.Sqrt(1 - float64(e.drift)*float64(e.drift)))
+	v[1] = e.drift
+	return v, nil
+}
+
+func TestSemanticCursorBindsQueryVector(t *testing.T) {
+	db := testStore(t)
+	seed(t, db)
+	e := &driftingVectorizer{}
+	db.vectorizer = e
+	ctx := context.Background()
+	if _, err := db.Index(ctx, e, IndexOptions{Workers: 1}); err != nil {
+		t.Fatal(err)
+	}
+	options := SearchOptions{Engine: "semantic", Query: "query", Limit: 1}
+	page, err := db.Search(ctx, options)
+	if err != nil || page.NextCursor == "" {
+		t.Fatal("missing first page", page, err)
+	}
+	options.Cursor = page.NextCursor
+	if _, err := db.Search(ctx, options); err != nil {
+		t.Fatal("stable query cursor rejected", err)
+	}
+	e.drift = 0.01
+	if _, err := db.Search(ctx, options); !errors.Is(err, ErrCursorConflict) {
+		t.Fatal("backend numerical change did not return stale cursor", err)
+	}
+}
 
 type batchFixture struct {
 	fakeVectorizer
