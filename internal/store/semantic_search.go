@@ -415,10 +415,30 @@ func queryEmbedding(ctx context.Context, q querier, o SearchOptions, e Vectorize
 		return nil, invalid("semantic query exceeds 16 passages; shorten it explicitly")
 	}
 	v := make([]float32, e.Dim())
-	for _, chunk := range chunks {
-		part, err := e.Embed(ctx, chunk.Text)
+	parts := make([][]float32, len(chunks))
+	if batcher, ok := e.(BatchVectorizer); ok {
+		texts := make([]string, len(chunks))
+		for n, c := range chunks {
+			texts[n] = c.Text
+		}
+		parts, err = batcher.EmbedBatch(ctx, texts)
 		if err != nil {
 			return nil, err
+		}
+		if len(parts) != len(chunks) {
+			return nil, fmt.Errorf("query encoder returned wrong batch length")
+		}
+	} else {
+		for n, chunk := range chunks {
+			parts[n], err = e.Embed(ctx, chunk.Text)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	for _, part := range parts {
+		if len(part) != e.Dim() {
+			return nil, fmt.Errorf("query encoder returned wrong vector dimension")
 		}
 		for n, x := range part {
 			v[n] += x

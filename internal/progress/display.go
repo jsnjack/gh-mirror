@@ -25,28 +25,31 @@ var frames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "�
 
 // Display renders terminal activity or periodic plain status lines on its writer.
 type Display struct {
-	mu                       sync.Mutex
-	writer                   io.Writer
-	interactive              bool
-	started, printed, until  time.Time
-	phaseStarted             time.Time
-	columns                  func() int
-	phase, scope, remaining  string
-	resource                 string
-	received                 map[string]int
-	page, records            int
-	done, total              int
-	issues, comments         int
-	repository, repositories int
-	requests, limit, cached  int
-	active, workers          int
-	workerKind               string
-	resumed, saved           int
-	lines, frame             int
-	err                      error
-	stop, stopped            chan struct{}
-	finished                 bool
-	operation                string
+	mu                                  sync.Mutex
+	writer                              io.Writer
+	interactive                         bool
+	started, printed, until             time.Time
+	phaseStarted                        time.Time
+	columns                             func() int
+	phase, scope, remaining             string
+	resource                            string
+	received                            map[string]int
+	page, records                       int
+	done, total                         int
+	issues, comments                    int
+	repository, repositories            int
+	requests, limit, cached             int
+	active, workers                     int
+	workerKind                          string
+	resumed, saved                      int
+	lines, frame                        int
+	err                                 error
+	stop, stopped                       chan struct{}
+	finished                            bool
+	operation                           string
+	backend, device, fallback, listener string
+	embeddingVectors, batchSize         int
+	embeddingRate                       float64
 }
 
 // New starts immediate status reporting and animates only a terminal writer.
@@ -146,6 +149,14 @@ func (d *Display) Report(event Event) {
 	}
 	if event.WorkerKind != "" {
 		d.workerKind = event.WorkerKind
+	}
+	if event.Backend != "" {
+		changed = changed || event.Backend != d.backend || event.FallbackReason != d.fallback || event.Listener != d.listener
+		d.backend, d.device, d.fallback, d.listener = clean(event.Backend), clean(event.Device), clean(event.FallbackReason), clean(event.Listener)
+		d.embeddingVectors, d.embeddingRate, d.batchSize = event.EmbeddingVectors, event.EmbeddingRate, event.BatchSize
+	}
+	if (d.backend == "lemonade-vulkan" || d.backend == "starting Vulkan") && d.workerKind == CPUWorkers {
+		d.workerKind = "Index"
 	}
 	d.resumed = max(d.resumed, event.Resumed)
 	d.saved = max(d.saved, event.Saved)
@@ -263,9 +274,26 @@ func (d *Display) render(now time.Time, status string) {
 	}
 	if d.operation == "index" {
 		counters = ""
-		requests = fmt.Sprintf("CPU workers %d/%d active", d.active, d.workers)
+		kind := d.workerKind
+		if kind == "" {
+			kind = CPUWorkers
+		}
+		requests = fmt.Sprintf("%s workers %d/%d active", kind, d.active, d.workers)
 		quota = ""
 		resume = ""
+	}
+	embeddings, fallback, listener := "", "", ""
+	if d.backend != "" {
+		embeddings = fmt.Sprintf("Embeddings: %s | %s | %d vectors | %.1f vectors/s", d.backend, d.device, d.embeddingVectors, d.embeddingRate)
+		if d.batchSize > 0 {
+			embeddings += fmt.Sprintf(" | batch %d", d.batchSize)
+		}
+		if d.fallback != "" {
+			fallback = "CPU fallback: " + d.fallback
+		}
+		if d.listener != "" {
+			listener = "Listening on " + d.listener + " (local embedding runtime)"
+		}
 	}
 	var text string
 	if d.interactive {
@@ -281,7 +309,7 @@ func (d *Display) render(now time.Time, status string) {
 			activity = frames[d.frame%len(frames)] + " " + activity
 			d.frame++
 		}
-		rows := []string{header, activity, bounded, wait, counters, requests, quota, resume}
+		rows := []string{header, activity, bounded, wait, counters, requests, quota, resume, embeddings, fallback, listener}
 		var lines []string
 		// Leave the final column unused to avoid an untracked terminal wrap.
 		width := max(1, d.columns()-1)
@@ -316,6 +344,11 @@ func (d *Display) render(now time.Time, status string) {
 		}
 		if resume != "" {
 			text += " | " + resume
+		}
+		for _, detail := range []string{embeddings, fallback, listener} {
+			if detail != "" {
+				text += " | " + detail
+			}
 		}
 		text += "\n"
 	}

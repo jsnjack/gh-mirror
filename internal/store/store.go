@@ -32,6 +32,17 @@ type Store struct {
 	db         *sql.DB
 	writerGate chan struct{}
 	Path       string
+	vectorizer Vectorizer
+}
+
+// OpenWithVectorizer opens a mirror with an explicitly selected query encoder.
+func OpenWithVectorizer(path string, readOnly bool, e Vectorizer) (*Store, error) {
+	s, err := Open(path, readOnly)
+	if err != nil {
+		return nil, err
+	}
+	s.vectorizer = e
+	return s, nil
 }
 
 // Open opens a writer database or an existing read-only database.

@@ -20,6 +20,9 @@ func addIndex() {
 		if err != nil {
 			return err
 		}
+		if err := configureIndexEncoder(command.Context(), cpuWorkers); err != nil {
+			return err
+		}
 		var display *progress.Display
 		var report progress.Reporter
 		if !quiet {
@@ -40,7 +43,9 @@ func addIndex() {
 			return err
 		}
 		defer closeStore(command.Context(), db)
-		result, err := db.Index(command.Context(), embedding.Default, store.IndexOptions{Workers: cpuWorkers, Progress: report})
+		setEmbeddingProgress(report)
+		defer setEmbeddingProgress(nil)
+		result, err := db.Index(command.Context(), commandEncoder(), store.IndexOptions{Workers: cpuWorkers, Progress: report})
 		if err != nil {
 			return fmt.Errorf("index local mirror: %w", err)
 		}
@@ -56,16 +61,35 @@ func addIndex() {
 	command.Flags().IntVar(&workers, "workers", 0, "Parallel CPU inference workers (1–16; defaults to configuration)")
 	command.Flags().BoolVar(&quiet, "quiet", false, "Suppress indexing progress")
 	root.AddCommand(command)
-	root.AddCommand(&cobra.Command{Use: "model", Short: "Describe the bundled offline encoder and its compatibility identity", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+	var check bool
+	modelCommand := &cobra.Command{Use: "model", Short: "Describe the bundled offline encoder and its compatibility identity", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+		var runtime *embedding.State
+		if check {
+			if embeddingProvider == nil {
+				var err error
+				embeddingProvider, err = embedding.New(command.Context(), settings.Embedding)
+				if err != nil {
+					return err
+				}
+			}
+			if _, err := embeddingProvider.Embed(command.Context(), "hello world"); err != nil {
+				return err
+			}
+			s := embeddingProvider.Status()
+			runtime = &s
+		}
 		return output(command, struct {
-			Model       string `json:"model"`
-			Revision    string `json:"revision"`
-			Fingerprint string `json:"fingerprint"`
-			Dimension   int    `json:"dimension"`
-			MaxTokens   int    `json:"max_tokens"`
-			License     string `json:"license"`
-		}{embedding.Model, embedding.Revision, embedding.Fingerprint, embedding.Dimension, embedding.MaxTokens, "Apache-2.0"})
-	}})
+			Model       string           `json:"model"`
+			Revision    string           `json:"revision"`
+			Fingerprint string           `json:"fingerprint"`
+			Dimension   int              `json:"dimension"`
+			MaxTokens   int              `json:"max_tokens"`
+			License     string           `json:"license"`
+			Runtime     *embedding.State `json:"runtime,omitempty"`
+		}{embedding.Model, embedding.Revision, embedding.Fingerprint, embedding.Dimension, embedding.MaxTokens, "Apache-2.0", runtime})
+	}}
+	modelCommand.Flags().BoolVar(&check, "check", false, "Verify the configured backend, model compatibility, and CPU fallback offline")
+	root.AddCommand(modelCommand)
 }
 
 func inferenceWorkers(command *cobra.Command, flag string, value int) (int, error) {

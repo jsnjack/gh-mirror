@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"gh-mirror/internal/embedding"
 )
 
 var repositoryPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
@@ -23,22 +25,23 @@ const MaxWorkers = 16
 
 // Config defines collection scope, paths, and environment variable names.
 type Config struct {
-	Repositories       []string         `json:"repositories"`
-	RepositoryOptions  map[string]Scope `json:"repository_options,omitempty"`
-	Database           string           `json:"database"`
-	SnapshotDir        string           `json:"snapshot_dir"`
-	APIURL             string           `json:"api_url"`
-	GraphQLURL         string           `json:"graphql_url"`
-	TokenEnv           string           `json:"token_env"`
-	APITokenEnv        string           `json:"api_token_env"`
-	Listen             string           `json:"listen"`
-	Fields             bool             `json:"fields"`
-	Projects           bool             `json:"projects"`
-	MaxRequests        int              `json:"max_requests"`
-	Workers            int              `json:"workers"`
-	Overlap            string           `json:"overlap"`
-	EnrichmentInterval string           `json:"enrichment_interval"`
-	ReconcileInterval  string           `json:"reconcile_interval"`
+	Repositories       []string          `json:"repositories"`
+	RepositoryOptions  map[string]Scope  `json:"repository_options,omitempty"`
+	Database           string            `json:"database"`
+	SnapshotDir        string            `json:"snapshot_dir"`
+	APIURL             string            `json:"api_url"`
+	GraphQLURL         string            `json:"graphql_url"`
+	TokenEnv           string            `json:"token_env"`
+	APITokenEnv        string            `json:"api_token_env"`
+	Listen             string            `json:"listen"`
+	Fields             bool              `json:"fields"`
+	Projects           bool              `json:"projects"`
+	MaxRequests        int               `json:"max_requests"`
+	Workers            int               `json:"workers"`
+	Embedding          embedding.Options `json:"embedding,omitempty"`
+	Overlap            string            `json:"overlap"`
+	EnrichmentInterval string            `json:"enrichment_interval"`
+	ReconcileInterval  string            `json:"reconcile_interval"`
 }
 
 // DefaultPath returns the XDG configuration filename.
@@ -100,6 +103,9 @@ func Load(path string, explicit bool) (Config, error) {
 
 // Validate checks settings before any database or network operation.
 func (c Config) Validate() error {
+	if err := c.Embedding.Validate(); err != nil {
+		return fmt.Errorf("embedding settings: %w", err)
+	}
 	if c.Workers < 1 || c.Workers > MaxWorkers {
 		return fmt.Errorf("workers must be between 1 and %d", MaxWorkers)
 	}

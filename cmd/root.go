@@ -33,6 +33,9 @@ var configPath, database string
 var debug, trace bool
 var outputFormat = "auto"
 var logCloser io.Closer
+var embeddingProvider *embedding.Provider
+var embeddingBackend, embeddingRuntime, embeddingDevice string
+var embeddingBatchSize int
 var root = &cobra.Command{Use: "gh-mirror", Short: "Mirror GitHub tickets into a portable, searchable SQLite database", SilenceUsage: true, SilenceErrors: true}
 
 func init() {
@@ -43,6 +46,10 @@ func init() {
 	root.CompletionOptions.DisableDefaultCmd = true
 	root.PersistentFlags().StringVarP(&configPath, "config", "c", "", "Configuration file (default: XDG gh-mirror/config.json)")
 	root.PersistentFlags().StringVar(&database, "db", "", "Override the database path")
+	root.PersistentFlags().StringVar(&embeddingBackend, "embedding-backend", "", "Embedding backend: cpu or lemonade-vulkan (defaults to configuration)")
+	root.PersistentFlags().StringVar(&embeddingRuntime, "embedding-runtime", "", "Absolute path to Lemonade's installed Vulkan llama-server")
+	root.PersistentFlags().StringVar(&embeddingDevice, "embedding-device", "", "Vulkan device, such as Vulkan0 (defaults to configuration)")
+	root.PersistentFlags().IntVar(&embeddingBatchSize, "embedding-batch-size", 0, "Maximum Vulkan batch size (1–32; default 16)")
 	root.PersistentFlags().StringVar(&outputFormat, "format", "auto", "Output format: auto (text in terminals, JSON when piped), text or json")
 	root.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Verbose diagnostics on stderr")
 	root.PersistentFlags().BoolVar(&trace, "trace", false, "Detailed diagnostics in the temporary gh-mirror.log")
@@ -70,8 +77,34 @@ func init() {
 		if database != "" {
 			settings.Database = database
 		}
+		if command.Flags().Changed("embedding-backend") {
+			settings.Embedding.Backend = embeddingBackend
+		}
+		if command.Flags().Changed("embedding-runtime") {
+			settings.Embedding.Runtime = embeddingRuntime
+		}
+		if command.Flags().Changed("embedding-device") {
+			settings.Embedding.Device = embeddingDevice
+		}
+		if command.Flags().Changed("embedding-batch-size") {
+			if embeddingBatchSize < 1 {
+				return fmt.Errorf("embedding-batch-size must be between 1 and 32")
+			}
+			settings.Embedding.BatchSize = embeddingBatchSize
+		}
 		if err := settings.Validate(); err != nil {
 			return fmt.Errorf("validate settings: %w", err)
+		}
+		if embeddingProvider != nil {
+			if err := embeddingProvider.Close(); err != nil {
+				return err
+			}
+		}
+		opts := settings.Embedding
+		opts.Workers = settings.Workers
+		embeddingProvider, err = embedding.New(command.Context(), opts)
+		if err != nil {
+			return err
 		}
 		return nil
 	}
@@ -87,6 +120,12 @@ func Execute() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	defer func() {
+		if embeddingProvider != nil {
+			if err := embeddingProvider.Close(); err != nil {
+				slog.Debug("close embedding provider", "error", err)
+			}
+			embeddingProvider = nil
+		}
 		if logCloser != nil {
 			if err := logCloser.Close(); err != nil {
 				slog.Warn("close trace log", "error", err)
@@ -99,7 +138,7 @@ func Execute() error {
 	return nil
 }
 func open(readOnly bool) (*store.Store, error) {
-	db, err := store.Open(settings.Database, readOnly)
+	db, err := store.OpenWithVectorizer(settings.Database, readOnly, commandEncoder())
 	if err != nil {
 		return nil, fmt.Errorf("open configured mirror: %w", err)
 	}
@@ -122,6 +161,9 @@ func addCollection() {
 		}
 		cpuWorkers, err := inferenceWorkers(command, "index-workers", indexWorkers)
 		if err != nil {
+			return err
+		}
+		if err := configureIndexEncoder(command.Context(), cpuWorkers); err != nil {
 			return err
 		}
 		var report progress.Reporter
@@ -151,7 +193,9 @@ func addCollection() {
 			return fmt.Errorf("collect GitHub data: %w", err)
 		}
 		if index {
-			if _, err := db.Index(command.Context(), embedding.Default, store.IndexOptions{Workers: cpuWorkers, Progress: report}); err != nil {
+			setEmbeddingProgress(report)
+			defer setEmbeddingProgress(nil)
+			if _, err := db.Index(command.Context(), commandEncoder(), store.IndexOptions{Workers: cpuWorkers, Progress: report}); err != nil {
 				return fmt.Errorf("index collected mirror: %w", err)
 			}
 			result.Status, err = db.Status(command.Context())

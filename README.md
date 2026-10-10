@@ -289,11 +289,66 @@ outside the new scope.
 ## Offline semantic and hybrid search
 
 The executable includes MiniLM L6 weights, its WordPiece tokenizer and model
-configuration (about 91 MB of model assets). Inference runs in Go on the CPU.
+configuration (about 91 MB of model assets). Inference defaults to Go on the CPU.
 The first use extracts verified bundled assets into
 `$XDG_CACHE_HOME/gh-mirror/models/` (default `~/.cache/gh-mirror/models/`).
 That cache directory must be writable on first use. `gh-mirror model` reports the
 pinned model, revision, dimensionality and compatibility fingerprint.
+
+### Optional Vulkan embeddings
+
+On a machine with Lemonade installed, its Vulkan runtime can accelerate indexing
+and query embeddings. Start Lemonade for the installation step, then install its
+backend if it is absent:
+
+```sh
+lemonade --no-discovery backends install llamacpp:vulkan
+gh-mirror model --check --embedding-backend lemonade-vulkan --format text
+gh-mirror index --workers 8 --embedding-backend lemonade-vulkan
+gh-mirror search 'file transfers stop after reconnecting' --engine hybrid --embedding-backend lemonade-vulkan
+```
+
+gh-mirror starts a dedicated, authenticated localhost `llama-server` from
+Lemonade's installed Vulkan backend. It uses a local FP32 GGUF export of the exact
+bundled MiniLM tensors, passes the bundled tokenizer's token IDs directly, and
+selects mean pooling and L2 normalization. Export needs about 87 MiB of additional
+cache space and no Python conversion tools. The process runs with `--offline`,
+does not use the Lemonade daemon during inference, and stops when the command
+exits. A standalone installation can continue using the bundled Go CPU encoder.
+
+Persist the choice in your configuration:
+
+```json
+"embedding": {
+  "backend": "lemonade-vulkan",
+  "batch_size": 16,
+  "device": "Vulkan0"
+}
+```
+
+The default executable is under the user's Lemonade cache at
+`lemonade/bin/llamacpp/vulkan/llama-server` (`.exe` on Windows). Set
+`embedding.runtime` or `--embedding-runtime` to an absolute path if it is installed
+elsewhere. `--embedding-device` selects a numbered Vulkan device;
+`--embedding-batch-size` bounds batches between 1 and 32 passages. Index workers
+prepare documents and commit results; the GPU queue combines passages from those
+workers, including batches within long documents. REST and MCP use the configured
+encoder for semantic and hybrid queries.
+
+Before accepting GPU vectors, gh-mirror verifies complete Vulkan layer offload and
+compares reference vectors, tokenizer IDs, and a full 256-token passage. Each
+comparison requires cosine similarity of at least 0.9999 and a maximum coordinate
+difference of 0.001. The runtimes use different floating point implementations,
+so their outputs need not be identical. Every response must retain model identity,
+ordering, dimensionality, finite coordinates and unit norm.
+
+Missing runtimes/devices, failed verification and inference errors trigger CPU
+fallback with a visible reason. No alternate model is selected. Progress shows the
+effective backend/device, actual batch size and vectors per second in addition to
+document throughput. Switching compatible CPU/Vulkan backends preserves saved
+vectors and checkpoints. A changed model fingerprint rebuilds vectors from stored
+documents through `index`, without GitHub requests. Use `--embedding-backend cpu`
+to override a configured GPU backend.
 
 Build vectors for an existing mirror without requesting GitHub data:
 

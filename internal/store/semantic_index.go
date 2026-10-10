@@ -27,6 +27,13 @@ type Vectorizer interface {
 	Embed(context.Context, string) ([]float32, error)
 }
 
+// BatchVectorizer optionally encodes several passages with a bounded runtime batch.
+type BatchVectorizer interface {
+	Vectorizer
+	BatchSize() int
+	EmbedBatch(context.Context, []string) ([][]float32, error)
+}
+
 // SemanticStatus reports model identity and durable indexing coverage.
 type SemanticStatus struct {
 	Model            string `json:"model"`
@@ -373,11 +380,45 @@ func (s *Store) indexDocument(ctx context.Context, e Vectorizer, d indexDocument
 				if child.Err() != nil {
 					return
 				}
-				vector, err := e.Embed(child, chunks[n].Text)
-				select {
-				case done <- result{n, vector, err}:
-				case <-child.Done():
-					return
+				indices := []int{n}
+				batcher, batching := e.(BatchVectorizer)
+				if batching {
+					limit := max(1, min(32, batcher.BatchSize()))
+				gather:
+					for len(indices) < limit {
+						select {
+						case next, ok := <-jobs:
+							if !ok {
+								break gather
+							}
+							indices = append(indices, next)
+						default:
+							break gather
+						}
+					}
+				}
+				var vectors [][]float32
+				var err error
+				if batching && len(indices) > 1 {
+					texts := make([]string, len(indices))
+					for j, index := range indices {
+						texts[j] = chunks[index].Text
+					}
+					vectors, err = batcher.EmbedBatch(child, texts)
+				} else {
+					var v []float32
+					v, err = e.Embed(child, chunks[n].Text)
+					vectors = [][]float32{v}
+				}
+				if err == nil && len(vectors) != len(indices) {
+					err = fmt.Errorf("encoder returned %d vectors for %d passages", len(vectors), len(indices))
+				}
+				for j, index := range indices {
+					var v []float32
+					if err == nil {
+						v = vectors[j]
+					}
+					done <- result{index, v, err}
 				}
 				if err != nil {
 					return
@@ -388,23 +429,24 @@ func (s *Store) indexDocument(ctx context.Context, e Vectorizer, d indexDocument
 	go func() { group.Wait(); close(done) }()
 	var failure error
 	for r := range done {
-		if failure != nil {
-			continue
-		}
 		if r.err != nil {
-			failure = fmt.Errorf("encode document %s chunk %d: %w", d.id, r.n, r.err)
+			if failure == nil {
+				failure = fmt.Errorf("encode document %s chunk %d: %w", d.id, r.n, r.err)
+			}
 			cancel()
 			continue
 		}
 		raw, err := encodeVector(r.vector)
 		if err != nil {
-			failure = err
+			if failure == nil {
+				failure = err
+			}
 			cancel()
 			continue
 		}
 		// Completed inference survives cancellation while its small checkpoint finishes.
 		checkpoint, finish := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		failure = s.Update(checkpoint, func(w *Writer) error {
+		checkpointErr := s.Update(checkpoint, func(w *Writer) error {
 			if err := checkModel(checkpoint, w, e.ID()); err != nil {
 				return err
 			}
@@ -418,7 +460,10 @@ func (s *Store) indexDocument(ctx context.Context, e Vectorizer, d indexDocument
 			return advanceSemantic(checkpoint, w)
 		})
 		finish()
-		if failure != nil {
+		if checkpointErr != nil {
+			if failure == nil {
+				failure = checkpointErr
+			}
 			cancel()
 		}
 	}

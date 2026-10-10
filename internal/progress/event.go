@@ -20,27 +20,34 @@ const GitHubWorkers = "GitHub"
 
 // Event describes a phase, listing page, completed batch, or HTTP attempt.
 type Event struct {
-	Phase        string
-	Scope        string
-	Resource     string
-	Page         int
-	Records      int
-	Completed    int
-	Total        int
-	Advance      int
-	Repository   int
-	Repositories int
-	Resumed      int
-	Saved        int
-	Requests     int
-	Limit        int
-	Remaining    string
-	Cached       bool
-	Wait         time.Duration
-	WaitUntil    time.Time
-	Active       int
-	Workers      int
-	WorkerKind   string
+	Phase            string
+	Scope            string
+	Resource         string
+	Page             int
+	Records          int
+	Completed        int
+	Total            int
+	Advance          int
+	Repository       int
+	Repositories     int
+	Resumed          int
+	Saved            int
+	Requests         int
+	Limit            int
+	Remaining        string
+	Cached           bool
+	Wait             time.Duration
+	WaitUntil        time.Time
+	Active           int
+	Workers          int
+	WorkerKind       string
+	Backend          string
+	Device           string
+	FallbackReason   string
+	EmbeddingVectors int
+	EmbeddingRate    float64
+	BatchSize        int
+	Listener         string
 }
 
 // Reporter receives activity synchronously; a nil reporter disables reporting.

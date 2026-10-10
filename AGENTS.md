@@ -189,6 +189,10 @@ GPU results. Compatibility requires cosine >=0.9999 and coordinate error <=0.001
 validate every batch's model, indices, dimensions and normalized finite values.
 Failures retry the same model on CPU and report the reason. Limit CPU fallback
 concurrency across calls; bound GPU batches and queues and join them on shutdown.
+Pass the encoder explicitly through `OpenWithVectorizer` for REST/MCP/CLI queries.
+CPU/Vulkan switching preserves fingerprints, collection sessions and saved vectors.
+Config `embedding` and persistent flags select backend, runtime, device and batch
+bound; `model --check` verifies the selected runtime offline without opening a mirror.
 
 Schema 2 adds semantic state/vectors; writer migration from schema 1 is local and
 transactional. Readers accept schema 1 for lexical queries and schema 2 without
@@ -208,6 +212,11 @@ dispatch, join producers/workers on cancellation, and rescan after a completed p
 Queue same-store write transactions before acquiring a connection, with cancellable
 waiting; SQLite has one WAL writer. Keep inference and readers concurrent, retain
 FULL checkpoint durability and use SQLite locking to exclude independent collectors.
+Optional `BatchVectorizer` bounds passage batches within documents and queries.
+Drain completed batch results into checkpoints even after cancellation; retain the
+first error while saving other successful results. Report the actual runtime,
+device, computed passage throughput, batches and fallback reason through explicit
+provider callbacks; progress keeps document workers distinct from inference batches.
 Serialize CPU activity snapshots and progress callbacks; label CPU/GitHub phases
 explicitly. Preserve vector fingerprints and reusable checkpoints for scheduling changes.
 Progress names standalone indexing correctly and retains stderr/stdout separation.

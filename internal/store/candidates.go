@@ -138,7 +138,7 @@ func (s *Store) FindCandidates(ctx context.Context, o CandidateOptions) (SearchR
 			if query == "" {
 				query = Text(object, "title")
 			}
-			out, err = search(ctx, tx, SearchOptions{Engine: o.Engine, Query: query, QueryFilters: targets, PageOptions: o.PageOptions, Limit: o.Limit, Cursor: o.Cursor, Exclude: o.Number, ExcludeRepo: o.Repo, seed: &vectorSeed{TicketID{Repo: o.Repo, Number: o.Number}, o.IncludeLabels == nil || *o.IncludeLabels, commentIDs}})
+			out, err = search(ctx, tx, SearchOptions{Engine: o.Engine, Query: query, QueryFilters: targets, PageOptions: o.PageOptions, Limit: o.Limit, Cursor: o.Cursor, Exclude: o.Number, ExcludeRepo: o.Repo, seed: &vectorSeed{TicketID{Repo: o.Repo, Number: o.Number}, o.IncludeLabels == nil || *o.IncludeLabels, commentIDs}}, s.vectorizer)
 			return err
 		}
 		where, filterArgs, err := (filters{QueryFilters: targets}).sql()

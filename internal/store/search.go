@@ -170,9 +170,13 @@ func scopedDocuments(term string, in []string, evidence, excerpts bool, selectio
 	}
 	return strings.Join(selected, " UNION ALL "), args
 }
-func search(ctx context.Context, q querier, o SearchOptions) (SearchResult, error) {
+func search(ctx context.Context, q querier, o SearchOptions, encoders ...Vectorizer) (SearchResult, error) {
 	if o.Engine == "semantic" || o.Engine == "hybrid" {
-		return vectorSearch(ctx, q, o, embedding.Default)
+		var e Vectorizer = embedding.Default
+		if len(encoders) > 0 && encoders[0] != nil {
+			e = encoders[0]
+		}
+		return vectorSearch(ctx, q, o, e)
 	}
 	if o.Engine != "" && o.Engine != "lexical" {
 		return SearchResult{}, invalid("engine must be lexical, semantic or hybrid")
@@ -388,6 +392,6 @@ func search(ctx context.Context, q querier, o SearchOptions) (SearchResult, erro
 // Search retrieves a consistent local page without exposing SQL or raw FTS syntax.
 func (s *Store) Search(ctx context.Context, o SearchOptions) (SearchResult, error) {
 	var out SearchResult
-	err := s.view(ctx, func(tx *sql.Tx) error { var err error; out, err = search(ctx, tx, o); return err })
+	err := s.view(ctx, func(tx *sql.Tx) error { var err error; out, err = search(ctx, tx, o, s.vectorizer); return err })
 	return out, err
 }
