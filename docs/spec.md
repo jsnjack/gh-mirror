@@ -252,7 +252,7 @@ installation/PAT credentials can be supplied through the token environment varia
 
 The binary bundles pinned FP32 MiniLM L6 weights and its WordPiece tokenizer for
 standalone Go CPU inference. Semantic search uses exact filtered cosine scans;
-hybrid search combines independent lexical and semantic ranks. Titles, bodies,
+hybrid search combines lexical, semantic and whole-ticket evidence ranks. Titles, bodies,
 labels and collected comments produce bounded overlapping passages, with mean
 pooling and L2 normalization. SQLite snapshots contain the compatible vectors.
 
@@ -389,7 +389,7 @@ scanning over filtered vectors, selecting the best passage per ticket. Semantic 
 candidates reuse weighted stored seed vectors: title 4, body 1, labels 1.5 and
 bounded recent comments 0.5, averaging passages within each source family before
 normalizing. Hybrid combines independent lexical and semantic ticket ranks with
-reciprocal rank fusion constant 60. Preserve exact ticket filters, source scopes,
+reciprocal rank fusion constant 60, with lexical/semantic weights 1 and whole-ticket evidence weight 3. Preserve exact ticket filters, source scopes,
 exclusions, counts, facets, projections, evidence and deterministic pagination.
 Report score meanings and component scores; semantic/hybrid default to descending
 relevance. Evidence includes field, source, byte offsets, cosine similarity and
@@ -428,3 +428,12 @@ summaries. The default source-text budget is 12000 Unicode characters, with up t
 Code fences do not introduce Markdown sections or issue references. Views require
 neither embeddings nor network calls and work with legacy snapshots. Purpose
 controls source selection, not classification or duplicate decisions.
+
+Hybrid ticket evidence aggregates up to 32 non-template literal terms across the
+selected fields, using inverse ticket frequency and bounded field weights. Attached
+client/partner label values and aliases boost matching tickets in proportion to
+topic coverage; cross-client candidates remain eligible. Seed candidates use a
+smaller entity boost. Query metadata and match signals explain the component ranks.
+Best-per-field semantic aggregation prevents repeated comments from multiplying
+weight. Semantic-only scores retain maximum passage cosine semantics. Ranking
+versions bind vector cursors independently of collection/model changes.

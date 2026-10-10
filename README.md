@@ -403,8 +403,14 @@ stored vectors for the entire seed title/body and selected labels/comments, avoi
 another inference pass. Recent seed comments remain opt-in and bounded.
 
 `semantic` uses exact cosine similarity, with higher scores ranking first. `hybrid`
-combines independent literal and semantic rankings using reciprocal rank fusion
-(`1/(60+rank)` from each ranking). Results report the algorithm, `semantic_score`
+combines lexical, semantic and whole-ticket evidence rankings using reciprocal rank
+fusion: `1/(60+lexical rank) + 1/(60+semantic rank) + 3/(60+ticket rank)`.
+Ticket evidence rewards distinctive query terms across selected fields and client
+or partner label matches, including configured aliases. Entity matches are soft
+boosts; explicit label filters remain hard constraints. Semantic ranking combines
+the strongest passage with the best evidence per field, so repeated comments do
+not multiply a ticket’s weight. Results report detected query entities, matched
+terms/fields, component ranks, the algorithm, `semantic_score`
 and, where present, `lexical_score`. These scores are neither relevance percentages
 nor duplicate probabilities.
 Semantic retrieval ranks every eligible ticket with a selected indexed passage;

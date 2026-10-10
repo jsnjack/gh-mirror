@@ -13,6 +13,8 @@ import (
 const fusionConstant = 60
 
 type semanticHit struct {
+	signals          *RetrievalSignals
+	fieldScores      map[string]float64
 	id               TicketID
 	score            float64
 	lexical          *float64
@@ -144,11 +146,14 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 		evidence.score = score
 		hit := hits[id]
 		if hit == nil {
-			hit = &semanticHit{id: id, score: score, created: created, updated: updated}
+			hit = &semanticHit{id: id, score: score, created: created, updated: updated, fieldScores: map[string]float64{}}
 			hits[id] = hit
 		}
 		if score > hit.score {
 			hit.score = score
+		}
+		if old, ok := hit.fieldScores[evidence.field]; !ok || score > old {
+			hit.fieldScores[evidence.field] = score
 		}
 		hit.evidence = append(hit.evidence, evidence)
 		sort.Slice(hit.evidence, func(a, b int) bool {
@@ -179,21 +184,47 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 	if err := finishRows(rows, rows.Err()); err != nil {
 		return out, err
 	}
+	semanticScores := map[TicketID]float64{}
 	ranked := make([]*semanticHit, 0, len(hits))
 	for _, h := range hits {
+		semanticScores[h.id] = h.score
+		if o.Engine == "hybrid" {
+			var sum, weight float64
+			for _, field := range []string{"title", "body", "labels", "comment", "review_comment"} {
+				if value, ok := h.fieldScores[field]; ok {
+					w := fieldWeight(field)
+					sum += value * w
+					weight += w
+				}
+			}
+			if weight > 0 {
+				h.score = 0.8*h.score + 0.2*sum/weight
+			}
+		}
 		ranked = append(ranked, h)
 	}
 	sort.Slice(ranked, func(a, b int) bool {
 		return semanticLess(ranked[a], ranked[b], PageOptions{Sort: "relevance", Order: "desc"})
 	})
-	semanticScores := map[TicketID]float64{}
+	semanticRanks := map[TicketID]int{}
 	for n, h := range ranked {
-		semanticScores[h.id] = h.score
+		semanticRanks[h.id] = n + 1
 		if o.Engine == "hybrid" {
 			h.score = 1 / float64(fusionConstant+n+1)
 		}
 	}
+	entities := []string{}
 	if o.Engine == "hybrid" {
+		tickets, detected, err := ticketRanks(ctx, q, o, hits, where, args)
+		if err != nil {
+			return out, err
+		}
+		entities = detected
+		for n, h := range tickets {
+			h.signals.TicketRank = n + 1
+			h.signals.SemanticRank = semanticRanks[h.id]
+			h.score += ticketFusionWeight / float64(fusionConstant+n+1)
+		}
 		lexical, err := lexicalRanks(ctx, q, o, where, args)
 		if err != nil {
 			return out, err
@@ -202,6 +233,9 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 			if hit := hits[item.id]; hit != nil {
 				value := item.score
 				hit.lexical = &value
+				if hit.signals != nil {
+					hit.signals.LexicalRank = n + 1
+				}
 				hit.score += 1 / float64(fusionConstant+n+1)
 			}
 		}
@@ -223,7 +257,7 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 	if err != nil {
 		return out, fmt.Errorf("fingerprint query vector: %w", err)
 	}
-	generation := out.Status.Generation + ":" + out.Status.Semantic.Generation + ":" + e.ID() + ":" + hash(queryBytes)
+	generation := out.Status.Generation + ":" + out.Status.Semantic.Generation + ":" + e.ID() + ":" + hash(queryBytes) + ":" + ticketRankingVersion
 	cursor, err := decodeCursor(o.Cursor, "vector_search", sig, generation)
 	if err != nil {
 		return out, err
@@ -264,6 +298,7 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 			return out, err
 		}
 		m := Match{Repo: h.id.Repo, Number: h.id.Number, Title: ticket.Summary.Title, State: ticket.Summary.State, Kind: ticket.Kind, URL: ticket.Summary.URL, UpdatedAt: h.updated, Summary: ticket.Summary, Score: h.score, LexicalScore: h.lexical, Evidence: []Evidence{}, createdAt: h.created}
+		m.Signals = h.signals
 		score := semanticScores[h.id]
 		m.SemanticScore = &score
 		for _, hit := range h.evidence {
@@ -272,6 +307,11 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 				return out, err
 			}
 			m.Evidence = append(m.Evidence, ev)
+		}
+		if o.Engine == "hybrid" {
+			if err := hybridEvidence(ctx, q, o, &m); err != nil {
+				return out, err
+			}
 		}
 		if len(m.Evidence) > 0 {
 			m.Source = m.Evidence[0].Source
@@ -291,13 +331,17 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 	}
 	out.Ranking = Ranking{"cosine_similarity", "descending", "Higher scores rank first. Similarity is not a relevance or duplicate probability."}
 	if o.Engine == "hybrid" {
-		out.Ranking = Ranking{"reciprocal_rank_fusion", "descending", "Sum of 1/(60+rank) across independent lexical and semantic rankings; higher is better. Scores are not confidence percentages."}
+		out.Ranking = Ranking{"ticket_reciprocal_rank_fusion", "descending", "1/(60+lexical rank) + 1/(60+semantic rank) + 3/(60+ticket evidence rank). Ticket evidence combines term coverage across fields and soft client/partner matches; semantic ranking combines the best passage with field evidence. Higher is better; scores are not confidence percentages."}
 	}
 	out.Query = QueryInfo{Terms: queryTerms(o.Query, true), Match: "any", In: o.In, Engine: o.Engine}
+	out.Query.Entities = entities
 	if out.Query.In == nil {
 		out.Query.In = []string{"title", "body", "labels", "comments", "reviews"}
 	}
 	out.Warnings = queryWarnings(out.Status, o.filters(), o.PageOptions, o.In)
+	if o.Engine == "hybrid" && len(queryTerms(o.Query, true)) > 32 {
+		out.Warnings = append(out.Warnings, Warning{Code: "ticket_signals_limited", Resource: "search", Message: "Whole-ticket signals use at most 32 non-template terms; lexical and semantic rankings still use the query."})
+	}
 	return out, nil
 }
 func semanticFields(in []string) (string, []any) {
@@ -396,11 +440,11 @@ func semanticEvidence(ctx context.Context, q querier, h scoredEvidence) (Evidenc
 	if len(text) > 1024 {
 		text = append(text[:1024], '…')
 	}
-	out := Evidence{Field: h.field, Source: h.source, Snippet: string(text), Start: h.start, End: h.end, SemanticScore: &h.score}
+	out := Evidence{Field: h.field, Source: h.source, Snippet: string(text), Start: h.start, End: h.end, SemanticScore: &h.score, Truncated: len([]rune(h.text)) > 1024}
 	if !strings.HasPrefix(h.document, "comment:") {
 		return out, nil
 	}
-	err := q.QueryRowContext(ctx, `SELECT COALESCE(CAST(json_extract(payload,'$.id') AS TEXT),''),COALESCE(json_extract(payload,'$.created_at'),''),COALESCE(json_extract(payload,'$.path'),''),COALESCE(json_extract(payload,'$.line'),json_extract(payload,'$.original_line'),0),substr(COALESCE(json_extract(payload,'$.diff_hunk'),''),1,1024) FROM comments WHERE id=?`, strings.TrimPrefix(h.document, "comment:")).Scan(&out.CommentID, &out.CreatedAt, &out.Path, &out.Line, &out.DiffHunk)
+	err := q.QueryRowContext(ctx, `SELECT COALESCE(CAST(json_extract(payload,'$.id') AS TEXT),''),COALESCE(json_extract(payload,'$.created_at'),''),COALESCE(json_extract(payload,'$.path'),''),COALESCE(json_extract(payload,'$.line'),json_extract(payload,'$.original_line'),0),substr(COALESCE(json_extract(payload,'$.diff_hunk'),''),1,1024),COALESCE(json_extract(payload,'$.user.login'),'') FROM comments WHERE id=?`, strings.TrimPrefix(h.document, "comment:")).Scan(&out.CommentID, &out.CreatedAt, &out.Path, &out.Line, &out.DiffHunk, &out.Author)
 	if err != nil {
 		return out, fmt.Errorf("read semantic evidence: %w", err)
 	}

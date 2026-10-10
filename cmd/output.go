@@ -96,6 +96,12 @@ func humanOutput(value any) (string, error) {
 			if m.Summary != nil && len(m.Summary.Labels) > 0 {
 				lines = append(lines, "   Labels: "+cleanLine(strings.Join(m.Summary.Labels, ", ")))
 			}
+			if m.Signals != nil {
+				lines = append(lines, "   Matched: "+cleanLine(strings.Join(m.Signals.MatchedTerms, ", "))+" | fields: "+cleanLine(strings.Join(m.Signals.MatchedFields, ", ")))
+				if len(m.Signals.EntityMatches) > 0 {
+					lines = append(lines, "   Client/partner: "+cleanLine(strings.Join(m.Signals.EntityMatches, ", ")))
+				}
+			}
 			for _, evidence := range m.Evidence {
 				lines = append(lines, "   "+cleanLine(evidence.Field)+": "+preview(evidence.Snippet, 280))
 				if evidence.Source != m.URL {

@@ -42,23 +42,24 @@ type SearchOptions struct {
 
 // Match identifies a ranked ticket with bounded evidence and optional full records.
 type Match struct {
-	Repo          string          `json:"repo"`
-	Number        int             `json:"number"`
-	Title         string          `json:"title"`
-	State         string          `json:"state"`
-	Kind          string          `json:"kind"`
-	URL           string          `json:"url"`
-	Source        string          `json:"source"`
-	Snippet       string          `json:"snippet"`
-	Score         float64         `json:"score"`
-	LexicalScore  *float64        `json:"lexical_score,omitempty"`
-	SemanticScore *float64        `json:"semantic_score,omitempty"`
-	UpdatedAt     string          `json:"updated_at"`
-	Summary       *TicketSummary  `json:"summary"`
-	Evidence      []Evidence      `json:"evidence"`
-	Payload       json.RawMessage `json:"issue,omitempty"`
-	Fields        json.RawMessage `json:"fields,omitempty"`
-	Extra         json.RawMessage `json:"extra,omitempty"`
+	Signals       *RetrievalSignals `json:"signals,omitempty"`
+	Repo          string            `json:"repo"`
+	Number        int               `json:"number"`
+	Title         string            `json:"title"`
+	State         string            `json:"state"`
+	Kind          string            `json:"kind"`
+	URL           string            `json:"url"`
+	Source        string            `json:"source"`
+	Snippet       string            `json:"snippet"`
+	Score         float64           `json:"score"`
+	LexicalScore  *float64          `json:"lexical_score,omitempty"`
+	SemanticScore *float64          `json:"semantic_score,omitempty"`
+	UpdatedAt     string            `json:"updated_at"`
+	Summary       *TicketSummary    `json:"summary"`
+	Evidence      []Evidence        `json:"evidence"`
+	Payload       json.RawMessage   `json:"issue,omitempty"`
+	Fields        json.RawMessage   `json:"fields,omitempty"`
+	Extra         json.RawMessage   `json:"extra,omitempty"`
 	createdAt     string
 }
 
@@ -71,11 +72,12 @@ type Ranking struct {
 
 // QueryInfo records the effective engine, literal terms, matching mode and source scopes.
 type QueryInfo struct {
-	Terms  []string `json:"terms"`
-	Match  string   `json:"match"`
-	Prefix bool     `json:"prefix"`
-	In     []string `json:"in"`
-	Engine string   `json:"engine,omitempty"`
+	Entities []string `json:"entities,omitempty"`
+	Terms    []string `json:"terms"`
+	Match    string   `json:"match"`
+	Prefix   bool     `json:"prefix"`
+	In       []string `json:"in"`
+	Engine   string   `json:"engine,omitempty"`
 }
 
 // SearchResult returns one ranked page and the generation used for all its observations.

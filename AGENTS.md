@@ -235,7 +235,7 @@ Explicit json/text overrides detection. Render search/candidate evidence, labels
 pagination, warnings and evaluation tables in text; preserve integer identities,
 sanitize terminal controls and propagate output errors. REST/MCP are unaffected.
 Semantic/hybrid queries share ticket filters and result contracts. Use exact filtered
-cosine scans and independent lexical/semantic rank fusion (k=60); higher scores rank
+cosine scans and lexical/semantic/whole-ticket rank fusion (k=60, weights 1/1/3); higher scores rank
 first. Report source offsets/similarity and typed 503 errors for missing/incomplete
 indexes on explicit semantic/hybrid requests. Bind vector cursors to vector generation
 and fingerprint as well as collection and query. Semantic candidates reuse weighted
@@ -254,3 +254,10 @@ merged_at. `context`, REST issue `/context` and MCP `get_issue_context` share on
 read transaction with source-text budgets, selection/omission coverage and bounded
 one-hop relationships. Exact description text and code remain available; missing
 sections and duplicate references are observations, not model decisions.
+
+Hybrid ranking joins literal evidence across selected ticket fields and soft
+client/partner attributes, exposing matched terms, fields and component ranks.
+Entity boosts require topic coverage and are smaller for duplicate candidates;
+never auto-filter other clients. Semantic-only scores remain maximum passage
+cosines, while hybrid semantic ranks combine best passage and best-per-field
+evidence. Bind cursors to the ranking version and keep lexical BM25 unchanged.
