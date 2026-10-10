@@ -239,21 +239,25 @@ func addQueries() {
 		return output(command, settings.Scopes())
 	}})
 	var search store.SearchOptions
-	command := &cobra.Command{Use: "search WORDS", Short: "Search local issues and comments", Args: cobra.ExactArgs(1), RunE: func(command *cobra.Command, args []string) error {
+	command := &cobra.Command{Use: "search WORDS", Short: "Retrieve relevant local tickets and source evidence", Args: cobra.ExactArgs(1), RunE: func(command *cobra.Command, args []string) error {
 		db, err := open(true)
 		if err != nil {
 			return err
 		}
 		defer closeStore(command.Context(), db)
 		search.Query = args[0]
-		out, err := db.Search(command.Context(), search)
+		options := search
+		if !command.Flags().Changed("engine") {
+			options.Engine = ""
+		}
+		out, err := db.Search(command.Context(), options)
 		if err != nil {
 			return fmt.Errorf("search local mirror: %w", err)
 		}
 		return output(command, out)
 	}}
 	command.Flags().StringVar(&search.Repo, "repo", "", "Filter repository owner/name")
-	command.Flags().StringVar(&search.Engine, "engine", "lexical", "Search using lexical, semantic or hybrid retrieval")
+	command.Flags().StringVar(&search.Engine, "engine", store.DefaultSearchEngine, "Search using lexical, semantic or hybrid retrieval (default falls back to lexical with a warning)")
 	command.Flags().StringVar(&search.State, "state", "", "Filter open or closed")
 	command.Flags().StringVar(&search.Label, "label", "", "Filter label name")
 	command.Flags().StringVar(&search.Type, "type", "", "Filter native issue type name")
@@ -283,7 +287,7 @@ func addQueries() {
 		command.Flags().IntVar(&number, "number", 0, "Issue number")
 		command.Flags().IntVar(&limit, "limit", 30, "Maximum candidate results (1–100)")
 		if kind == "candidates" {
-			command.Flags().StringVar(&candidates.Engine, "engine", "lexical", "Retrieve candidates using lexical, semantic or hybrid search")
+			command.Flags().StringVar(&candidates.Engine, "engine", store.DefaultSearchEngine, "Retrieve candidates using lexical, semantic or hybrid search (default falls back to lexical with a warning)")
 			command.Flags().StringArrayVar(&candidates.Repositories, "repositories", nil, "Search these repositories; repeat (default seed repo)")
 			command.Flags().BoolVar(&includeLabels, "include-labels", true, "Use attached labels in seed terms")
 			command.Flags().BoolVar(&candidates.IncludeComments, "include-comments", false, "Use recent seed comments")
@@ -318,7 +322,11 @@ func addQueries() {
 			} else {
 				candidates.Repo, candidates.Number, candidates.Limit = repo, number, limit
 				candidates.IncludeLabels = &includeLabels
-				out, err = db.FindCandidates(command.Context(), candidates)
+				options := candidates
+				if !command.Flags().Changed("engine") {
+					options.Engine = ""
+				}
+				out, err = db.FindCandidates(command.Context(), options)
 			}
 			if err != nil {
 				return fmt.Errorf("read local ticket: %w", err)

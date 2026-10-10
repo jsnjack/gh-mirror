@@ -46,6 +46,9 @@ func decodeCursor(raw, kind, sig, generation string) (pageCursor, error) {
 	if err := json.Unmarshal(data, &c); err != nil {
 		return c, invalid("invalid cursor data")
 	}
+	if c.Kind != kind && (c.Kind == "search" || c.Kind == "vector_search") && (kind == "search" || kind == "vector_search") {
+		return c, fmt.Errorf("%w; search engine changed, restart search", ErrCursorConflict)
+	}
 	if c.Kind != kind || c.Signature != sig || math.IsNaN(c.Score) || math.IsInf(c.Score, 0) {
 		return c, invalid("cursor does not match query or filters")
 	}

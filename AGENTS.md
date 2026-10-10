@@ -143,15 +143,25 @@ provides protocol and transport handling. The existing go-isatty dependency dete
 terminal writers without adding a UI framework. Tests use local HTTP fixtures and temporary
 databases. No live GitHub writes or production WakeCI changes belong in validation.
 
-Local queries share composable predicates and generation-bound cursors. Search keeps
-literal OR matching by default; all-word mode requires terms across the whole
-selected ticket, and phrase mode requires consecutive terms in one document.
+Local queries share composable predicates and generation-bound cursors. Lexical
+search keeps literal OR matching by default; all-word mode requires terms across
+the whole selected ticket, and phrase mode requires consecutive terms in one document.
 Compile only generated, escaped FTS expressions. Report term limits explicitly.
 Search/list support deterministic sorting, summary/full projections and optional
 counts/facets before pagination. Preserve legacy raw fields and score meanings;
 attach bounded evidence and a ranking description. Lexical query enhancements must
 work against existing snapshots without migrations or upstream requests; semantic
-engines explicitly require a compatible local vector index.
+engines explicitly require a compatible local vector index when requested by name.
+An omitted search/candidate engine selects hybrid, falling back only for
+ErrSemanticUnavailable with a structured search_engine_fallback warning and the
+actual engine/ranking. Default all/phrase/prefix searches select lexical with an
+explanation. Preserve lexical candidate term selection on fallback and return
+typed stale-cursor conflicts when the effective engine changes between pages.
+CLI flags advertise hybrid but preserve whether the user explicitly chose an
+engine; REST/MCP use the same store policy. Keep all sources and open/closed history
+available by default. Agent retrieval supports ticket evaluation, behavior,
+decisions, workarounds and fixes; summaries/evidence are entry points for bounded
+detail/comment reads, and retrieval scores do not establish relevance or duplicates.
 Comment pages separate discussion and review kinds, preserve large numeric IDs as
 strings and namespace cursors independently from ticket pages. Compact comment
 previews limit Unicode characters and report truncation; full view retains raw
@@ -227,8 +237,9 @@ sanitize terminal controls and propagate output errors. REST/MCP are unaffected.
 Semantic/hybrid queries share ticket filters and result contracts. Use exact filtered
 cosine scans and independent lexical/semantic rank fusion (k=60); higher scores rank
 first. Report source offsets/similarity and typed 503 errors for missing/incomplete
-indexes. Bind vector cursors to vector generation and fingerprint as well as collection
-and query. Semantic candidates reuse weighted cached seed vectors.
+indexes on explicit semantic/hybrid requests. Bind vector cursors to vector generation
+and fingerprint as well as collection and query. Semantic candidates reuse weighted
+cached seed vectors.
 Bind semantic cursor generations to the actual query-vector hash so backend
 numerical changes reject continuation with the typed stale-cursor error.
 Keep lexical behavior and score direction unchanged. Research model alternatives against primary

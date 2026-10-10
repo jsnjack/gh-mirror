@@ -236,12 +236,22 @@ func TestOfflineSearchEngines(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	for _, engine := range []string{"semantic", "hybrid"} {
+	for _, engine := range []string{"", "semantic", "hybrid"} {
 		t.Run(engine, func(t *testing.T) {
 			response := httptest.NewRecorder()
 			svc.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/search?q=socket&engine="+engine+"&in=body&limit=1", nil))
 			if response.Code != http.StatusOK {
 				t.Fatal(response.Code, response.Body.String())
+			}
+			var envelope store.SearchResult
+			if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			if engine == "" && (envelope.Query.Engine != "hybrid" || envelope.Ranking.Direction != "descending") {
+				t.Fatal("REST did not default to hybrid", envelope)
+			}
+			if len(envelope.Matches) != 1 || envelope.Matches[0].Summary == nil || len(envelope.Matches[0].Summary.Labels) == 0 || len(envelope.Matches[0].Evidence) == 0 || envelope.Matches[0].Evidence[0].Source == "" {
+				t.Fatal("missing agent context or source evidence", envelope)
 			}
 			result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: "search_issues", Arguments: map[string]any{"query": "socket", "engine": engine, "in": []string{"body"}, "limit": 1}})
 			if err != nil || result.IsError {

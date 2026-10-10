@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -58,9 +59,10 @@ func (s *Store) Candidates(ctx context.Context, repo string, number, limit int) 
 	return s.FindCandidates(ctx, CandidateOptions{Repo: repo, Number: number, Limit: limit})
 }
 
-// FindCandidates selects distinctive local seed terms, retaining technical acronyms and identifiers.
+// FindCandidates retrieves related tickets from cached seed vectors or distinctive literal terms.
 func (s *Store) FindCandidates(ctx context.Context, o CandidateOptions) (SearchResult, error) {
 	var out SearchResult
+	page := o.PageOptions
 	if err := validTicket(o.Repo, o.Number); err != nil {
 		return out, err
 	}
@@ -83,6 +85,12 @@ func (s *Store) FindCandidates(ctx context.Context, o CandidateOptions) (SearchR
 		return out, invalid("comment_limit must be between 1 and 100")
 	}
 	err := s.view(ctx, func(tx *sql.Tx) error {
+		var fallback *Warning
+		defer func() {
+			if fallback != nil {
+				out.Warnings = append(out.Warnings, *fallback)
+			}
+		}()
 		seed, err := readTicket(ctx, tx, o.Repo, o.Number, "full")
 		if err != nil {
 			return err
@@ -132,14 +140,22 @@ func (s *Store) FindCandidates(ctx context.Context, o CandidateOptions) (SearchR
 		if len(targets.Repositories) == 0 {
 			targets.Repositories = []string{o.Repo}
 		}
-		if o.Engine == "semantic" || o.Engine == "hybrid" {
+		if o.Engine == "" || o.Engine == "semantic" || o.Engine == "hybrid" {
 			terms := preliminary[:min(32, len(preliminary))]
 			query := strings.Join(terms, " ")
 			if query == "" {
 				query = Text(object, "title")
 			}
-			out, err = search(ctx, tx, SearchOptions{Engine: o.Engine, Query: query, QueryFilters: targets, PageOptions: o.PageOptions, Limit: o.Limit, Cursor: o.Cursor, Exclude: o.Number, ExcludeRepo: o.Repo, seed: &vectorSeed{TicketID{Repo: o.Repo, Number: o.Number}, o.IncludeLabels == nil || *o.IncludeLabels, commentIDs}}, s.vectorizer)
-			return err
+			engine := o.Engine
+			if engine == "" {
+				engine = DefaultSearchEngine
+			}
+			out, err = search(ctx, tx, SearchOptions{Engine: engine, Query: query, QueryFilters: targets, PageOptions: page, Limit: o.Limit, Cursor: o.Cursor, Exclude: o.Number, ExcludeRepo: o.Repo, seed: &vectorSeed{TicketID{Repo: o.Repo, Number: o.Number}, o.IncludeLabels == nil || *o.IncludeLabels, commentIDs}}, s.vectorizer)
+			if o.Engine != "" || !errors.Is(err, ErrSemanticUnavailable) {
+				return err
+			}
+			warning := searchFallbackWarning(err)
+			fallback = &warning
 		}
 		where, filterArgs, err := (filters{QueryFilters: targets}).sql()
 		if err != nil {
@@ -182,7 +198,7 @@ func (s *Store) FindCandidates(ctx context.Context, o CandidateOptions) (SearchR
 			selected = append(selected, term.word)
 		}
 		if len(selected) == 0 {
-			out = SearchResult{Matches: []Match{}, Warnings: []Warning{}, Ranking: Ranking{"sqlite_fts5_bm25", "ascending", "No seed terms occur in other tickets within the selected scope."}, Query: QueryInfo{Terms: []string{}, Match: "any", In: []string{"title", "body", "labels", "comments", "reviews"}}}
+			out = SearchResult{Matches: []Match{}, Warnings: []Warning{}, Ranking: Ranking{"sqlite_fts5_bm25", "ascending", "No seed terms occur in other tickets within the selected scope."}, Query: QueryInfo{Engine: "lexical", Terms: []string{}, Match: "any", In: []string{"title", "body", "labels", "comments", "reviews"}}}
 			out.Status, err = status(ctx, tx)
 			if err != nil {
 				return err
@@ -200,7 +216,7 @@ func (s *Store) FindCandidates(ctx context.Context, o CandidateOptions) (SearchR
 			out.Warnings = queryWarnings(out.Status, filters{QueryFilters: targets}, o.PageOptions, nil)
 			return nil
 		}
-		out, err = search(ctx, tx, SearchOptions{Query: strings.Join(selected, " "), QueryFilters: targets, PageOptions: o.PageOptions, Limit: o.Limit, Cursor: o.Cursor, Exclude: o.Number, ExcludeRepo: o.Repo})
+		out, err = search(ctx, tx, SearchOptions{Engine: "lexical", Query: strings.Join(selected, " "), QueryFilters: targets, PageOptions: o.PageOptions, Limit: o.Limit, Cursor: o.Cursor, Exclude: o.Number, ExcludeRepo: o.Repo})
 		return err
 	})
 	return out, err

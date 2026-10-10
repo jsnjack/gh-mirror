@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -12,7 +13,10 @@ import (
 	"gh-mirror/internal/embedding"
 )
 
-// SearchOptions selects literal text, ticket predicates, evidence and a result page.
+// DefaultSearchEngine combines literal and semantic rankings for general ticket retrieval.
+const DefaultSearchEngine = "hybrid"
+
+// SearchOptions selects retrieval, ticket predicates, evidence and a result page.
 type SearchOptions struct {
 	Engine  string `json:"engine,omitempty"`
 	Query   string `json:"query"`
@@ -65,7 +69,7 @@ type Ranking struct {
 	Description string `json:"description"`
 }
 
-// QueryInfo records the effective literal terms and matching mode.
+// QueryInfo records the effective engine, literal terms, matching mode and source scopes.
 type QueryInfo struct {
 	Terms  []string `json:"terms"`
 	Match  string   `json:"match"`
@@ -171,17 +175,44 @@ func scopedDocuments(term string, in []string, evidence, excerpts bool, selectio
 	return strings.Join(selected, " UNION ALL "), args
 }
 func search(ctx context.Context, q querier, o SearchOptions, encoders ...Vectorizer) (SearchResult, error) {
+	automatic := o.Engine == ""
+	var warning *Warning
+	if automatic {
+		o.Engine = DefaultSearchEngine
+		if o.Match == "all" || o.Match == "phrase" || o.Prefix {
+			o.Engine = "lexical"
+			warning = &Warning{Code: "search_engine_selected", Resource: "search", Message: "Using lexical search because all-word, phrase or prefix matching was requested."}
+		}
+	}
 	if o.Engine == "semantic" || o.Engine == "hybrid" {
 		var e Vectorizer = embedding.Default
 		if len(encoders) > 0 && encoders[0] != nil {
 			e = encoders[0]
 		}
-		return vectorSearch(ctx, q, o, e)
+		out, err := vectorSearch(ctx, q, o, e)
+		if !automatic || !errors.Is(err, ErrSemanticUnavailable) {
+			return out, err
+		}
+		o.Engine = "lexical"
+		w := searchFallbackWarning(err)
+		warning = &w
 	}
-	if o.Engine != "" && o.Engine != "lexical" {
+	if o.Engine != "lexical" {
 		return SearchResult{}, invalid("engine must be lexical, semantic or hybrid")
 	}
-	out := SearchResult{Matches: []Match{}, Warnings: []Warning{}, Ranking: Ranking{"sqlite_fts5_bm25", "ascending", "Lower scores rank first; text relevance within this query, not duplicate probability."}}
+	out, err := lexicalSearch(ctx, q, o)
+	if err == nil && warning != nil {
+		out.Warnings = append(out.Warnings, *warning)
+	}
+	return out, err
+}
+
+func searchFallbackWarning(err error) Warning {
+	return Warning{Code: "search_engine_fallback", Resource: "search", Message: "Default hybrid search is unavailable; using lexical search. " + err.Error()}
+}
+
+func lexicalSearch(ctx context.Context, q querier, o SearchOptions) (SearchResult, error) {
+	out := SearchResult{Matches: []Match{}, Warnings: []Warning{}, Ranking: Ranking{"sqlite_fts5_bm25", "ascending", "Lower scores rank first; text relevance within this query, not confidence percentages."}}
 	if len(o.Query) > 16384 {
 		return out, invalid("query exceeds 16384 bytes")
 	}

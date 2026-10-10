@@ -377,9 +377,15 @@ completed vectors; rerun `index` to finish without new upstream requests. Progre
 uses stderr, reports known document totals, rate, ETA and active CPU workers, and
 stops on completion/cancellation/failure.
 
-CLI, REST and MCP accept lexical (default), semantic and hybrid engines. Semantic
-queries average normalized query passage embeddings and use exact cosine scanning
-over filtered vectors, selecting the best passage per ticket. Semantic duplicate
+CLI, REST and MCP default search and seed-based candidate retrieval to hybrid,
+with explicit lexical, semantic and hybrid overrides. Retrieval supports agent
+ticket evaluation as well as duplicate discovery: preserve behavior descriptions,
+decisions, workarounds, fixes and related history through summaries and bounded
+source-linked evidence. Search all collected titles, bodies, attached labels,
+discussion comments and review comments unless source scopes are supplied. Include
+open and closed tickets unless state filters are supplied.
+Semantic queries average normalized query passage embeddings and use exact cosine
+scanning over filtered vectors, selecting the best passage per ticket. Semantic duplicate
 candidates reuse weighted stored seed vectors: title 4, body 1, labels 1.5 and
 bounded recent comments 0.5, averaging passages within each source family before
 normalizing. Hybrid combines independent lexical and semantic ticket ranks with
@@ -389,9 +395,16 @@ Report score meanings and component scores; semantic/hybrid default to descendin
 relevance. Evidence includes field, source, byte offsets, cosine similarity and
 stored comment/review context. Candidate seeds are excluded from results.
 
-Reject incomplete or incompatible selected indexing coverage explicitly; never
-silently fall back or omit pending tickets. REST uses 503 semantic_index_unavailable.
-Reject lexical-only phrase/all/prefix controls on semantic engines. Bound ordinary
+For an omitted engine, unavailable, incomplete or incompatible selected indexing
+coverage selects lexical retrieval with a structured search_engine_fallback warning
+and indexing instructions. Preserve the original lexical candidate term selection.
+Report the actual engine and its score meaning. Do not fall back for invalid queries,
+inference errors, cancellation, database failures or stale cursors. Explicit
+semantic/hybrid queries still return 503 semantic_index_unavailable. Never omit
+pending tickets by querying partial vector coverage. Default queries with all-word,
+phrase or prefix controls select lexical with a search_engine_selected explanation;
+explicit semantic engines reject those controls. Engine changes during continuation
+return a stale-cursor conflict and require restarting the search. Bound ordinary
 queries to 16 KiB, 16 semantic passages and 512 hybrid literal terms. Bind semantic
 cursors to collection generation, vector generation, model and effective options.
 Status reports durable document/chunk coverage and compatibility. Query tools remain

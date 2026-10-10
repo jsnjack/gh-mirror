@@ -289,9 +289,9 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 			return out, err
 		}
 	}
-	out.Ranking = Ranking{"cosine_similarity", "descending", "Higher scores rank first. Similarity is not duplicate probability."}
+	out.Ranking = Ranking{"cosine_similarity", "descending", "Higher scores rank first. Similarity is not a relevance or duplicate probability."}
 	if o.Engine == "hybrid" {
-		out.Ranking = Ranking{"reciprocal_rank_fusion", "descending", "Sum of 1/(60+rank) across independent lexical and semantic rankings; higher is better."}
+		out.Ranking = Ranking{"reciprocal_rank_fusion", "descending", "Sum of 1/(60+rank) across independent lexical and semantic rankings; higher is better. Scores are not confidence percentages."}
 	}
 	out.Query = QueryInfo{Terms: queryTerms(o.Query, true), Match: "any", In: o.In, Engine: o.Engine}
 	if out.Query.In == nil {
