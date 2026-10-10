@@ -177,6 +177,9 @@ The dependency is justified by explicitly requested pure Go offline inference;
 never pass remote model IDs or silently download assets at runtime. FP32, mean
 pooling, L2 normalization, tokenizer and 256-token/2048-rune/32-rune-overlap chunking
 form one fingerprint. Validate tokenizer IDs and vectors against attributed reference data.
+`embedding.GGUF` exports those exact FP32 tensors and vocabulary to llama.cpp's
+BERT format locally, with deterministic metadata and checksum validation. It adds
+no conversion dependencies and does not alter the model fingerprint.
 
 Schema 2 adds semantic state/vectors; writer migration from schema 1 is local and
 transactional. Readers accept schema 1 for lexical queries and schema 2 without
