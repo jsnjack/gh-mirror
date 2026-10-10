@@ -22,7 +22,7 @@ func TestExecute(t *testing.T) {
 			t.Fatal("version gained a short alias")
 		}
 		for _, command := range root.Commands() {
-			for _, name := range []string{"debug", "trace", "config", "help"} {
+			for _, name := range []string{"debug", "trace", "config", "help", "format"} {
 				flag := command.InheritedFlags().Lookup(name)
 				if flag == nil {
 					t.Fatalf("%s did not inherit %s", command.Name(), name)

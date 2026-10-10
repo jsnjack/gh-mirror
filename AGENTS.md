@@ -116,8 +116,8 @@ Credentials come from named environment variables and never enter the database,
 stdout, request bodies, or trace logs. HTTP listeners outside loopback require an
 API bearer token. Read tools never trigger collection or expose arbitrary SQL.
 
-Sync progress starts before opening the database and uses stderr, preserving JSON
-on stdout. Animate terminal output; use plain phase updates and periodic heartbeats
+Sync progress starts before opening the database and uses stderr, leaving stdout
+for command results. Animate terminal output; use plain phase updates and periodic heartbeats
 for nonterminals or debug mode. `sync --quiet` disables progress. Report actual
 pages, records, hydration batches, HTTP attempts, conditional hits, and retry waits
 without extra GitHub requests. Show bounded progress only for known local totals.
@@ -199,6 +199,10 @@ FULL checkpoint durability and use SQLite locking to exclude independent collect
 Serialize CPU activity snapshots and progress callbacks; label CPU/GitHub phases
 explicitly. Preserve vector fingerprints and reusable checkpoints for scheduling changes.
 Progress names standalone indexing correctly and retains stderr/stdout separation.
+CLI --format auto selects text only for terminal stdout; piped output stays JSON.
+Explicit json/text overrides detection. Render search/candidate evidence, labels,
+pagination, warnings and evaluation tables in text; preserve integer identities,
+sanitize terminal controls and propagate output errors. REST/MCP are unaffected.
 Semantic/hybrid queries share ticket filters and result contracts. Use exact filtered
 cosine scans and independent lexical/semantic rank fusion (k=60); higher scores rank
 first. Report source offsets/similarity and typed 503 errors for missing/incomplete

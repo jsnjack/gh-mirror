@@ -156,7 +156,11 @@ and a phase ETA after measurable progress. Unknown totals and retry waits have n
 ETA; listings with unknown totals have a spinner. Explicit callbacks carry activity from the collector and client
 without additional upstream calls. Status refreshes during slow requests, retries,
 and snapshot publication. Nonterminal/debug output uses plain phase updates and
-periodic heartbeats. `sync --quiet` disables progress; stdout remains JSON.
+periodic heartbeats. `sync --quiet` disables progress. CLI --format auto chooses
+readable text for terminal stdout and JSON for pipes/files, with explicit json/text
+overrides. Text queries show ranked tickets, labels, bounded evidence, warnings and
+continuation; evaluations show a metrics table. Preserve complete JSON contracts,
+integer identities and output errors. REST/MCP always remain structured.
 Success, failure, and cancellation stop refreshes and produce a final status.
 
 ## Retrieval

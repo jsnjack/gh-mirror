@@ -3,7 +3,6 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -32,6 +31,7 @@ var Version = "dev"
 var settings config.Config
 var configPath, database string
 var debug, trace bool
+var outputFormat = "auto"
 var logCloser io.Closer
 var root = &cobra.Command{Use: "gh-mirror", Short: "Mirror GitHub tickets into a portable, searchable SQLite database", SilenceUsage: true, SilenceErrors: true}
 
@@ -43,9 +43,13 @@ func init() {
 	root.CompletionOptions.DisableDefaultCmd = true
 	root.PersistentFlags().StringVarP(&configPath, "config", "c", "", "Configuration file (default: XDG gh-mirror/config.json)")
 	root.PersistentFlags().StringVar(&database, "db", "", "Override the database path")
+	root.PersistentFlags().StringVar(&outputFormat, "format", "auto", "Output format: auto (text in terminals, JSON when piped), text or json")
 	root.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Verbose diagnostics on stderr")
 	root.PersistentFlags().BoolVar(&trace, "trace", false, "Detailed diagnostics in the temporary gh-mirror.log")
 	root.PersistentPreRunE = func(command *cobra.Command, _ []string) error {
+		if _, err := resolveOutputFormat(outputFormat, false); err != nil {
+			return err
+		}
 		logger, closer, err := diagnostics.Setup(debug, trace, command.ErrOrStderr())
 		if err != nil {
 			return fmt.Errorf("set up diagnostics: %w", err)
@@ -91,14 +95,6 @@ func Execute() error {
 	}()
 	if err := root.ExecuteContext(ctx); err != nil {
 		return fmt.Errorf("gh-mirror: %w", err)
-	}
-	return nil
-}
-func output(command *cobra.Command, value any) error {
-	encoder := json.NewEncoder(command.OutOrStdout())
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(value); err != nil {
-		return fmt.Errorf("write command output: %w", err)
 	}
 	return nil
 }
@@ -191,7 +187,7 @@ func addCollection() {
 	command.Flags().BoolVar(&restart, "restart", false, "Discard pending fetches and start a new sync")
 	command.Flags().BoolVar(&full, "full", false, "Force complete inventories and enrichment")
 	command.Flags().BoolVar(&publish, "publish", true, "Publish a standalone snapshot after collection")
-	command.Flags().BoolVar(&quiet, "quiet", false, "Suppress sync progress; retain JSON output and errors")
+	command.Flags().BoolVar(&quiet, "quiet", false, "Suppress sync progress; retain results and errors")
 	root.AddCommand(command)
 }
 func addQueries() {

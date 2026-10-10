@@ -33,6 +33,20 @@ install -m 755 bin/gh-mirror ~/.local/bin/gh-mirror
 gh-mirror --help
 ```
 
+Commands use readable text when stdout is a terminal and JSON when redirected or
+piped. Search and candidate results show ranked tickets, labels and evidence;
+`evaluate` shows a metrics table. Select a format explicitly with `--format`:
+
+```sh
+gh-mirror search 'socket timeout' --format text
+gh-mirror candidates --repo owner/repository --number 123 --format text
+gh-mirror status --format json
+gh-mirror search 'socket timeout' | jq '.matches'
+```
+
+`--format json` preserves the complete structured output. Text results use compact
+previews; REST and MCP always retain their structured contracts.
+
 ## Configure
 
 Copy [examples/config.json](examples/config.json) into
@@ -363,7 +377,8 @@ gh-mirror search 'Acme' --repo owner/repository
 gh-mirror search 'timeout' --project owner/1 --kind issue
 ```
 
-Queries return JSON on stdout. The default `--match any` joins literal words with
+Queries use readable terminal output or piped JSON; `--format` overrides it.
+The default `--match any` joins literal words with
 OR. `--match all` requires every word somewhere in the selected ticket: a label and
 a separate comment can satisfy it together. `--match phrase` requires consecutive
 words in one source. Punctuation is tokenized; operators in the query are literal
@@ -620,6 +635,7 @@ Supply local relevance judgments against an existing mirror or immutable snapsho
 
 ```sh
 gh-mirror --db ./mirror.sqlite evaluate --cases ./judgments.json
+gh-mirror --db ./mirror.sqlite evaluate --cases ./judgments.json --format text
 ```
 
 Each case requires exactly one search/candidate request and judged relevant ticket
