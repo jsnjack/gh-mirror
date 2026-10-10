@@ -270,3 +270,7 @@ the dictionary; migration accepts legacy inline BLOBs until the local rebuild
 shares them. Version derived inputs separately from collection. Ticket body
 passages exclude empty sections and known checklists while preserving raw source
 offsets. Exports prune incomplete sources and unreferenced shared vectors.
+Classification context includes available label definitions and configured rules,
+with attached labels first and explicit omission counts under the shared text
+budget. Bound section and relationship lists independently of body length. Markdown
+fences honor delimiter type and length, retaining shorter fence examples as code.

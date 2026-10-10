@@ -44,20 +44,25 @@ type RelatedTicket struct {
 
 // ContextCoverage explains bounded selection and which source families were examined.
 type ContextCoverage struct {
-	CommentsTotal     int    `json:"comments_total"`
-	CommentsIncluded  int    `json:"comments_included"`
-	CommentsOmitted   int    `json:"comments_omitted"`
-	RelatedTotal      int    `json:"related_total"`
-	RelatedOmitted    int    `json:"related_omitted"`
-	ReferencesOmitted int    `json:"references_omitted"`
-	ReferenceSources  string `json:"reference_sources"`
-	Selection         string `json:"selection"`
-	TextCharacters    int    `json:"text_characters"`
-	CharacterBudget   int    `json:"character_budget"`
+	SectionsOmitted         int    `json:"sections_omitted"`
+	LabelDefinitionsTotal   int    `json:"label_definitions_total"`
+	LabelDefinitionsOmitted int    `json:"label_definitions_omitted"`
+	LabelRulesOmitted       bool   `json:"label_rules_omitted"`
+	CommentsTotal           int    `json:"comments_total"`
+	CommentsIncluded        int    `json:"comments_included"`
+	CommentsOmitted         int    `json:"comments_omitted"`
+	RelatedTotal            int    `json:"related_total"`
+	RelatedOmitted          int    `json:"related_omitted"`
+	ReferencesOmitted       int    `json:"references_omitted"`
+	ReferenceSources        string `json:"reference_sources"`
+	Selection               string `json:"selection"`
+	TextCharacters          int    `json:"text_characters"`
+	CharacterBudget         int    `json:"character_budget"`
 }
 
 // ContextResult combines classification attributes, original prose and discussion evidence.
 type ContextResult struct {
+	LabelRules       []representation.LabelRule `json:"label_rules"`
 	Ticket           TicketID                   `json:"ticket"`
 	Kind             string                     `json:"kind"`
 	Purpose          string                     `json:"purpose"`
@@ -118,6 +123,11 @@ func ticketContext(ctx context.Context, q querier, o ContextOptions) (ContextRes
 		return out, err
 	}
 	out.Summary, out.Kind = t.Summary, t.Kind
+	rules, err := labelRules(ctx, q)
+	if err != nil {
+		return out, err
+	}
+	out.LabelRules = []representation.LabelRule{}
 	var payload struct {
 		Body string `json:"body"`
 	}
@@ -141,6 +151,10 @@ func ticketContext(ctx context.Context, q querier, o ContextOptions) (ContextRes
 		if !found {
 			out.MissingSections = append(out.MissingSections, kind)
 		}
+	}
+	if len(out.Sections) > 100 {
+		out.Coverage.SectionsOmitted = len(out.Sections) - 100
+		out.Sections = out.Sections[:100]
 	}
 	// Missing sections are observations; acceptance criteria are not required for every ticket.
 	native, err := nativeRelationships(t.Extra, t.Summary.URL)
@@ -204,7 +218,11 @@ func ticketContext(ctx context.Context, q querier, o ContextOptions) (ContextRes
 	if err != nil {
 		return out, fmt.Errorf("encode context labels: %w", err)
 	}
-	rows, err := q.QueryContext(ctx, `SELECT payload FROM catalog WHERE kind='labels' AND scope=? AND json_extract(payload,'$.name') IN (SELECT value FROM json_each(?)) ORDER BY id`, o.Repo, string(labelsJSON))
+	allLabels := o.Purpose == "classification"
+	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM catalog WHERE kind='labels' AND scope=? AND (? OR json_extract(payload,'$.name') IN (SELECT value FROM json_each(?)))`, o.Repo, allLabels, string(labelsJSON)).Scan(&out.Coverage.LabelDefinitionsTotal); err != nil {
+		return out, fmt.Errorf("count classification labels: %w", err)
+	}
+	rows, err := q.QueryContext(ctx, `SELECT payload FROM catalog WHERE kind='labels' AND scope=? AND (? OR json_extract(payload,'$.name') IN (SELECT value FROM json_each(?))) ORDER BY CASE WHEN json_extract(payload,'$.name') IN (SELECT value FROM json_each(?)) THEN 0 ELSE 1 END,id LIMIT 100`, o.Repo, allLabels, string(labelsJSON), string(labelsJSON))
 	if err != nil {
 		return out, fmt.Errorf("read context label definitions: %w", err)
 	}
@@ -223,6 +241,17 @@ func ticketContext(ctx context.Context, q querier, o ContextOptions) (ContextRes
 	if err := finishRows(rows, rows.Err()); err != nil {
 		return out, err
 	}
+	out.Coverage.LabelDefinitionsOmitted = out.Coverage.LabelDefinitionsTotal - len(out.LabelDefinitions)
+	rulesJSON, err := json.Marshal(rules[o.Repo])
+	if err != nil {
+		return out, fmt.Errorf("measure label rules: %w", err)
+	}
+	if len(rules[o.Repo]) <= 100 && utf8.RuneCount(rulesJSON) <= remaining {
+		out.LabelRules = append(out.LabelRules, rules[o.Repo]...)
+		remaining -= utf8.RuneCount(rulesJSON)
+	} else {
+		out.Coverage.LabelRulesOmitted = true
+	}
 	// Custom fields are opaque source data; omit the complete resource when it exceeds the remaining budget.
 	if utf8.RuneCount(t.Fields) <= remaining {
 		out.Fields = t.Fields
@@ -240,7 +269,11 @@ func ticketContext(ctx context.Context, q querier, o ContextOptions) (ContextRes
 	if err != nil {
 		return out, err
 	}
-	out.Warnings = append(out.Warnings, queryWarnings(out.Status, filters{Repo: o.Repo}, PageOptions{}, []string{"comments", "reviews"})...)
+	resources := []string{"comments"}
+	if out.Kind == "pull_request" {
+		resources = append(resources, "reviews")
+	}
+	out.Warnings = append(out.Warnings, queryWarnings(out.Status, filters{Repo: o.Repo, Kind: out.Kind}, PageOptions{}, resources)...)
 	return out, nil
 }
 

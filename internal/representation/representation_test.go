@@ -77,3 +77,23 @@ func TestReferences(t *testing.T) {
 		})
 	}
 }
+
+func TestLongFences(t *testing.T) {
+	for _, name := range []string{"backticks", "tildes"} {
+		t.Run(name, func(t *testing.T) {
+			mark := "`"
+			if name == "tildes" {
+				mark = "~"
+			}
+			body := "### Description\n" + strings.Repeat(mark, 4) + "\n" + strings.Repeat(mark, 3) + "\n### Expected behavior\nduplicate of #2\n" + strings.Repeat(mark, 4) + "\n### Actual behavior\nSee #3\n"
+			sections := Sections(body)
+			if len(sections) != 2 || sections[1].Kind != "actual" {
+				t.Fatal(sections)
+			}
+			refs := References("o/r", body, "https://github.com/o/r/issues/1")
+			if len(refs) != 1 || refs[0].Number != 3 {
+				t.Fatal(refs)
+			}
+		})
+	}
+}

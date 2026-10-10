@@ -17,22 +17,42 @@ type Section struct {
 
 var headingLine = regexp.MustCompile(`^ {0,3}#{1,6}\s+(.+?)\s*#*\s*$`)
 
+type codeFence struct {
+	mark  byte
+	width int
+}
+
+func (f *codeFence) line(line string) bool {
+	trim := strings.TrimLeft(line, " \t")
+	if len(trim) < 3 || trim[0] != '`' && trim[0] != '~' {
+		return false
+	}
+	width := 0
+	for width < len(trim) && trim[width] == trim[0] {
+		width++
+	}
+	if width < 3 {
+		return false
+	}
+	if f.width == 0 {
+		f.mark, f.width = trim[0], width
+		return true
+	}
+	if trim[0] == f.mark && width >= f.width && strings.TrimSpace(trim[width:]) == "" {
+		f.width = 0
+		return true
+	}
+	return false
+}
+
 // Sections recognizes headings outside fenced code without rewriting source text.
 func Sections(body string) []Section {
 	out := []Section{}
 	current := Section{Kind: "description", Start: 0}
-	offset, fenced := 0, ""
+	offset := 0
+	var fence codeFence
 	for _, line := range strings.SplitAfter(body, "\n") {
-		trim := strings.TrimSpace(line)
-		if strings.HasPrefix(trim, "```") || strings.HasPrefix(trim, "~~~") {
-			mark := trim[:3]
-			switch fenced {
-			case "":
-				fenced = mark
-			case mark:
-				fenced = ""
-			}
-		} else if fenced == "" {
+		if !fence.line(line) && fence.width == 0 {
 			if match := headingLine.FindStringSubmatch(strings.TrimRight(line, "\r\n")); match != nil {
 				current.End = offset
 				if current.Start < current.End || current.Heading != "" {

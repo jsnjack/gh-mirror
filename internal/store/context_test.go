@@ -9,7 +9,7 @@ import (
 )
 
 func TestContext(t *testing.T) {
-	for _, name := range []string{"exact original", "budget and coverage", "relationships", "classification metadata", "invalid options", "missing ticket"} {
+	for _, name := range []string{"exact original", "budget and coverage", "relationships", "classification metadata", "classification catalog", "invalid options", "missing ticket"} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			db := testStore(t)
@@ -43,6 +43,14 @@ func TestContext(t *testing.T) {
 				o.MaxCharacters = 1000
 				o.Purpose = "proofread"
 			}
+			if name == "classification catalog" {
+				o.Purpose = "classification"
+				if err := db.Update(ctx, func(w *Writer) error {
+					return w.ReplaceCatalog(ctx, "labels", "o/r", []json.RawMessage{json.RawMessage(`{"id":1,"name":"unused:label","description":"Available classification"}`)})
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if name == "invalid options" {
 				o.Purpose = "invented"
 			}
@@ -66,6 +74,10 @@ func TestContext(t *testing.T) {
 				t.Fatal(err)
 			}
 			switch name {
+			case "classification catalog":
+				if len(out.LabelDefinitions) != 1 || out.Coverage.LabelDefinitionsTotal != 1 || len(out.LabelRules) != 1 {
+					t.Fatal(out.LabelDefinitions, out.LabelRules, out.Coverage)
+				}
 			case "exact original":
 				if out.Description.Text != body || out.Description.End != len(body) || !strings.Contains(out.Comments[0].Body, "uniqueword") {
 					t.Fatal(out.Description, out.Comments)

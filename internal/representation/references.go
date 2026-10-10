@@ -26,22 +26,20 @@ func References(repo, body, source string) []Reference {
 	out := []Reference{}
 	// Ignore code fences rather than interpreting issue-like log fragments as links.
 	code := []Span{}
-	offset, start, fence := 0, 0, ""
+	offset, start := 0, 0
+	var fence codeFence
 	for _, line := range strings.SplitAfter(body, "\n") {
-		trim := strings.TrimSpace(line)
-		if strings.HasPrefix(trim, "```") || strings.HasPrefix(trim, "~~~") {
-			mark := trim[:3]
-			switch fence {
-			case "":
-				fence, start = mark, offset
-			case mark:
+		wasOpen := fence.width > 0
+		if fence.line(line) {
+			if !wasOpen {
+				start = offset
+			} else if fence.width == 0 {
 				code = append(code, Span{start, offset + len(line)})
-				fence = ""
 			}
 		}
 		offset += len(line)
 	}
-	if fence != "" {
+	if fence.width > 0 {
 		code = append(code, Span{start, len(body)})
 	}
 	for _, loc := range ticketReference.FindAllStringIndex(body, -1) {

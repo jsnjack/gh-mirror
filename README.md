@@ -968,3 +968,8 @@ resuming reuses completed sources and shared inputs. New vectors store source
 attribution separately from the shared value. Schema-2 vectors remain readable
 and migrate locally; unchanged passage vectors are reused during the first rebuild.
 Exports remove incomplete source passages and unreferenced shared vectors.
+
+Classification context also includes available label catalog entries, prioritizing
+attached labels, and the configured role rules. Catalog entries, section lists and
+relationship lists have bounded counts; coverage reports omissions. Use the paged
+catalog tool to examine additional labels before assigning a new classification.
