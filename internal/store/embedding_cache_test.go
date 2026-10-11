@@ -174,3 +174,43 @@ func TestDerivedSectionPassageOffsets(t *testing.T) {
 		t.Fatal("source body changed")
 	}
 }
+
+func TestCacheLayoutMigration(t *testing.T) {
+	ctx := context.Background()
+	db := testStore(t)
+	seed(t, db)
+	e := &fakeVectorizer{}
+	initial, err := db.Index(ctx, e, IndexOptions{Workers: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := e.calls
+	if _, err := db.db.Exec(`DROP INDEX semantic_vectors_cache; ALTER TABLE semantic_vectors RENAME TO old_vectors; ALTER TABLE embedding_cache RENAME TO old_cache;
+CREATE TABLE embedding_cache(key BLOB PRIMARY KEY,vector BLOB NOT NULL) WITHOUT ROWID;
+INSERT INTO embedding_cache SELECT key,vector FROM old_cache;
+CREATE TABLE semantic_vectors(document_id TEXT NOT NULL REFERENCES semantic_documents(document_id) ON DELETE CASCADE,chunk INTEGER NOT NULL,field TEXT NOT NULL,start INTEGER NOT NULL,end INTEGER NOT NULL,text TEXT NOT NULL,vector BLOB,cache_key BLOB REFERENCES embedding_cache(key),PRIMARY KEY(document_id,chunk));
+INSERT INTO semantic_vectors SELECT document_id,chunk,field,start,end,text,vector,cache_key FROM old_vectors;
+DROP TABLE old_vectors; DROP TABLE old_cache;`); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := Open(db.Path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := writer.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	out, err := writer.Index(ctx, e, IndexOptions{Workers: 1})
+	if err != nil || e.calls != before || out.Chunks != initial.Chunks || out.SharedVectors != initial.SharedVectors || out.Generation != initial.Generation {
+		t.Fatal("layout migration changed embeddings", out, e.calls-before, err)
+	}
+	var definition string
+	if err := writer.db.QueryRow("SELECT sql FROM sqlite_master WHERE name='embedding_cache'").Scan(&definition); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.ToUpper(definition), "WITHOUT ROWID") {
+		t.Fatal(definition)
+	}
+}

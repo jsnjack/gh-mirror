@@ -4,7 +4,7 @@ const semanticSchema = `
 CREATE TABLE IF NOT EXISTS embedding_cache (
  key BLOB PRIMARY KEY CHECK(length(key)=32),
  vector BLOB NOT NULL CHECK(length(vector)=1536)
-) WITHOUT ROWID;
+);
 CREATE TABLE IF NOT EXISTS semantic_documents (
  document_id TEXT PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
  model TEXT NOT NULL, content_hash TEXT NOT NULL, complete INTEGER NOT NULL DEFAULT 0,
