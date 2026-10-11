@@ -219,38 +219,44 @@ func ticketContext(ctx context.Context, q querier, o ContextOptions) (ContextRes
 		return out, fmt.Errorf("encode context labels: %w", err)
 	}
 	allLabels := o.Purpose == "classification"
+	rulesJSON, err := json.Marshal(rules[o.Repo])
+	if err != nil {
+		return out, fmt.Errorf("measure label rules: %w", err)
+	}
+	if len(rules[o.Repo]) > 0 {
+		if len(rules[o.Repo]) <= 100 && utf8.RuneCount(rulesJSON) <= remaining {
+			out.LabelRules = append(out.LabelRules, rules[o.Repo]...)
+			remaining -= utf8.RuneCount(rulesJSON)
+		} else {
+			out.Coverage.LabelRulesOmitted = true
+			out.Warnings = append(out.Warnings, Warning{Code: "context_label_rules_omitted", Repo: o.Repo, Resource: "labels", Message: "Configured label rules exceed the context budget; inspect the repository label_rules configuration."})
+		}
+	}
 	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM catalog WHERE kind='labels' AND scope=? AND (? OR json_extract(payload,'$.name') IN (SELECT value FROM json_each(?)))`, o.Repo, allLabels, string(labelsJSON)).Scan(&out.Coverage.LabelDefinitionsTotal); err != nil {
 		return out, fmt.Errorf("count classification labels: %w", err)
 	}
-	rows, err := q.QueryContext(ctx, `SELECT payload FROM catalog WHERE kind='labels' AND scope=? AND (? OR json_extract(payload,'$.name') IN (SELECT value FROM json_each(?))) ORDER BY CASE WHEN json_extract(payload,'$.name') IN (SELECT value FROM json_each(?)) THEN 0 ELSE 1 END,id LIMIT 100`, o.Repo, allLabels, string(labelsJSON), string(labelsJSON))
+	rows, err := q.QueryContext(ctx, `SELECT json_object('name',json_extract(payload,'$.name'),'description',json_extract(payload,'$.description')) FROM catalog WHERE kind='labels' AND scope=? AND (? OR json_extract(payload,'$.name') IN (SELECT value FROM json_each(?))) ORDER BY CASE WHEN json_extract(payload,'$.name') IN (SELECT value FROM json_each(?)) THEN 0 ELSE 1 END,id LIMIT 100`, o.Repo, allLabels, string(labelsJSON), string(labelsJSON))
 	if err != nil {
 		return out, fmt.Errorf("read context label definitions: %w", err)
 	}
+	labelBudget := min(remaining, o.MaxCharacters/3)
 	for rows.Next() {
 		var raw json.RawMessage
 		if err := rows.Scan((*[]byte)(&raw)); err != nil {
 			return out, finishRows(rows, err)
 		}
-		if utf8.RuneCount(raw) <= remaining {
+		if utf8.RuneCount(raw) <= labelBudget {
 			out.LabelDefinitions = append(out.LabelDefinitions, raw)
 			remaining -= utf8.RuneCount(raw)
-		} else {
-			out.Warnings = append(out.Warnings, Warning{Code: "context_label_definition_omitted", Repo: o.Repo, Resource: "labels", Message: "A label definition exceeds the remaining text budget; read the label catalog to inspect it."})
+			labelBudget -= utf8.RuneCount(raw)
 		}
 	}
 	if err := finishRows(rows, rows.Err()); err != nil {
 		return out, err
 	}
 	out.Coverage.LabelDefinitionsOmitted = out.Coverage.LabelDefinitionsTotal - len(out.LabelDefinitions)
-	rulesJSON, err := json.Marshal(rules[o.Repo])
-	if err != nil {
-		return out, fmt.Errorf("measure label rules: %w", err)
-	}
-	if len(rules[o.Repo]) <= 100 && utf8.RuneCount(rulesJSON) <= remaining {
-		out.LabelRules = append(out.LabelRules, rules[o.Repo]...)
-		remaining -= utf8.RuneCount(rulesJSON)
-	} else {
-		out.Coverage.LabelRulesOmitted = true
+	if out.Coverage.LabelDefinitionsOmitted > 0 {
+		out.Warnings = append(out.Warnings, Warning{Code: "context_label_definition_omitted", Repo: o.Repo, Resource: "labels", Message: fmt.Sprintf("%d label definitions omitted by context limits; use gh-mirror catalog --kind labels --scope %s to inspect the full catalog.", out.Coverage.LabelDefinitionsOmitted, o.Repo)})
 	}
 	// Custom fields are opaque source data; omit the complete resource when it exceeds the remaining budget.
 	if utf8.RuneCount(t.Fields) <= remaining {

@@ -969,10 +969,14 @@ attribution separately from the shared value. Schema-2 vectors remain readable
 and migrate locally; unchanged passage vectors are reused during the first rebuild.
 Exports remove incomplete source passages and unreferenced shared vectors.
 
-Classification context also includes available label catalog entries, prioritizing
-attached labels, and the configured role rules. Catalog entries, section lists and
-relationship lists have bounded counts; coverage reports omissions. Use the paged
-catalog tool to examine additional labels before assigning a new classification.
+Classification context includes compact label names and descriptions, prioritizing
+attached labels, and the configured role rules. Label definitions use at most a
+third of the text budget, after ticket evidence and configured rules. The text view
+shows these definitions, label interpretations, custom fields and related ticket
+excerpts. Catalog entries, section lists and relationship lists have bounded counts;
+coverage reports omissions with one warning for omitted labels. Use `catalog --kind
+labels --scope owner/repository` to read complete GitHub label records and additional
+labels before assigning a new classification.
 
 Hybrid duplicate candidates retain weighted seed-vector and lexical rank fusion.
 They use a different ranking policy from information searches, preserving recall

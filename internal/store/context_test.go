@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestContext(t *testing.T) {
@@ -93,6 +95,99 @@ func TestContext(t *testing.T) {
 			case "classification metadata":
 				if out.Summary.StateReason != "duplicate" || out.Summary.MergedAt == "" || out.Summary.Attributes[0].Role != "client" || out.Summary.Attributes[0].Description == "" || len(out.MissingSections) == 0 {
 					t.Fatal(out.Summary, out.MissingSections)
+				}
+			}
+		})
+	}
+}
+
+func TestContextLabelBudget(t *testing.T) {
+	for _, name := range []string{"compact catalog", "bounded taxonomy", "exhausted budget"} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			db := testStore(t)
+			seed(t, db)
+			count := 1
+			if name != "compact catalog" {
+				count = 120
+			}
+			catalog := make([]json.RawMessage, count)
+			for i := range catalog {
+				label := fmt.Sprintf("category:%03d", i)
+				if i == count-1 {
+					label = "bug"
+				}
+				raw, err := json.Marshal(map[string]any{"id": i + 1, "name": label, "description": strings.Repeat("é", 100), "url": strings.Repeat("x", 8000)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				catalog[i] = raw
+			}
+			if err := db.Update(ctx, func(w *Writer) error {
+				if err := w.SetMetadata(ctx, "label_rules", `{"o/r":[{"label":"bug","role":"type","description":"Reported defect"}]}`); err != nil {
+					return err
+				}
+				return w.ReplaceCatalog(ctx, "labels", "o/r", catalog)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			o := ContextOptions{Repo: "o/r", Number: 1, Purpose: "classification"}
+			if name == "exhausted budget" {
+				o.MaxCharacters = 1000
+				if err := db.Update(ctx, func(w *Writer) error {
+					_, err := w.PutIssue(ctx, "o/r", issueFixture(1, strings.Repeat("body ", 1000), "2026-01-03T00:00:00Z"))
+					if err != nil {
+						return err
+					}
+					return w.PutComment(ctx, "o/r", 1, commentFixture(strings.Repeat("comment ", 1000), "2026-01-03T00:00:00Z"))
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			out, err := db.Context(ctx, o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stored, err := db.Catalog(ctx, "labels", "o/r")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(stored.Items) != count || !strings.Contains(string(stored.Items[0]), strings.Repeat("x", 8000)) {
+				t.Fatal("source catalog metadata was changed")
+			}
+			if out.Coverage.TextCharacters > out.Coverage.CharacterBudget || out.Coverage.LabelDefinitionsTotal != count || out.Coverage.LabelDefinitionsOmitted != count-len(out.LabelDefinitions) {
+				t.Fatal(out.Coverage)
+			}
+			labelCharacters, warnings := 0, 0
+			for _, raw := range out.LabelDefinitions {
+				labelCharacters += utf8.RuneCount(raw)
+				if strings.Contains(string(raw), `"url"`) || strings.Contains(string(raw), `"id"`) {
+					t.Fatal("unneeded GitHub metadata consumes context", string(raw))
+				}
+			}
+			if labelCharacters > out.Coverage.CharacterBudget/3 {
+				t.Fatal("taxonomy exceeds its share", labelCharacters)
+			}
+			for _, warning := range out.Warnings {
+				if warning.Code == "context_label_definition_omitted" {
+					warnings++
+					if !strings.Contains(warning.Message, fmt.Sprintf("%d label definitions", out.Coverage.LabelDefinitionsOmitted)) || !strings.Contains(warning.Message, "catalog --kind labels --scope o/r") {
+						t.Fatal(warning)
+					}
+				}
+			}
+			switch name {
+			case "compact catalog":
+				if len(out.LabelDefinitions) != 1 || warnings != 0 || !strings.Contains(string(out.LabelDefinitions[0]), strings.Repeat("é", 100)) {
+					t.Fatal(out.LabelDefinitions, out.Coverage, warnings)
+				}
+			case "bounded taxonomy":
+				if warnings != 1 || len(out.LabelRules) != 1 || len(out.LabelDefinitions) == 0 || !strings.Contains(string(out.LabelDefinitions[0]), `"name":"bug"`) {
+					t.Fatal(out.Coverage, warnings, out.LabelRules, out.LabelDefinitions)
+				}
+			case "exhausted budget":
+				if warnings != 1 || len(out.LabelDefinitions) != 0 || !out.Coverage.LabelRulesOmitted {
+					t.Fatal(out.Coverage, warnings)
 				}
 			}
 		})

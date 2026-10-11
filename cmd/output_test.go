@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"gh-mirror/internal/representation"
 	"gh-mirror/internal/store"
 
 	"github.com/spf13/cobra"
@@ -27,6 +28,57 @@ func TestOutputFormat(t *testing.T) {
 			got, err := resolveOutputFormat(tc.format, tc.terminal)
 			if got != tc.want || (err != nil) != (tc.want == "") {
 				t.Fatal(got, err)
+			}
+		})
+	}
+}
+
+func TestHumanContext(t *testing.T) {
+	for _, name := range []string{"visible evidence", "invalid definition", "absent taxonomy"} {
+		t.Run(name, func(t *testing.T) {
+			v := store.ContextResult{
+				Ticket: store.TicketID{Repo: "o/r", Number: 1}, Kind: "issue", Purpose: "classification",
+				Summary:     &store.TicketSummary{Title: "Connection crash", State: "closed", Labels: []string{"customer:Example"}, Attributes: []representation.Attribute{{Label: "customer:Example", Role: "client", Value: "Example", Aliases: []string{"Example Inc"}, Description: "Affected customer"}}},
+				Description: store.SourceText{Text: "Résumé\n```sh\nrun --flag\n```"}, MissingSections: []string{"expected"},
+				Related:          []store.RelatedTicket{{Reference: representation.Reference{Repo: "o/r", Number: 2, Kind: "parent"}, Summary: &store.TicketSummary{Title: "Customer project", Labels: []string{"client:Example"}}, Description: &store.SourceText{Text: "Parent requirements", Truncated: true}}},
+				LabelRules:       []representation.LabelRule{{Prefix: "customer:", Role: "client", Description: "Customer namespace", Aliases: []string{"Example alias"}}},
+				LabelDefinitions: []json.RawMessage{json.RawMessage(`{"name":"customer:Example","description":"Reported by this customer\u001b"}`), json.RawMessage(`{"name":"type:bug","description":null}`)},
+				Fields:           json.RawMessage(`{"priority":"high"}`), Coverage: store.ContextCoverage{LabelDefinitionsTotal: 4, LabelDefinitionsOmitted: 2, TextCharacters: 300, CharacterBudget: 12000},
+				Warnings: []store.Warning{{Code: "context_label_definition_omitted", Message: "2 label definitions omitted"}},
+			}
+			if name == "invalid definition" {
+				v.LabelDefinitions[0] = json.RawMessage(`broken`)
+			}
+			if name == "absent taxonomy" {
+				v.Coverage.LabelDefinitionsTotal = 0
+				v.LabelDefinitions = nil
+			}
+			text, err := humanOutput(v)
+			if name == "invalid definition" {
+				if err == nil || !strings.Contains(err.Error(), "decode context label definition") {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"client = Example [customer:Example]", "Affected customer", "aliases: Example Inc", "Résumé\n```sh\nrun --flag\n```", "(observations): expected", "parent: o/r#2", "Parent requirements", "[Related description truncated]", "customer:* → client", "Customer namespace", "Example alias", "priority: high", "context text: 300/12000"} {
+				if !strings.Contains(text, want) {
+					t.Fatalf("missing %q in %s", want, text)
+				}
+			}
+			if strings.Contains(text, "\x1b") || strings.Count(text, "Warning: 2 label definitions omitted") != 1 {
+				t.Fatal(text)
+			}
+			if name == "visible evidence" {
+				for _, want := range []string{"Label definitions: 2/4", "* customer:Example — Reported by this customer", "  type:bug"} {
+					if !strings.Contains(text, want) {
+						t.Fatalf("missing %q in %s", want, text)
+					}
+				}
+			} else if strings.Contains(text, "Label definitions:") {
+				t.Fatal("empty taxonomy section", text)
 			}
 		})
 	}

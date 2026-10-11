@@ -430,6 +430,11 @@ summaries. The default source-text budget is 12000 Unicode characters, with up t
 Code fences do not introduce Markdown sections or issue references. Views require
 neither embeddings nor network calls and work with legacy snapshots. Purpose
 controls source selection, not classification or duplicate decisions.
+Classification label definitions contain source names and descriptions, with attached
+labels first and at most a third of the shared text budget. Configured role rules
+take priority over the taxonomy. Report all omitted definitions in one counted
+warning. Human output displays these definitions, rules, label attributes, custom
+fields and related description excerpts; full label records remain in the catalog.
 
 Hybrid ticket evidence aggregates up to 32 non-template literal terms across the
 selected fields, using inverse ticket frequency and bounded field weights. Attached
