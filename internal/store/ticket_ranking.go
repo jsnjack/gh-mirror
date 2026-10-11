@@ -12,7 +12,7 @@ import (
 	"gh-mirror/internal/representation"
 )
 
-const ticketRankingVersion = "1"
+const ticketRankingVersion = "2"
 
 const ticketFusionWeight = 3
 
@@ -39,7 +39,7 @@ func fieldWeight(field string) float64 {
 		return 2
 	case "labels":
 		return 1.5
-	case "body":
+	case "body", "ticket":
 		return 1
 	default:
 		return 0.6
@@ -49,6 +49,36 @@ func fieldWeight(field string) float64 {
 func hasPhrase(query, phrase string) bool {
 	parts := queryTerms(phrase, false)
 	return len(parts) > 0 && strings.Contains(query, " "+strings.Join(parts, " ")+" ")
+}
+
+func coverageDocuments(term string, in []string) (string, []any) {
+	clauses := []string{}
+	args := []any{}
+	if len(in) == 0 {
+		clauses = append(clauses, `SELECT d.repo,d.number,CASE WHEN d.id LIKE 'labels:%' THEN 'labels' WHEN d.id LIKE 'comment:review:%' THEN 'review_comment' WHEN d.id LIKE 'comment:%' THEN 'comment' ELSE 'ticket' END field FROM documents_fts JOIN documents d ON d.rowid=documents_fts.rowid WHERE documents_fts MATCH ?`)
+		args = append(args, term)
+		in = []string{"title"}
+	}
+	for _, scope := range in {
+		expression, condition, field := term, "1=1", scope
+		switch scope {
+		case "title", "body":
+			expression = scope + ":(" + term + ")"
+			condition = "d.id LIKE 'issue:%'"
+		case "labels":
+			expression = "title:(" + term + ")"
+			condition = "d.id LIKE 'labels:%'"
+		case "comments":
+			condition = "d.id LIKE 'comment:%' AND d.id NOT LIKE 'comment:review:%'"
+			field = "comment"
+		case "reviews":
+			condition = "d.id LIKE 'comment:review:%'"
+			field = "review_comment"
+		}
+		clauses = append(clauses, "SELECT d.repo,d.number,'"+field+"' field FROM documents_fts JOIN documents d ON d.rowid=documents_fts.rowid WHERE documents_fts MATCH ? AND "+condition)
+		args = append(args, expression)
+	}
+	return strings.Join(clauses, " UNION ALL "), args
 }
 
 func ticketRanks(ctx context.Context, q querier, o SearchOptions, hits map[TicketID]*semanticHit, where string, args []any) ([]*semanticHit, []string, error) {
@@ -69,12 +99,9 @@ func ticketRanks(ctx context.Context, q querier, o SearchOptions, hits map[Ticke
 		return evidence[id]
 	}
 	in := o.In
-	if len(in) == 0 {
-		in = []string{"title", "body", "labels", "comments", "reviews"}
-	}
 	df := map[string]int{}
 	for _, term := range terms {
-		docs, docArgs := scopedDocuments(quoteTerms([]string{term}, false)[0], in, true, false, "", nil)
+		docs, docArgs := coverageDocuments(quoteTerms([]string{term}, false)[0], in)
 		rows, err := q.QueryContext(ctx, `WITH term_hits AS (`+docs+`) SELECT DISTINCT h.repo,h.number,h.field FROM term_hits h JOIN issues i ON i.repo=h.repo AND i.number=h.number WHERE `+where, append(docArgs, args...)...)
 		if err != nil {
 			return nil, nil, fmt.Errorf("collect ticket term evidence: %w", err)
@@ -100,7 +127,7 @@ func ticketRanks(ctx context.Context, q querier, o SearchOptions, hits map[Ticke
 		df[term] = len(seen)
 	}
 	entities := []string{}
-	if slices.Contains(in, "labels") {
+	if len(in) == 0 || slices.Contains(in, "labels") {
 		rules, err := labelRules(ctx, q)
 		if err != nil {
 			return nil, nil, err
@@ -180,9 +207,6 @@ func ticketRanks(ctx context.Context, q querier, o SearchOptions, hits map[Ticke
 		}
 		if len(item.entities) > 0 {
 			bonus := 1.5
-			if o.seed != nil {
-				bonus = 0.3
-			}
 			entityTerms := []string{}
 			for _, label := range item.entities {
 				_, value, _ := strings.Cut(label, ":")

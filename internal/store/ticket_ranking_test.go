@@ -57,7 +57,7 @@ func TestWholeTicketHybridRanking(t *testing.T) {
 			}
 			if name == "split evidence" || name == "aliases" {
 				m := out.Matches[0]
-				if len(m.Signals.EntityMatches) != 1 || m.Signals.TicketRank != 1 || !slices.Contains(m.Signals.MatchedFields, "body") {
+				if len(m.Signals.EntityMatches) != 1 || m.Signals.TicketRank != 1 || !slices.Contains(m.Signals.MatchedFields, "ticket") {
 					t.Fatal(m.Signals)
 				}
 			}
