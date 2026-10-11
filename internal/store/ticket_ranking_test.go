@@ -9,7 +9,7 @@ import (
 )
 
 func TestWholeTicketHybridRanking(t *testing.T) {
-	for _, name := range []string{"split evidence", "cross-client retained", "field scopes", "aliases", "cursor version"} {
+	for _, name := range []string{"split evidence", "cross-client retained", "field scopes", "aliases", "cursor version", "candidate seed policy"} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			db := testStore(t)
@@ -32,6 +32,21 @@ func TestWholeTicketHybridRanking(t *testing.T) {
 				t.Fatal(err)
 			}
 			db.vectorizer = e
+			if name == "candidate seed policy" {
+				out, err := db.FindCandidates(ctx, CandidateOptions{Repo: "o/r", Number: 2, Engine: "hybrid"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if out.Ranking.Algorithm != "reciprocal_rank_fusion" || len(out.Query.Entities) > 0 {
+					t.Fatal(out.Ranking, out.Query)
+				}
+				for _, m := range out.Matches {
+					if m.Signals != nil || m.Number == 2 {
+						t.Fatal("candidate reranked by query-specific entity coverage", m)
+					}
+				}
+				return
+			}
 			o := SearchOptions{Query: "acme session continuation issue", Limit: 4, Engine: "hybrid"}
 			if name == "field scopes" {
 				o.In = []string{"body"}

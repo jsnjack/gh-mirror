@@ -257,8 +257,9 @@ sections and duplicate references are observations, not model decisions.
 
 Hybrid ranking joins literal evidence across selected ticket fields and soft
 client/partner attributes, exposing matched terms, fields and component ranks.
-Entity boosts require topic coverage and are smaller for duplicate candidates;
-never auto-filter other clients. Semantic-only scores remain maximum passage
+Entity boosts require topic coverage in general search; never auto-filter other
+clients. Duplicate candidates preserve weighted seed-vector and lexical fusion,
+without whole-ticket entity reranking. Semantic-only scores remain maximum passage
 cosines, while hybrid semantic ranks combine best passage and best-per-field
 evidence. Bind cursors to the ranking version and keep lexical BM25 unchanged.
 
@@ -274,3 +275,11 @@ Classification context includes available label definitions and configured rules
 with attached labels first and explicit omission counts under the shared text
 budget. Bound section and relationship lists independently of body length. Markdown
 fences honor delimiter type and length, retaining shorter fence examples as code.
+
+Keep large vector BLOBs in ordinary rowid tables: WITHOUT ROWID index pages
+overflow 1536-byte values at SQLite’s default page size. Migrate early dictionary
+layouts locally without changing vector generations or rerunning inference.
+Whole-ticket coverage reads identities and fields from FTS postings without
+computing snippets or BM25. Default coverage uses a source pass and a title pass,
+keeping exact SQLite token matching. The signal field ticket covers title/body
+evidence; returned passages identify their exact field.

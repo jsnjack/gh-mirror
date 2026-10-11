@@ -973,3 +973,8 @@ Classification context also includes available label catalog entries, prioritizi
 attached labels, and the configured role rules. Catalog entries, section lists and
 relationship lists have bounded counts; coverage reports omissions. Use the paged
 catalog tool to examine additional labels before assigning a new classification.
+
+Hybrid duplicate candidates retain weighted seed-vector and lexical rank fusion.
+They use a different ranking policy from information searches, preserving recall
+without promoting query-specific client matches. Whole-ticket match signals use
+`ticket` for title/body document coverage; passages identify the exact field.

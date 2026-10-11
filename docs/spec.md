@@ -434,8 +434,8 @@ controls source selection, not classification or duplicate decisions.
 Hybrid ticket evidence aggregates up to 32 non-template literal terms across the
 selected fields, using inverse ticket frequency and bounded field weights. Attached
 client/partner label values and aliases boost matching tickets in proportion to
-topic coverage; cross-client candidates remain eligible. Seed candidates use a
-smaller entity boost. Query metadata and match signals explain the component ranks.
+topic coverage; cross-client results remain eligible. Duplicate candidates retain
+weighted seed-vector and lexical fusion without the whole-ticket query reranker. Query metadata and match signals explain the component ranks.
 Best-per-field semantic aggregation prevents repeated comments from multiplying
 weight. Semantic-only scores retain maximum passage cosine semantics. Ranking
 versions bind vector cursors independently of collection/model changes.

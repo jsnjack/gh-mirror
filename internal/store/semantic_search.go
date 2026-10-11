@@ -192,7 +192,7 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 	ranked := make([]*semanticHit, 0, len(hits))
 	for _, h := range hits {
 		semanticScores[h.id] = h.score
-		if o.Engine == "hybrid" {
+		if o.Engine == "hybrid" && o.seed == nil {
 			var sum, weight float64
 			for _, field := range []string{"title", "body", "labels", "comment", "review_comment"} {
 				if value, ok := h.fieldScores[field]; ok {
@@ -219,15 +219,17 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 	}
 	entities := []string{}
 	if o.Engine == "hybrid" {
-		tickets, detected, err := ticketRanks(ctx, q, o, hits, where, args)
-		if err != nil {
-			return out, err
-		}
-		entities = detected
-		for n, h := range tickets {
-			h.signals.TicketRank = n + 1
-			h.signals.SemanticRank = semanticRanks[h.id]
-			h.score += ticketFusionWeight / float64(fusionConstant+n+1)
+		if o.seed == nil {
+			tickets, detected, err := ticketRanks(ctx, q, o, hits, where, args)
+			if err != nil {
+				return out, err
+			}
+			entities = detected
+			for n, h := range tickets {
+				h.signals.TicketRank = n + 1
+				h.signals.SemanticRank = semanticRanks[h.id]
+				h.score += ticketFusionWeight / float64(fusionConstant+n+1)
+			}
 		}
 		lexical, err := lexicalRanks(ctx, q, o, where, args)
 		if err != nil {
@@ -312,7 +314,7 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 			}
 			m.Evidence = append(m.Evidence, ev)
 		}
-		if o.Engine == "hybrid" {
+		if o.Engine == "hybrid" && o.seed == nil {
 			if err := hybridEvidence(ctx, q, o, &m); err != nil {
 				return out, err
 			}
@@ -337,13 +339,16 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 	if o.Engine == "hybrid" {
 		out.Ranking = Ranking{"ticket_reciprocal_rank_fusion", "descending", "1/(60+lexical rank) + 1/(60+semantic rank) + 3/(60+ticket evidence rank). Ticket evidence combines term coverage across fields and soft client/partner matches; semantic ranking combines the best passage with field evidence. Higher is better; scores are not confidence percentages."}
 	}
+	if o.Engine == "hybrid" && o.seed != nil {
+		out.Ranking = Ranking{"reciprocal_rank_fusion", "descending", "1/(60+lexical rank) + 1/(60+semantic rank) from the weighted cached seed vector. Higher is better; scores are not duplicate probabilities."}
+	}
 	out.Query = QueryInfo{Terms: queryTerms(o.Query, true), Match: "any", In: o.In, Engine: o.Engine}
 	out.Query.Entities = entities
 	if out.Query.In == nil {
 		out.Query.In = []string{"title", "body", "labels", "comments", "reviews"}
 	}
 	out.Warnings = queryWarnings(out.Status, o.filters(), o.PageOptions, o.In)
-	if o.Engine == "hybrid" && len(queryTerms(o.Query, true)) > 32 {
+	if o.Engine == "hybrid" && o.seed == nil && len(queryTerms(o.Query, true)) > 32 {
 		out.Warnings = append(out.Warnings, Warning{Code: "ticket_signals_limited", Resource: "search", Message: "Whole-ticket signals use at most 32 non-template terms; lexical and semantic rankings still use the query."})
 	}
 	return out, nil
