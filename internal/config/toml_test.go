@@ -23,6 +23,9 @@ func TestTOMLConfiguration(t *testing.T) {
 		{"invalid boolean", "[repos.\"o/r\"]\nissues = 'true'", true},
 		{"mixed repositories", "repositories = ['o/r']\n[repos.\"o/r\"]", true},
 		{"duplicate key", "workers = 8\nworkers = 4", true},
+		{"PR policy", "[pr_comments]\nexclude_known_ai = true\nexclude_ai_threads = true\nexclude_authors = ['custom-reviewer']\n[repos.\"o/r\"]\npreset = 'pull_requests'\n[repos.\"o/r\".pr_comments]\nexclude_known_ai = false\nexclude_authors = []", false},
+		{"unknown PR policy", "[pr_comments]\nexclude_robots = true", true},
+		{"wildcard authors", "[pr_comments]\nexclude_authors = ['*bot*']", true},
 		{"invalid repository", "[repos.\"../r\"]\npreset = 'all'", true},
 		{"empty collection", "[repos.\"o/r\"]\nissues = false\npull_requests = false", true},
 	} {
@@ -61,6 +64,11 @@ func TestTOMLConfiguration(t *testing.T) {
 				if c.Embedding.Backend != "cpu" || len(c.LabelRules["o/r"][0].Aliases) != 2 {
 					t.Fatal(c)
 				}
+			case "PR policy":
+				policy := c.CommentPolicies()["o/r"]
+				if !c.PRComments.ExcludeKnownAI || policy.ExcludeKnownAI || !policy.ExcludeAIThreads || len(policy.ExcludeAuthors) != 0 {
+					t.Fatal(c.CommentPolicies())
+				}
 			}
 			for _, effective := range []bool{false, true} {
 				raw, err := c.TOML(effective)
@@ -76,6 +84,14 @@ func TestTOMLConfiguration(t *testing.T) {
 				}
 				if !reflect.DeepEqual(c.Scopes(), loaded.Scopes()) || !reflect.DeepEqual(c.LabelRules, loaded.LabelRules) || !reflect.DeepEqual(c.Embedding, loaded.Embedding) || c.Workers != loaded.Workers {
 					t.Fatal("TOML changed settings", string(raw))
+				}
+				beforePolicies, err := object(c.CommentPolicies())
+				if err != nil {
+					t.Fatal(err)
+				}
+				afterPolicies, err := object(loaded.CommentPolicies())
+				if err != nil || !reflect.DeepEqual(beforePolicies, afterPolicies) {
+					t.Fatal("TOML changed comment policy", string(raw), err)
 				}
 			}
 		})

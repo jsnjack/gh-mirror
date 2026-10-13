@@ -292,3 +292,20 @@ Whole-ticket coverage reads identities and fields from FTS postings without
 computing snippets or BM25. Default coverage uses a source pass and a title pass,
 keeping exact SQLite token matching. The signal field ticket covers title/body
 evidence; returned passages identify their exact field.
+
+`internal/commentpolicy` owns a bundled versioned registry of known AI review
+accounts and deterministic PR comment selection. Require Bot metadata for known
+aliases; numeric actor IDs are GitHub.com scoped. Explicit includes take precedence.
+Resolve same-ticket inline reply roots, reject cycles, and exclude an excluded root's
+thread when configured; discussion comments remain individual. Preserve raw comments.
+Global pr_comments and nested repository overrides resolve separately from fetch
+scope and do not fingerprint GitHub resume work. Apply policies atomically during
+collection and offline index by reconciling comment search documents. Cascading
+vector deletions remove excluded passages; restore raw sources locally on opt-out.
+Persist resolved policies/registry identity in snapshot metadata; readers never
+change policy. Bounded comment/context reads follow document eligibility, with
+include_excluded overrides and counted warnings. Legacy all-comment reads retain
+raw history. Bind lexical/comment cursors to the local policy generation while
+collection Generation remains unchanged. bots shows detected actors and actual
+exclusion counts. Effective TOML explicitly renders false policy overrides and
+empty author lists so copying it preserves inheritance semantics.

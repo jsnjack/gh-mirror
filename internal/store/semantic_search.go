@@ -348,6 +348,11 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 		out.Query.In = []string{"title", "body", "labels", "comments", "reviews"}
 	}
 	out.Warnings = queryWarnings(out.Status, o.filters(), o.PageOptions, o.In)
+	filtered, err := searchCommentWarning(ctx, q, out.Status, o.filters(), o.In)
+	if err != nil {
+		return out, err
+	}
+	out.Warnings = append(out.Warnings, filtered...)
 	if o.Engine == "hybrid" && o.seed == nil && len(queryTerms(o.Query, true)) > 32 {
 		out.Warnings = append(out.Warnings, Warning{Code: "ticket_signals_limited", Resource: "search", Message: "Whole-ticket signals use at most 32 non-template terms; lexical and semantic rankings still use the query."})
 	}

@@ -26,6 +26,7 @@ func addReads() {
 		return output(c, out)
 	}}
 	command.Flags().StringVar(&comments.Repo, "repo", "", "Repository owner/name")
+	command.Flags().BoolVar(&comments.IncludeExcluded, "include-excluded", false, "Include comments excluded by the saved PR retrieval policy")
 	command.Flags().IntVar(&comments.Number, "number", 0, "Ticket number")
 	command.Flags().StringVar(&comments.Kind, "kind", "all", "Select all, discussion or review comments")
 	command.Flags().StringVar(&comments.View, "view", "summary", "Return summary previews or full raw records")
@@ -77,6 +78,7 @@ func addContext() {
 		return output(c, out)
 	}}
 	command.Flags().StringVar(&options.Repo, "repo", "", "Repository owner/name")
+	command.Flags().BoolVar(&options.IncludeExcluded, "include-excluded", false, "Include comments excluded by the saved PR retrieval policy")
 	command.Flags().IntVar(&options.Number, "number", 0, "Ticket number")
 	command.Flags().StringVar(&options.Purpose, "purpose", "evaluate", "Select evaluate, classification, duplicates or proofread")
 	command.Flags().StringVar(&options.Query, "query", "", "Select matching discussion alongside recent comments")

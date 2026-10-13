@@ -60,6 +60,31 @@ func output(command *cobra.Command, value any) error {
 func humanOutput(value any) (string, error) {
 	lines := []string{}
 	switch v := value.(type) {
+	case []store.CommentActor:
+		lines = append(lines, "PR comment actors | excluded counts reflect the saved mirror policy")
+		for _, a := range v {
+			provider := a.Provider
+			if provider == "" {
+				provider = "unclassified automation"
+			}
+			lines = append(lines, fmt.Sprintf("%s | %s | %s | account %s | %d comments | %d excluded", cleanLine(a.Repo), cleanLine(a.Login), cleanLine(provider), cleanLine(a.AccountID), a.Comments, a.Excluded))
+		}
+	case store.CommentResult:
+		lines = append(lines, fmt.Sprintf("%d comments | %d excluded by policy", len(v.Comments), v.ExcludedByPolicy))
+		for _, c := range v.Comments {
+			lines = append(lines, "", fmt.Sprintf("%s comment %s | %s | %s", cleanLine(c.Kind), cleanLine(c.ID), cleanLine(c.Author), cleanLine(c.CreatedAt)), cleanLine(c.URL), cleanText(c.Body))
+			if c.Truncated {
+				lines = append(lines, "[Comment truncated]")
+			}
+			if len(c.Payload) > 0 {
+				full, err := humanFields(map[string]any{"comment": c.Payload})
+				if err != nil {
+					return "", err
+				}
+				lines = append(lines, full)
+			}
+		}
+		lines = append(lines, resultFooter(nil, v.HasMore, v.NextCursor, v.Warnings, nil)...)
 	case store.ContextResult:
 		return humanContext(v)
 	case store.SearchResult:
@@ -126,6 +151,9 @@ func humanOutput(value any) (string, error) {
 		lines = append(lines, fmt.Sprintf("Mirror: %d tickets | %d comments | %d repositories", v.Issues, v.Comments, len(v.Repositories)), "Repositories: "+cleanLine(strings.Join(v.Repositories, ", ")), "Collected: "+cleanLine(v.CollectedAt), "Enriched: "+cleanLine(v.EnrichedAt), fmt.Sprintf("Schema: %d | Collection: %d", v.SchemaVersion, v.CollectionVersion))
 		if v.Semantic != nil {
 			lines = append(lines, semanticLines(*v.Semantic)...)
+		}
+		if v.CommentFiltering != nil {
+			lines = append(lines, fmt.Sprintf("PR comment policy: registry %s | %d comments excluded from retrieval", cleanLine(v.CommentFiltering.RegistryVersion), v.CommentFiltering.Excluded))
 		}
 		for _, c := range v.Coverage {
 			lines = append(lines, fmt.Sprintf("%s | fields: %s | projects: %s | reconciled: %s", cleanLine(c.Repo), cleanLine(c.Fields), cleanLine(c.Projects), cleanLine(c.ReconciledAt)))

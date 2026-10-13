@@ -15,13 +15,14 @@ import (
 
 // ContextOptions selects a bounded, source-preserving ticket investigation view.
 type ContextOptions struct {
-	Repo          string `json:"repo"`
-	Number        int    `json:"number"`
-	Purpose       string `json:"purpose,omitempty"`
-	Query         string `json:"query,omitempty"`
-	CommentLimit  int    `json:"comment_limit,omitempty"`
-	RelatedLimit  int    `json:"related_limit,omitempty"`
-	MaxCharacters int    `json:"max_characters,omitempty"`
+	IncludeExcluded bool   `json:"include_excluded,omitempty"`
+	Repo            string `json:"repo"`
+	Number          int    `json:"number"`
+	Purpose         string `json:"purpose,omitempty"`
+	Query           string `json:"query,omitempty"`
+	CommentLimit    int    `json:"comment_limit,omitempty"`
+	RelatedLimit    int    `json:"related_limit,omitempty"`
+	MaxCharacters   int    `json:"max_characters,omitempty"`
 }
 
 // SourceText is an exact original prefix with byte offsets and explicit omissions.
@@ -44,20 +45,21 @@ type RelatedTicket struct {
 
 // ContextCoverage explains bounded selection and which source families were examined.
 type ContextCoverage struct {
-	SectionsOmitted         int    `json:"sections_omitted"`
-	LabelDefinitionsTotal   int    `json:"label_definitions_total"`
-	LabelDefinitionsOmitted int    `json:"label_definitions_omitted"`
-	LabelRulesOmitted       bool   `json:"label_rules_omitted"`
-	CommentsTotal           int    `json:"comments_total"`
-	CommentsIncluded        int    `json:"comments_included"`
-	CommentsOmitted         int    `json:"comments_omitted"`
-	RelatedTotal            int    `json:"related_total"`
-	RelatedOmitted          int    `json:"related_omitted"`
-	ReferencesOmitted       int    `json:"references_omitted"`
-	ReferenceSources        string `json:"reference_sources"`
-	Selection               string `json:"selection"`
-	TextCharacters          int    `json:"text_characters"`
-	CharacterBudget         int    `json:"character_budget"`
+	CommentsExcludedByPolicy int    `json:"comments_excluded_by_policy"`
+	SectionsOmitted          int    `json:"sections_omitted"`
+	LabelDefinitionsTotal    int    `json:"label_definitions_total"`
+	LabelDefinitionsOmitted  int    `json:"label_definitions_omitted"`
+	LabelRulesOmitted        bool   `json:"label_rules_omitted"`
+	CommentsTotal            int    `json:"comments_total"`
+	CommentsIncluded         int    `json:"comments_included"`
+	CommentsOmitted          int    `json:"comments_omitted"`
+	RelatedTotal             int    `json:"related_total"`
+	RelatedOmitted           int    `json:"related_omitted"`
+	ReferencesOmitted        int    `json:"references_omitted"`
+	ReferenceSources         string `json:"reference_sources"`
+	Selection                string `json:"selection"`
+	TextCharacters           int    `json:"text_characters"`
+	CharacterBudget          int    `json:"character_budget"`
 }
 
 // ContextResult combines classification attributes, original prose and discussion evidence.
@@ -165,6 +167,13 @@ func ticketContext(ctx context.Context, q querier, o ContextOptions) (ContextRes
 	out.Relationships = append(out.Relationships, representation.References(o.Repo, payload.Body, t.Summary.URL)...)
 	if err := q.QueryRowContext(ctx, "SELECT count(*) FROM comments WHERE repo=? AND number=?", o.Repo, o.Number).Scan(&out.Coverage.CommentsTotal); err != nil {
 		return out, fmt.Errorf("count context comments: %w", err)
+	}
+	out.Coverage.CommentsExcludedByPolicy, err = excludedCommentCount(ctx, q, o.Repo, o.Number)
+	if err != nil {
+		return out, err
+	}
+	if !o.IncludeExcluded && out.Coverage.CommentsExcludedByPolicy > 0 {
+		out.Warnings = append(out.Warnings, commentFilterWarning(o.Repo, out.Coverage.CommentsExcludedByPolicy))
 	}
 	comments, err := contextComments(ctx, q, o)
 	if err != nil {
@@ -328,7 +337,20 @@ func contextComments(ctx context.Context, q querier, o ContextOptions) ([]Commen
 	}
 	ids := []string{}
 	if len(terms) > 0 {
-		rows, err := q.QueryContext(ctx, `SELECT d.id FROM documents_fts JOIN documents d ON d.rowid=documents_fts.rowid WHERE documents_fts MATCH ? AND d.repo=? AND d.number=? AND d.id LIKE 'comment:%' ORDER BY bm25(documents_fts,5,1),d.id LIMIT ?`, strings.Join(quoteTerms(terms, false), " OR "), o.Repo, o.Number, max(1, o.CommentLimit/2))
+		var rows *sql.Rows
+		var err error
+		if o.IncludeExcluded {
+			conditions := make([]string, len(terms))
+			args := []any{o.Repo, o.Number}
+			for i, term := range terms {
+				conditions[i] = "instr(lower(body),lower(?))>0"
+				args = append(args, term)
+			}
+			args = append(args, max(1, o.CommentLimit/2))
+			rows, err = q.QueryContext(ctx, `SELECT 'comment:'||id FROM comments WHERE repo=? AND number=? AND (`+strings.Join(conditions, " OR ")+`) ORDER BY COALESCE(json_extract(payload,'$.created_at'),'') DESC,id DESC LIMIT ?`, args...)
+		} else {
+			rows, err = q.QueryContext(ctx, `SELECT d.id FROM documents_fts JOIN documents d ON d.rowid=documents_fts.rowid WHERE documents_fts MATCH ? AND d.repo=? AND d.number=? AND d.id LIKE 'comment:%' ORDER BY bm25(documents_fts,5,1),d.id LIMIT ?`, strings.Join(quoteTerms(terms, false), " OR "), o.Repo, o.Number, max(1, o.CommentLimit/2))
+		}
 		if err != nil {
 			return nil, fmt.Errorf("select relevant context comments: %w", err)
 		}
@@ -343,7 +365,11 @@ func contextComments(ctx context.Context, q querier, o ContextOptions) ([]Commen
 			return nil, err
 		}
 	}
-	rows, err := q.QueryContext(ctx, `SELECT id FROM comments WHERE repo=? AND number=? ORDER BY COALESCE(json_extract(payload,'$.created_at'),'') DESC,id DESC LIMIT ?`, o.Repo, o.Number, o.CommentLimit)
+	where := "repo=? AND number=?"
+	if !o.IncludeExcluded {
+		where += " AND " + visibleComment("comments")
+	}
+	rows, err := q.QueryContext(ctx, `SELECT id FROM comments WHERE `+where+` ORDER BY COALESCE(json_extract(payload,'$.created_at'),'') DESC,id DESC LIMIT ?`, o.Repo, o.Number, o.CommentLimit)
 	if err != nil {
 		return nil, fmt.Errorf("select recent context comments: %w", err)
 	}

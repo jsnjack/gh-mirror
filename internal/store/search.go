@@ -316,7 +316,7 @@ func lexicalSearch(ctx context.Context, q querier, o SearchOptions) (SearchResul
 	if err != nil {
 		return out, err
 	}
-	cursor, err := decodeCursor(o.Cursor, "search", sig, out.Status.Generation)
+	cursor, err := decodeCursor(o.Cursor, "search", sig, retrievalGeneration(out.Status))
 	if err != nil {
 		return out, err
 	}
@@ -360,7 +360,7 @@ func lexicalSearch(ctx context.Context, q querier, o SearchOptions) (SearchResul
 		if o.Sort == "created" {
 			key = last.createdAt
 		}
-		out.NextCursor, err = encodeCursor(pageCursor{Generation: out.Status.Generation, Signature: sig, Kind: "search", Repo: last.Repo, Number: last.Number, Key: key, Score: last.Score})
+		out.NextCursor, err = encodeCursor(pageCursor{Generation: retrievalGeneration(out.Status), Signature: sig, Kind: "search", Repo: last.Repo, Number: last.Number, Key: key, Score: last.Score})
 		if err != nil {
 			return out, err
 		}
@@ -422,6 +422,11 @@ func lexicalSearch(ctx context.Context, q querier, o SearchOptions) (SearchResul
 		out.Query.In = []string{"title", "body", "labels", "comments", "reviews"}
 	}
 	out.Warnings = queryWarnings(out.Status, o.filters(), o.PageOptions, o.In)
+	filtered, err := searchCommentWarning(ctx, q, out.Status, o.filters(), o.In)
+	if err != nil {
+		return out, err
+	}
+	out.Warnings = append(out.Warnings, filtered...)
 	return out, nil
 }
 

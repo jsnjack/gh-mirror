@@ -397,6 +397,10 @@ func syncVersion(ctx context.Context, db *store.Store, c config.Config, options 
 				}
 			}
 		}
+		client.Report(progress.Event{Phase: "Applying PR comment policy"})
+		if err := w.ApplyCommentPolicies(ctx, c.CommentPolicies()); err != nil {
+			return fmt.Errorf("apply PR comment policy: %w", err)
+		}
 		client.Report(progress.Event{Phase: "Committing mirror"})
 		if refresh {
 			if err := w.SetMetadata(ctx, "enriched_at", started.Format(time.RFC3339Nano)); err != nil {

@@ -109,6 +109,7 @@ func init() {
 		return nil
 	}
 	addConfig()
+	addBots()
 	addCollection()
 	addIndex()
 	addQueries()
@@ -196,7 +197,7 @@ func addCollection() {
 		if index {
 			setEmbeddingProgress(report)
 			defer setEmbeddingProgress(nil)
-			if _, err := db.Index(command.Context(), commandEncoder(), store.IndexOptions{Workers: cpuWorkers, Progress: report, LabelRules: settings.LabelRules}); err != nil {
+			if _, err := db.Index(command.Context(), commandEncoder(), store.IndexOptions{Workers: cpuWorkers, Progress: report, LabelRules: settings.LabelRules, CommentPolicies: settings.CommentPolicies()}); err != nil {
 				return fmt.Errorf("index collected mirror: %w", err)
 			}
 			result.Status, err = db.Status(command.Context())
@@ -299,6 +300,7 @@ func addQueries() {
 			command.Flags().StringVar(&candidates.View, "view", "summary", "Return summary or full raw records")
 		}
 		if kind == "get" {
+			command.Flags().BoolVar(&read.IncludeExcluded, "include-excluded", false, "Include policy-excluded comments in page mode (legacy all retains every source)")
 			command.Flags().StringVar(&read.View, "view", "full", "Return summary or full raw ticket")
 			command.Flags().StringVar(&read.Comments, "comments", "", "Include none, page or legacy all comments")
 			command.Flags().StringVar(&read.Cursor, "cursor", "", "Continue a comment page")

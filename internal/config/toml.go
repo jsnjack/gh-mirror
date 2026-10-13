@@ -62,10 +62,15 @@ func decodeTOML(r io.Reader, defaults Config) ([]byte, error) {
 		}
 		names := make([]string, 0, len(repos))
 		options := map[string]any{}
+		policies := map[string]any{}
 		for name, raw := range repos {
 			entry, ok := raw.(map[string]any)
 			if !ok {
 				return nil, fmt.Errorf("repository %s must be a table", name)
+			}
+			if policy, ok := entry["pr_comments"]; ok {
+				policies[name] = policy
+				delete(entry, "pr_comments")
 			}
 			base := defaults.DefaultScope()
 			if raw, ok := entry["preset"]; ok {
@@ -92,6 +97,12 @@ func decodeTOML(r io.Reader, defaults Config) ([]byte, error) {
 		}
 		sort.Strings(names)
 		data["repositories"], data["repository_options"] = names, options
+		if len(policies) > 0 {
+			if _, exists := data["pr_comment_overrides"]; exists {
+				return nil, fmt.Errorf("repository pr_comments tables cannot be combined with pr_comment_overrides")
+			}
+			data["pr_comment_overrides"] = policies
+		}
 		delete(data, "repos")
 	}
 	raw, err := json.Marshal(data)
@@ -152,9 +163,20 @@ func (c Config) TOML(effective bool) ([]byte, error) {
 			fields = best
 		}
 		repos[name] = fields
+		if effective {
+			p := c.CommentPolicies()[name]
+			authors, included := append([]string{}, p.ExcludeAuthors...), append([]string{}, p.IncludeAuthors...)
+			fields["pr_comments"] = map[string]any{"exclude_known_ai": p.ExcludeKnownAI, "exclude_ai_threads": p.ExcludeAIThreads, "exclude_all_bots": p.ExcludeAllBots, "exclude_authors": authors, "include_authors": included}
+		} else if override, ok := c.PRCommentOverrides[name]; ok {
+			fields["pr_comments"], err = object(override)
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 	delete(data, "repositories")
 	delete(data, "repository_options")
+	delete(data, "pr_comment_overrides")
 	if len(repos) > 0 {
 		data["repos"] = repos
 	}

@@ -45,7 +45,7 @@ func addIndex() {
 		defer closeStore(command.Context(), db)
 		setEmbeddingProgress(report)
 		defer setEmbeddingProgress(nil)
-		result, err := db.Index(command.Context(), commandEncoder(), store.IndexOptions{Workers: cpuWorkers, Progress: report, LabelRules: settings.LabelRules})
+		result, err := db.Index(command.Context(), commandEncoder(), store.IndexOptions{Workers: cpuWorkers, Progress: report, LabelRules: settings.LabelRules, CommentPolicies: settings.CommentPolicies()})
 		if err != nil {
 			return fmt.Errorf("index local mirror: %w", err)
 		}

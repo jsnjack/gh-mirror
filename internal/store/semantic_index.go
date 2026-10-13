@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"gh-mirror/internal/commentpolicy"
 	"gh-mirror/internal/embedding"
 	"gh-mirror/internal/progress"
 	"gh-mirror/internal/representation"
@@ -102,9 +103,10 @@ func semanticStatus(ctx context.Context, q querier) (*SemanticStatus, error) {
 
 // IndexOptions bounds CPU concurrency and reports local indexing progress.
 type IndexOptions struct {
-	LabelRules map[string][]representation.LabelRule
-	Workers    int
-	Progress   progress.Reporter
+	CommentPolicies map[string]commentpolicy.Policy
+	LabelRules      map[string][]representation.LabelRule
+	Workers         int
+	Progress        progress.Reporter
 }
 
 type indexDocument struct{ id, title, body string }
@@ -167,7 +169,11 @@ func (s *Store) Index(ctx context.Context, e Vectorizer, o IndexOptions) (Semant
 	}
 	cachedEncoder := &cachingVectorizer{Vectorizer: e, store: s, inflight: map[string]*cachedCall{}}
 	e = cachedEncoder
+	o.Progress.Send(progress.Event{Phase: "Applying PR comment policy", Workers: o.Workers, WorkerKind: progress.CPUWorkers})
 	err := s.Update(ctx, func(w *Writer) error {
+		if err := w.ApplyCommentPolicies(ctx, o.CommentPolicies); err != nil {
+			return err
+		}
 		if o.LabelRules != nil {
 			raw, err := json.Marshal(o.LabelRules)
 			if err != nil {

@@ -13,24 +13,26 @@ import (
 
 // ReadOptions controls a ticket projection and whether comments are included.
 type ReadOptions struct {
-	Repo        string `json:"repo"`
-	Number      int    `json:"number"`
-	View        string `json:"view,omitempty"`
-	Comments    string `json:"comments,omitempty"`
-	Limit       int    `json:"limit,omitempty"`
-	Cursor      string `json:"cursor,omitempty"`
-	CommentKind string `json:"comment_kind,omitempty"`
+	IncludeExcluded bool   `json:"include_excluded,omitempty"`
+	Repo            string `json:"repo"`
+	Number          int    `json:"number"`
+	View            string `json:"view,omitempty"`
+	Comments        string `json:"comments,omitempty"`
+	Limit           int    `json:"limit,omitempty"`
+	Cursor          string `json:"cursor,omitempty"`
+	CommentKind     string `json:"comment_kind,omitempty"`
 }
 
 // CommentOptions selects one ticket's discussion or inline review comments.
 type CommentOptions struct {
-	Repo   string `json:"repo"`
-	Number int    `json:"number"`
-	Kind   string `json:"kind,omitempty"`
-	View   string `json:"view,omitempty"`
-	Order  string `json:"order,omitempty"`
-	Limit  int    `json:"limit,omitempty"`
-	Cursor string `json:"cursor,omitempty"`
+	IncludeExcluded bool   `json:"include_excluded,omitempty"`
+	Repo            string `json:"repo"`
+	Number          int    `json:"number"`
+	Kind            string `json:"kind,omitempty"`
+	View            string `json:"view,omitempty"`
+	Order           string `json:"order,omitempty"`
+	Limit           int    `json:"limit,omitempty"`
+	Cursor          string `json:"cursor,omitempty"`
 }
 
 // Comment contains source metadata, a bounded preview and optional upstream JSON.
@@ -50,11 +52,12 @@ type Comment struct {
 
 // CommentResult provides a generation-bound page and resource coverage warnings.
 type CommentResult struct {
-	Comments   []Comment `json:"comments"`
-	NextCursor string    `json:"next_cursor"`
-	HasMore    bool      `json:"has_more"`
-	Warnings   []Warning `json:"warnings"`
-	Status     Status    `json:"status"`
+	ExcludedByPolicy int       `json:"excluded_by_policy"`
+	Comments         []Comment `json:"comments"`
+	NextCursor       string    `json:"next_cursor"`
+	HasMore          bool      `json:"has_more"`
+	Warnings         []Warning `json:"warnings"`
+	Status           Status    `json:"status"`
 }
 
 // TicketID identifies a ticket in a batch read.
@@ -158,7 +161,7 @@ func (s *Store) Read(ctx context.Context, o ReadOptions) (Issue, error) {
 			return err
 		}
 		if o.Comments == "page" {
-			page, err := comments(ctx, tx, CommentOptions{Repo: o.Repo, Number: o.Number, Kind: o.CommentKind, Limit: o.Limit, Cursor: o.Cursor, View: o.View})
+			page, err := comments(ctx, tx, CommentOptions{Repo: o.Repo, Number: o.Number, Kind: o.CommentKind, Limit: o.Limit, Cursor: o.Cursor, View: o.View, IncludeExcluded: o.IncludeExcluded})
 			if err != nil {
 				return err
 			}
@@ -213,7 +216,7 @@ func comments(ctx context.Context, q querier, o CommentOptions) (CommentResult, 
 	if err != nil {
 		return out, err
 	}
-	cursor, err := decodeCursor(o.Cursor, "comments", sig, out.Status.Generation)
+	cursor, err := decodeCursor(o.Cursor, "comments", sig, retrievalGeneration(out.Status))
 	if err != nil {
 		return out, err
 	}
@@ -221,6 +224,9 @@ func comments(ctx context.Context, q querier, o CommentOptions) (CommentResult, 
 		return out, invalid("cursor has no comment identity")
 	}
 	where := "repo=? AND number=?"
+	if !o.IncludeExcluded {
+		where += " AND " + visibleComment("comments")
+	}
 	args := []any{o.Repo, o.Number}
 	if o.Kind == "discussion" {
 		where += " AND id NOT LIKE 'review:%'"
@@ -291,7 +297,7 @@ func comments(ctx context.Context, q querier, o CommentOptions) (CommentResult, 
 	if out.HasMore {
 		out.Comments = out.Comments[:limit]
 		last := out.Comments[limit-1]
-		out.NextCursor, err = encodeCursor(pageCursor{Generation: out.Status.Generation, Signature: sig, Kind: "comments", ID: ids[limit-1], Key: last.CreatedAt})
+		out.NextCursor, err = encodeCursor(pageCursor{Generation: retrievalGeneration(out.Status), Signature: sig, Kind: "comments", ID: ids[limit-1], Key: last.CreatedAt})
 		if err != nil {
 			return out, err
 		}
@@ -304,6 +310,13 @@ func comments(ctx context.Context, q querier, o CommentOptions) (CommentResult, 
 		in = []string{"reviews"}
 	}
 	out.Warnings = queryWarnings(out.Status, filters{Repo: o.Repo}, PageOptions{}, in)
+	out.ExcludedByPolicy, err = excludedCommentCount(ctx, q, o.Repo, o.Number)
+	if err != nil {
+		return out, err
+	}
+	if !o.IncludeExcluded && out.ExcludedByPolicy > 0 {
+		out.Warnings = append(out.Warnings, commentFilterWarning(o.Repo, out.ExcludedByPolicy))
+	}
 	return out, nil
 }
 

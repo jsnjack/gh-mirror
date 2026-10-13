@@ -103,7 +103,7 @@ func humanContext(v store.ContextResult) (string, error) {
 		}
 		lines = append(lines, "", text)
 	}
-	lines = append(lines, "", fmt.Sprintf("Comments: %d/%d | related omitted: %d | context text: %d/%d characters", v.Coverage.CommentsIncluded, v.Coverage.CommentsTotal, v.Coverage.RelatedOmitted, v.Coverage.TextCharacters, v.Coverage.CharacterBudget))
+	lines = append(lines, "", fmt.Sprintf("Comments: %d/%d | excluded by policy: %d | related omitted: %d | context text: %d/%d characters", v.Coverage.CommentsIncluded, v.Coverage.CommentsTotal, v.Coverage.CommentsExcludedByPolicy, v.Coverage.RelatedOmitted, v.Coverage.TextCharacters, v.Coverage.CharacterBudget))
 	for _, warning := range v.Warnings {
 		lines = append(lines, "Warning: "+cleanLine(warning.Message))
 	}

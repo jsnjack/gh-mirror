@@ -89,7 +89,12 @@ func (s *Service) Handler() http.Handler {
 			respond(w, nil, err)
 			return
 		}
-		out, err := s.Store.Read(r.Context(), store.ReadOptions{Repo: repo, Number: number, View: q.Get("view"), Comments: q.Get("comments"), CommentKind: q.Get("comment_kind"), Limit: limit, Cursor: q.Get("cursor")})
+		includeExcluded, err := boolParam(q, "include_excluded")
+		if err != nil {
+			respond(w, nil, err)
+			return
+		}
+		out, err := s.Store.Read(r.Context(), store.ReadOptions{Repo: repo, Number: number, View: q.Get("view"), Comments: q.Get("comments"), CommentKind: q.Get("comment_kind"), Limit: limit, Cursor: q.Get("cursor"), IncludeExcluded: includeExcluded})
 		respond(w, out, err)
 	})
 	mux.HandleFunc("GET /v1/catalog", func(w http.ResponseWriter, r *http.Request) {

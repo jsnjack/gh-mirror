@@ -19,6 +19,9 @@ func TestQueryAPI(t *testing.T) {
 	}{
 		{"context", "GET", "/v1/issues/o/r/1/context?purpose=proofread&max_characters=1000", "", 200},
 		{"invalid context", "GET", "/v1/issues/o/r/1/context?comment_limit=100", "", 400},
+		{"invalid context exclusion override", "GET", "/v1/issues/o/r/1/context?include_excluded=invalid", "", 400},
+		{"invalid comment exclusion override", "GET", "/v1/issues/o/r/1/comments?include_excluded=invalid", "", 400},
+		{"invalid get exclusion override", "GET", "/v1/issues/o/r/1?include_excluded=invalid", "", 400},
 		{"all words", "GET", "/v1/search?q=client+socket&match=all&count=true&facets=true&limit=1", "", 200},
 		{"multiple repositories", "GET", "/v1/issues?repo=o/r&repo=o/s&view=summary", "", 200},
 		{"bad boolean", "GET", "/v1/search?q=socket&count=invalid", "", 400},

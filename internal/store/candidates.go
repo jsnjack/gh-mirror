@@ -106,7 +106,7 @@ func (s *Store) FindCandidates(ctx context.Context, o CandidateOptions) (SearchR
 		comments := []string{}
 		commentIDs := []string{}
 		if o.IncludeComments {
-			rows, err := tx.QueryContext(ctx, "SELECT id,body FROM comments WHERE repo=? AND number=? ORDER BY COALESCE(json_extract(payload,'$.created_at'),'') DESC,id DESC LIMIT ?", o.Repo, o.Number, o.CommentLimit)
+			rows, err := tx.QueryContext(ctx, "SELECT id,body FROM comments WHERE repo=? AND number=? AND "+visibleComment("comments")+" ORDER BY COALESCE(json_extract(payload,'$.created_at'),'') DESC,id DESC LIMIT ?", o.Repo, o.Number, o.CommentLimit)
 			if err != nil {
 				return fmt.Errorf("read candidate seed comments: %w", err)
 			}

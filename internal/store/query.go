@@ -21,6 +21,7 @@ type Coverage struct {
 
 // Status identifies the committed generation and collection scope.
 type Status struct {
+	CommentFiltering  *CommentFiltering          `json:"comment_filtering,omitempty"`
 	RepositoryOptions map[string]json.RawMessage `json:"repository_options"`
 	Upstream          string                     `json:"upstream"`
 	EnrichedAt        string                     `json:"enriched_at"`
@@ -103,6 +104,19 @@ func status(ctx context.Context, q querier) (Status, error) {
 	}
 	if err := q.QueryRowContext(ctx, "SELECT count(*) FROM comments").Scan(&s.Comments); err != nil {
 		return s, fmt.Errorf("count comments: %w", err)
+	}
+	saved, err := commentPolicies(ctx, q)
+	if err != nil {
+		return s, err
+	}
+	if saved.RegistryVersion != "" {
+		s.CommentFiltering = &CommentFiltering{RegistryVersion: saved.RegistryVersion, Policies: saved.Repositories}
+		if err := q.QueryRowContext(ctx, "SELECT value FROM metadata WHERE key='comment_policy_generation'").Scan(&s.CommentFiltering.Generation); err != nil {
+			return s, fmt.Errorf("read comment policy generation: %w", err)
+		}
+		if err := q.QueryRowContext(ctx, "SELECT count(*) FROM comments c JOIN issues i ON i.repo=c.repo AND i.number=c.number WHERE i.kind='pull_request' AND NOT "+visibleComment("c")).Scan(&s.CommentFiltering.Excluded); err != nil {
+			return s, fmt.Errorf("count excluded PR comments: %w", err)
+		}
 	}
 	if s.SchemaVersion >= 2 {
 		s.Semantic, err = semanticStatus(ctx, q)

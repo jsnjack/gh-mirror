@@ -9,9 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
+	"gh-mirror/internal/commentpolicy"
 	"gh-mirror/internal/embedding"
 	"gh-mirror/internal/representation"
 )
@@ -26,6 +28,8 @@ const MaxWorkers = 16
 
 // Config defines collection scope, paths, and environment variable names.
 type Config struct {
+	PRComments         commentpolicy.Policy                  `json:"pr_comments,omitempty"`
+	PRCommentOverrides map[string]commentpolicy.Override     `json:"pr_comment_overrides,omitempty"`
 	LabelRules         map[string][]representation.LabelRule `json:"label_rules,omitempty"`
 	Repositories       []string                              `json:"repositories"`
 	RepositoryOptions  map[string]Scope                      `json:"repository_options,omitempty"`
@@ -137,6 +141,17 @@ func Load(path string, explicit bool) (Config, error) {
 
 // Validate checks settings before any database or network operation.
 func (c Config) Validate() error {
+	if err := c.PRComments.Validate(); err != nil {
+		return fmt.Errorf("PR comment policy: %w", err)
+	}
+	for repo, override := range c.PRCommentOverrides {
+		if !slices.Contains(c.Repositories, repo) {
+			return fmt.Errorf("PR comment override %q must match a configured repository", repo)
+		}
+		if err := c.PRComments.Resolve(override).Validate(); err != nil {
+			return fmt.Errorf("PR comment policy for %s: %w", repo, err)
+		}
+	}
 	if err := representation.ValidateRules(c.LabelRules); err != nil {
 		return fmt.Errorf("label rules: %w", err)
 	}
@@ -192,6 +207,15 @@ func (c Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+// CommentPolicies resolves PR retrieval policies independently of collection scope.
+func (c Config) CommentPolicies() map[string]commentpolicy.Policy {
+	out := make(map[string]commentpolicy.Policy, len(c.Repositories))
+	for _, repo := range c.Repositories {
+		out[repo] = c.PRComments.Resolve(c.PRCommentOverrides[repo])
+	}
+	return out
 }
 
 // ValidRepository reports whether a name has a usable owner/repository shape.

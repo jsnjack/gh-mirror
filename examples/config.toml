@@ -1,6 +1,11 @@
 # Default paths, GitHub endpoints and intervals can be omitted.
 workers = 8
 
+# Keep source comments while excluding known AI reviews from retrieval.
+[pr_comments]
+exclude_known_ai = true
+exclude_ai_threads = true
+
 [repos."owner/repository"]
 preset = "all"
 pull_request_review_comments = false

@@ -463,3 +463,22 @@ Absent presets preserve legacy global defaults. config show prints compact TOML;
 --effective prints every resolved setting. config migrate writes a private TOML
 file atomically without replacing existing files or changing effective scope.
 Unknown keys, malformed types, mixed repository formats and invalid presets fail.
+
+## PR comment retrieval policy
+
+Use an offline versioned account registry to recognize known AI reviewers from
+Bot author metadata, exact aliases and GitHub.com-scoped actor IDs. Global
+pr_comments settings and repository overrides select known AI, exact authors or
+all bots, with include exceptions taking priority. Optional whole-thread exclusion
+follows native inline reply chains within a PR; general discussion is individual.
+Keep issue comments and every PR description. Never infer AI authorship from prose.
+
+Preserve raw comments and bulk collection behavior. Reconcile derived documents
+atomically in sync (including without semantic indexing) and offline index. Retain
+unchanged vectors/checkpoints and source/model identities; reintroduce opted-in
+comments from local records. Persist resolved rules and registry identity in the
+snapshot. Lexical/semantic/hybrid retrieval, duplicate seeds, context and bounded
+comment reads share exclusions. include_excluded overrides and legacy all-comment
+reads expose original records. Count exclusions and reject changed-policy cursors
+without changing GitHub collection generation or resume signatures. bots reports
+local automation accounts, providers and actual excluded counts.

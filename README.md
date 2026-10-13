@@ -114,7 +114,7 @@ preset = "pull_requests"
 ```
 
 `all` enables all eleven switches. `issues` enables issues, discussion comments
-and the seven metadata/relationship/catalog switches. `pull_requests` enables PR
+and the six metadata/relationship/catalog switches. `pull_requests` enables PR
 records, discussion comments and inline review comments, with other switches off.
 Overrides inherit the preset. A table without a preset inherits the legacy global
 defaults, including disabled inline review comments.
@@ -275,6 +275,71 @@ from snapshots and status. Permission changes on an unchanged token still requir
 `--full` or scheduled reconciliation. Changing the repository list
 or upstream API host automatically forces complete collection and removes data
 outside the new scope.
+
+## Filter AI review comments
+
+PR descriptions remain searchable. To exclude known AI reviewer comments and
+inline threads they start from retrieval:
+
+```toml
+[pr_comments]
+exclude_known_ai = true
+exclude_ai_threads = true
+```
+
+The bundled [account registry](internal/commentpolicy/registry.md) recognizes
+Copilot, CodeRabbit and Gemini Code Assist using stored author identities, without
+extra API requests or inference. Unknown bots remain included. AI text posted by
+human accounts cannot be reliably identified from prose. Filtering is disabled
+by default for compatibility with existing configurations.
+
+`exclude_ai_threads` excludes replies under an excluded inline review root. An AI
+reply to a human-started thread excludes that reply while retaining human comments.
+General PR discussion comments have no native threads and are filtered individually.
+The same policy applies to lexical/hybrid/semantic evidence, duplicate seeds and
+candidates, bounded comment pages and context. Issue comments remain unaffected.
+
+Additional settings and per-repository overrides:
+
+```toml
+[pr_comments]
+exclude_known_ai = true
+exclude_ai_threads = true
+exclude_all_bots = false
+exclude_authors = ["custom-reviewer"]
+include_authors = ["trusted-reviewer[bot]"]
+
+[repos."owner/code".pr_comments]
+exclude_known_ai = false
+exclude_authors = []
+```
+
+Overrides inherit global settings. Supplied author lists replace inherited lists;
+empty lists clear them. Logins match exactly, ignoring case. Include exceptions
+win, including inside excluded threads. `exclude_all_bots` also excludes coverage,
+security and dependency bots; it is independent of known-AI detection.
+
+All raw comments remain in the mirror and snapshots. Filtering saves embedding
+work and reduces retrieval noise, while bulk GitHub comment requests stay the same.
+Apply changed settings locally with `index`; `sync` also applies the policy, including
+with `--index=false`. Readers use the policy saved in their database or snapshot;
+a configuration edit takes effect after `index` or `sync`.
+
+```sh
+gh-mirror index
+gh-mirror bots --format text
+gh-mirror status --format text
+gh-mirror comments --repo owner/code --number 123 --include-excluded --format text
+gh-mirror context --repo owner/code --number 123 --include-excluded --format text
+```
+
+`bots` reports detected accounts, provider identities and applied exclusion counts.
+Coverage and warnings report omitted comments. REST and MCP comment/context reads
+accept `include_excluded=true`; paged `get` does too. Legacy `get --comments all`
+retains every source comment. Policy changes invalidate retrieval cursors without
+changing collection checkpoints, the model or tokenizer. Unchanged vectors and
+indexing checkpoints remain reusable. Disabling filtering restores source documents
+locally and embeds only restored passages; exports omit unused shared vectors.
 
 ## Offline semantic and hybrid search
 
