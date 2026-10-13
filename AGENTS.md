@@ -295,7 +295,12 @@ evidence; returned passages identify their exact field.
 
 `internal/commentpolicy` owns a bundled versioned registry of known AI review
 accounts and deterministic PR comment selection. Require Bot metadata for known
-aliases; numeric actor IDs are GitHub.com scoped. Explicit includes take precedence.
+account aliases; numeric actor IDs are GitHub.com scoped. Also recognize explicit
+final-line Claude Code attribution and the declared-AI HTML marker, outside code
+and quotes, per comment regardless of account type. Keep unmarked comments and
+never infer authorship from style or mere mentions. bots separates account and
+attribution detection without labeling every post by a human as AI-generated.
+Explicit includes take precedence.
 Resolve same-ticket inline reply roots, reject cycles, and exclude an excluded root's
 thread when configured; discussion comments remain individual. Preserve raw comments.
 Global pr_comments and nested repository overrides resolve separately from fetch

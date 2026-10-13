@@ -18,6 +18,8 @@ func TestKnownAI(t *testing.T) {
 		{"missing type", Author{Login: "Copilot"}, ""},
 		{"CodeRabbit", Author{Login: "coderabbitai[bot]", Type: "Bot"}, "coderabbit"},
 		{"Gemini", Author{Login: "gemini-code-assist[bot]", Type: "Bot"}, "gemini"},
+		{"Claude", Author{Login: "claude[bot]", Type: "Bot"}, "claude"},
+		{"human Claude name", Author{Login: "claude", Type: "User"}, ""},
 		{"dependency bot", Author{Login: "dependabot[bot]", Type: "Bot"}, ""},
 		{"security bot", Author{Login: "github-advanced-security[bot]", Type: "Bot"}, ""},
 	} {

@@ -65,7 +65,7 @@ func seedCommentPolicy(t *testing.T, db *Store) {
 }
 
 func TestAppliedCommentPolicy(t *testing.T) {
-	for _, name := range []string{"lexical exclusion", "context exclusion", "raw override", "issue comments retained", "actors", "invalid actor scope", "restore locally", "cursor invalidation", "atomic cancellation", "incremental sync writes", "candidate seed comments"} {
+	for _, name := range []string{"lexical exclusion", "context exclusion", "raw override", "issue comments retained", "actors", "invalid actor scope", "restore locally", "cursor invalidation", "atomic cancellation", "incremental sync writes", "candidate seed comments", "human AI attribution"} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			db := testStore(t)
@@ -86,6 +86,37 @@ func TestAppliedCommentPolicy(t *testing.T) {
 				t.Fatal(status)
 			}
 			switch name {
+			case "human AI attribution":
+				if err := db.Update(ctx, func(w *Writer) error {
+					raw := json.RawMessage(`{"id":17,"body":"declaredclaudeuniquetoken\n\n_🤖 Addressed by [Claude Code](https://claude.com/claude-code)_","user":{"login":"alice","type":"User"},"html_url":"https://github.com/o/r/pull/1#discussion_r17","pull_request_url":"https://api.github.com/repos/o/r/pulls/1","updated_at":"2026-01-04T00:00:00Z"}`)
+					if err := w.PutComment(ctx, "o/r", 1, raw); err != nil {
+						return err
+					}
+					return w.ApplyCommentPolicies(ctx, nil)
+				}); err != nil {
+					t.Fatal(err)
+				}
+				out, err := db.Search(ctx, SearchOptions{Query: "declaredclaudeuniquetoken", Engine: "lexical"})
+				if err != nil || len(out.Matches) != 0 {
+					t.Fatal(out, err)
+				}
+				human, err := db.Search(ctx, SearchOptions{Query: "humanuniquetoken", Engine: "lexical"})
+				if err != nil || len(human.Matches) != 1 {
+					t.Fatal("other comments by the same human disappeared", human, err)
+				}
+				actors, err := db.CommentActors(ctx, "o/r")
+				if err != nil {
+					t.Fatal(err)
+				}
+				found := false
+				for _, actor := range actors {
+					if actor.Login == "alice" && actor.Provider == "claude" && actor.Comments == 1 && actor.Excluded == 1 {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatal(actors)
+				}
 			case "lexical exclusion", "issue comments retained":
 				for _, tc := range []struct {
 					query string

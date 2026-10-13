@@ -471,7 +471,10 @@ Bot author metadata, exact aliases and GitHub.com-scoped actor IDs. Global
 pr_comments settings and repository overrides select known AI, exact authors or
 all bots, with include exceptions taking priority. Optional whole-thread exclusion
 follows native inline reply chains within a PR; general discussion is individual.
-Keep issue comments and every PR description. Never infer AI authorship from prose.
+Keep issue comments and every PR description. Recognize explicit final-line Claude
+Code attribution and a declared-AI marker per comment, including human accounts.
+Ignore quoted/code examples and mere mentions; never infer authorship from prose
+style. Account and declared-attribution detection remain distinct in diagnostics.
 
 Preserve raw comments and bulk collection behavior. Reconcile derived documents
 atomically in sync (including without semantic indexing) and offline index. Retain

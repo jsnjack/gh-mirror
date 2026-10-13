@@ -45,7 +45,7 @@ func commentPolicies(ctx context.Context, q querier) (savedCommentPolicy, error)
 }
 
 func prCommentInventory(ctx context.Context, q querier) ([]commentpolicy.Comment, error) {
-	rows, err := q.QueryContext(ctx, `SELECT c.id,c.repo,c.number,COALESCE(json_extract(c.payload,'$.user.login'),''),COALESCE(json_extract(c.payload,'$.user.type'),''),COALESCE(CAST(json_extract(c.payload,'$.user.id') AS TEXT),''),c.url,COALESCE(CAST(json_extract(c.payload,'$.in_reply_to_id') AS TEXT),'') FROM comments c JOIN issues i ON i.repo=c.repo AND i.number=c.number WHERE i.kind='pull_request' ORDER BY c.id`)
+	rows, err := q.QueryContext(ctx, `SELECT c.id,c.repo,c.number,c.body,COALESCE(json_extract(c.payload,'$.user.login'),''),COALESCE(json_extract(c.payload,'$.user.type'),''),COALESCE(CAST(json_extract(c.payload,'$.user.id') AS TEXT),''),c.url,COALESCE(CAST(json_extract(c.payload,'$.in_reply_to_id') AS TEXT),'') FROM comments c JOIN issues i ON i.repo=c.repo AND i.number=c.number WHERE i.kind='pull_request' ORDER BY c.id`)
 	if err != nil {
 		return nil, fmt.Errorf("read PR comment identities: %w", err)
 	}
@@ -53,7 +53,7 @@ func prCommentInventory(ctx context.Context, q querier) ([]commentpolicy.Comment
 	for rows.Next() {
 		var c commentpolicy.Comment
 		var source, parent string
-		if err := rows.Scan(&c.ID, &c.Repo, &c.Number, &c.Author.Login, &c.Author.Type, &c.Author.ID, &source, &parent); err != nil {
+		if err := rows.Scan(&c.ID, &c.Repo, &c.Number, &c.Body, &c.Author.Login, &c.Author.Type, &c.Author.ID, &source, &parent); err != nil {
 			return nil, finishRows(rows, err)
 		}
 		u, err := url.Parse(source)
@@ -175,6 +175,7 @@ func commentFilterWarning(repo string, count int) Warning {
 
 // CommentActor reports detected automation and configured author exclusions in one repository.
 type CommentActor struct {
+	Detection string `json:"detection,omitempty"`
 	Repo      string `json:"repo"`
 	Login     string `json:"login"`
 	Type      string `json:"type"`
@@ -223,17 +224,24 @@ func (s *Store) CommentActors(ctx context.Context, repo string) ([]CommentActor,
 			if repo != "" && repo != c.Repo {
 				continue
 			}
-			provider := commentpolicy.KnownAI(c.Author)
+			provider := commentpolicy.DetectedAI(c)
+			detection := "account"
+			if commentpolicy.KnownAI(c.Author) == "" && provider != "" {
+				detection = "attribution"
+			}
 			decision, omit := excluded[c.ID]
 			if c.Author.Type != "Bot" && provider == "" && (!omit || decision.Reason == "excluded_thread") {
 				continue
 			}
-			key := c.Repo + "\x00" + c.Author.Login + "\x00" + c.Author.ID
+			if provider == "" && c.Author.Type != "Bot" {
+				detection = "configured_author"
+			}
+			key := c.Repo + "\x00" + c.Author.Login + "\x00" + c.Author.ID + "\x00" + provider + "\x00" + detection
 			i, ok := indices[key]
 			if !ok {
 				i = len(out)
 				indices[key] = i
-				out = append(out, CommentActor{Repo: c.Repo, Login: c.Author.Login, Type: c.Author.Type, AccountID: c.Author.ID, Provider: provider})
+				out = append(out, CommentActor{Repo: c.Repo, Login: c.Author.Login, Type: c.Author.Type, AccountID: c.Author.ID, Provider: provider, Detection: detection})
 			}
 			out[i].Comments++
 			if actual[c.ID] {
@@ -249,7 +257,10 @@ func (s *Store) CommentActors(ctx context.Context, repo string) ([]CommentActor,
 		if out[i].Login != out[j].Login {
 			return out[i].Login < out[j].Login
 		}
-		return out[i].AccountID < out[j].AccountID
+		if out[i].AccountID != out[j].AccountID {
+			return out[i].AccountID < out[j].AccountID
+		}
+		return out[i].Provider < out[j].Provider
 	})
 	return out, err
 }

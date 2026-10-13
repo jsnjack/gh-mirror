@@ -66,8 +66,11 @@ func humanOutput(value any) (string, error) {
 			provider := a.Provider
 			if provider == "" {
 				provider = "unclassified automation"
+				if a.Type == "User" {
+					provider = "configured author"
+				}
 			}
-			lines = append(lines, fmt.Sprintf("%s | %s | %s | account %s | %d comments | %d excluded", cleanLine(a.Repo), cleanLine(a.Login), cleanLine(provider), cleanLine(a.AccountID), a.Comments, a.Excluded))
+			lines = append(lines, fmt.Sprintf("%s | %s (%s) | %s | detection: %s | account %s | %d comments | %d excluded", cleanLine(a.Repo), cleanLine(a.Login), cleanLine(a.Type), cleanLine(provider), cleanLine(a.Detection), cleanLine(a.AccountID), a.Comments, a.Excluded))
 		}
 	case store.CommentResult:
 		lines = append(lines, fmt.Sprintf("%d comments | %d excluded by policy", len(v.Comments), v.ExcludedByPolicy))

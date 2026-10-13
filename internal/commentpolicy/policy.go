@@ -8,7 +8,7 @@ import (
 )
 
 // RegistryVersion identifies the bundled AI reviewer account registry.
-const RegistryVersion = "1"
+const RegistryVersion = "2"
 
 // Policy controls PR comment retrieval while leaving source records intact.
 type Policy struct {
@@ -87,6 +87,8 @@ func KnownAI(a Author) string {
 		return "coderabbit"
 	case "gemini-code-assist":
 		return "gemini"
+	case "claude":
+		return "claude"
 	default:
 		return ""
 	}
@@ -108,16 +110,21 @@ type Decision struct {
 	Root     string `json:"root,omitempty"`
 }
 
-func (p Policy) excluded(a Author) Decision {
+func (p Policy) excluded(c Comment) Decision {
+	a := c.Author
 	if contains(p.IncludeAuthors, a.Login) {
 		return Decision{}
 	}
-	provider := KnownAI(a)
+	provider := DetectedAI(c)
 	if contains(p.ExcludeAuthors, a.Login) {
 		return Decision{Reason: "excluded_author", Provider: provider}
 	}
 	if p.ExcludeKnownAI && provider != "" {
-		return Decision{Reason: "known_ai", Provider: provider}
+		reason := "known_ai"
+		if KnownAI(a) == "" {
+			reason = "declared_ai"
+		}
+		return Decision{Reason: reason, Provider: provider}
 	}
 	if p.ExcludeAllBots && strings.EqualFold(a.Type, "Bot") {
 		return Decision{Reason: "bot", Provider: provider}
@@ -132,6 +139,7 @@ type Comment struct {
 	Number int
 	Parent string
 	Author Author
+	Body   string
 }
 
 // Select resolves same-ticket reply chains and explicit author exceptions.
@@ -170,13 +178,13 @@ func Select(comments []Comment, policies map[string]Policy) (map[string]Decision
 		if contains(p.IncludeAuthors, c.Author.Login) {
 			continue
 		}
-		d := p.excluded(c.Author)
+		d := p.excluded(c)
 		if p.ExcludeAIThreads && strings.HasPrefix(c.ID, "review:") {
 			id, err := root(c.ID, map[string]bool{})
 			if err != nil {
 				return nil, err
 			}
-			if decision := p.excluded(byID[id].Author); decision.Reason != "" {
+			if decision := p.excluded(byID[id]); decision.Reason != "" {
 				d = Decision{Reason: "excluded_thread", Provider: decision.Provider, Root: id}
 			}
 		}

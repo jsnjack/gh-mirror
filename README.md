@@ -288,9 +288,11 @@ exclude_ai_threads = true
 ```
 
 The bundled [account registry](internal/commentpolicy/registry.md) recognizes
-Copilot, CodeRabbit and Gemini Code Assist using stored author identities, without
-extra API requests or inference. Unknown bots remain included. AI text posted by
-human accounts cannot be reliably identified from prose. Filtering is disabled
+Copilot, CodeRabbit, Gemini Code Assist and Claude using stored author identities,
+without extra API requests or inference. Known final-line Claude Code attribution,
+such as `Addressed by [Claude Code](https://claude.com/claude-code)`, also identifies
+individual comments posted by human accounts. Quoted/code examples and mere mentions
+are ignored. Unknown bots and unmarked human posts remain included. Filtering is disabled
 by default for compatibility with existing configurations.
 
 `exclude_ai_threads` excludes replies under an excluded inline review root. An AI
@@ -336,6 +338,10 @@ gh-mirror context --repo owner/code --number 123 --include-excluded --format tex
 ```
 
 `bots` reports detected accounts, provider identities and applied exclusion counts.
+It distinguishes account detection from per-comment declared attribution, including
+human accounts that post both AI-attributed and ordinary comments. Custom workflows
+can append `<!-- gh-mirror:ai-generated:claude -->` on its own final line to declare
+AI-generated comments explicitly.
 Coverage and warnings report omitted comments. REST and MCP comment/context reads
 accept `include_excluded=true`; paged `get` does too. Legacy `get --comments all`
 retains every source comment. Policy changes invalidate retrieval cursors without
