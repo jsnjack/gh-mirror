@@ -44,7 +44,7 @@ func init() {
 	root.Flags().Bool("version", false, "Print the version and exit")
 	root.PersistentFlags().Bool("help", false, "Show command help")
 	root.CompletionOptions.DisableDefaultCmd = true
-	root.PersistentFlags().StringVarP(&configPath, "config", "c", "", "Configuration file (default: XDG gh-mirror/config.json)")
+	root.PersistentFlags().StringVarP(&configPath, "config", "c", "", "Configuration file (default: XDG gh-mirror/config.toml; legacy JSON accepted)")
 	root.PersistentFlags().StringVar(&database, "db", "", "Override the database path")
 	root.PersistentFlags().StringVar(&embeddingBackend, "embedding-backend", "", "Embedding backend: cpu or lemonade-vulkan (defaults to configuration)")
 	root.PersistentFlags().StringVar(&embeddingRuntime, "embedding-runtime", "", "Absolute path to Lemonade's installed Vulkan llama-server")
@@ -108,6 +108,7 @@ func init() {
 		}
 		return nil
 	}
+	addConfig()
 	addCollection()
 	addIndex()
 	addQueries()

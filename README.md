@@ -49,30 +49,35 @@ previews; REST and MCP always retain their structured contracts.
 
 ## Configure
 
-Copy [examples/config.json](examples/config.json) into
-`~/.config/gh-mirror/config.json` and replace `owner/repository` with the
-repositories you want to collect:
+Copy [examples/config.toml](examples/config.toml) into
+`~/.config/gh-mirror/config.toml` and replace `owner/repository`:
 
 ```sh
 mkdir -p ~/.config/gh-mirror
-cp examples/config.json ~/.config/gh-mirror/config.json
+cp examples/config.toml ~/.config/gh-mirror/config.toml
 ```
 
-The configuration below shows the default collection settings. Omitted settings
-retain their defaults:
+A minimal configuration can contain one repository table:
 
-```json
-{
-  "repositories": ["owner/repository"],
-  "fields": true,
-  "projects": true,
-  "max_requests": 3000,
-  "workers": 4,
-  "overlap": "5m",
-  "enrichment_interval": "1h",
-  "reconcile_interval": "24h"
-}
+```toml
+workers = 8
+
+[repos."owner/repository"]
+preset = "issues"
 ```
+
+Omitted settings retain their defaults. TOML is preferred when both configuration
+files exist; an existing `config.json` remains supported with its original scope
+semantics. Convert it without overwriting either file:
+
+```sh
+gh-mirror config migrate
+gh-mirror config show
+gh-mirror config show --effective
+```
+
+`config show` prints compact TOML, including when piped. `--effective` expands all
+defaults and repository switches. Explicit `--format json` prints resolved JSON.
 
 The default database and snapshots are under `~/.local/share/gh-mirror/`.
 Set `database` and `snapshot_dir` in the configuration to use other locations.
@@ -86,8 +91,8 @@ change those environment variable names; credentials are not stored in the mirro
 The GitHub credential needs access to the configured repositories, issue data,
 organization issue types/fields, and owner projects. The available resources
 depend on the token's visibility and GitHub features. Enabled features that return
-403/404 or GraphQL errors fail collection. Disable unavailable resources in
-`repository_options`; status records the resolved scope.
+403/404 or GraphQL errors fail collection. Disable unavailable resources in the
+repository table; status records the resolved scope.
 Personal repositories have no organization issue fields. User-owned Projects REST
 endpoints require a compatible classic PAT; GitHub's current documentation excludes
 fine-grained and installation tokens for those endpoints.
@@ -96,44 +101,29 @@ fetch complete project items, draft cards, or project field definitions/values.
 
 ## Select resources per repository
 
-Add an explicit `repository_options` entry for each repository you want to control.
-Every switch is a boolean; omitted switches in an explicit entry are **false**.
-Repositories without an entry retain the defaults above, including issue and PR
-conversation comments; inline review comments default to false.
+TOML repository tables replace the separate repository list. Choose a preset,
+then override any switch with `true` or `false`:
 
-```json
-{
-  "repositories": ["owner/repository", "owner/code"],
-  "repository_options": {
-    "owner/repository": {
-      "issues": true,
-      "pull_requests": true,
-      "issue_comments": true,
-      "pull_request_comments": true,
-      "pull_request_review_comments": false,
-      "labels": true,
-      "milestones": true,
-      "issue_types": true,
-      "fields": true,
-      "relationships": true,
-      "projects": true
-    },
-    "owner/code": {
-      "issues": false,
-      "pull_requests": true,
-      "issue_comments": false,
-      "pull_request_comments": true,
-      "pull_request_review_comments": true,
-      "labels": false,
-      "milestones": false,
-      "issue_types": false,
-      "fields": false,
-      "relationships": false,
-      "projects": false
-    }
-  }
-}
+```toml
+[repos."owner/repository"]
+preset = "all"
+pull_request_review_comments = false
+
+[repos."owner/code"]
+preset = "pull_requests"
 ```
+
+`all` enables all eleven switches. `issues` enables issues, discussion comments
+and the seven metadata/relationship/catalog switches. `pull_requests` enables PR
+records, discussion comments and inline review comments, with other switches off.
+Overrides inherit the preset. A table without a preset inherits the legacy global
+defaults, including disabled inline review comments.
+
+Legacy `repositories` and `repository_options` remain accepted in JSON or TOML;
+omitted switches in an explicit legacy options entry remain false. Do not mix
+legacy repository keys with `repos`. Unknown settings and presets are rejected.
+Migration selects a compact preset with explicit overrides that preserve every
+resolved switch.
 
 | Switch | Collected resource |
 | --- | --- |
@@ -258,7 +248,7 @@ Schedule sync with cron, a systemd timer, or your CI scheduler. For example, thi
 cron entry updates every 15 minutes without exporting a snapshot:
 
 ```cron
-*/15 * * * * /absolute/path/gh-mirror --config /absolute/path/config.json sync --publish=false
+*/15 * * * * /absolute/path/gh-mirror --config /absolute/path/config.toml sync --publish=false
 ```
 
 Supply `GITHUB_TOKEN` to the scheduler and keep the database on persistent storage.

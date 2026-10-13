@@ -16,8 +16,8 @@ standards. modernc.org/sqlite supplies SQLite and FTS5 without platform-specific
 C libraries. The official Go MCP SDK handles stdio and Streamable HTTP.
 
 The CLI supports `sync`, `index`, `model`, `search`, `get`, `candidates`, `catalog`, `status`, `snapshot`,
-`acquire`, `list`, `scope`, `serve`, and `mcp`. All commands inherit `--config`/`-c`, `--debug`/`-d`,
-and `--trace`. The root supports `--version`. Configuration is JSON under the XDG
+`acquire`, `list`, `scope`, `config`, `serve`, and `mcp`. All commands inherit `--config`/`-c`, `--debug`/`-d`,
+and `--trace`. The root supports `--version`. Configuration is TOML with legacy JSON support under the XDG
 configuration directory. Durable data uses the XDG data directory. Tokens are
 read from named environment variables, never configuration values or databases.
 
@@ -453,3 +453,13 @@ while preserving original source offsets; lexical documents remain verbatim.
 Shared inference is bounded, batched and coalesced across concurrent workers.
 Completed shared values and source attachments checkpoint with FULL durability.
 Exports prune incomplete attachments and orphaned dictionary entries.
+
+## TOML configuration
+
+Prefer XDG config.toml, retaining config.json fallback and strict legacy decoding.
+Repository tables replace duplicated inventory/options keys; all, issues and
+pull_requests presets resolve to existing scope booleans with explicit overrides.
+Absent presets preserve legacy global defaults. config show prints compact TOML;
+--effective prints every resolved setting. config migrate writes a private TOML
+file atomically without replacing existing files or changing effective scope.
+Unknown keys, malformed types, mixed repository formats and invalid presets fail.

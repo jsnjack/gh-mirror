@@ -5,7 +5,7 @@ The specification is in [docs/spec.md](docs/spec.md). Run `make build` after run
 changes and `make check` before reporting completion. Do not install missing tools,
 commit, push, or change another repository without user authorization.
 
-`cmd/` parses Cobra commands and wires dependencies. `internal/config` loads JSON
+`cmd/` parses Cobra commands and wires dependencies. `internal/config` loads TOML and legacy JSON
 configuration and resolves XDG paths. `internal/diagnostics` manages stderr and trace
 logging. `internal/progress` renders sync activity from explicit collector/client
 callbacks. `internal/github` performs bounded read-only upstream requests and pagination.
@@ -16,7 +16,13 @@ immutable databases. `internal/service` shares local queries between REST and MC
 so interrupted syncs resume across process boundaries.
 `repository_options` resolves eleven boolean resource switches per repository; omitted
 flags in an explicit entry are false. Repositories without entries retain legacy
-global defaults. `scope` prints effective options and committed status records them.
+global defaults. TOML `repos` tables use all/issues/pull_requests presets with
+boolean overrides, or legacy defaults when the preset is absent. Do not mix the
+table form with legacy repository keys. Prefer config.toml, falling back to an
+existing config.json. config show emits compact/effective TOML; migrate preserves
+resolved scopes and installs a private file atomically without replacing existing
+files. The pure Go go-toml parser is justified by the requested TOML configuration.
+`scope` prints effective options and committed status records them.
 Filter shared issue/comment listings locally; retain only identity/kind for excluded
 tickets in private `issue_inventory` to avoid fetching each comment parent. Exports
 remove this inventory. PR review comments use the bulk repository endpoint, default

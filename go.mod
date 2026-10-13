@@ -5,6 +5,7 @@ go 1.26.4
 require (
 	github.com/mattn/go-isatty v0.0.24
 	github.com/modelcontextprotocol/go-sdk v1.6.1
+	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/rostamlabs/rembed v0.3.1-0.20260826212454-19d673b357bd
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/sys v0.47.0

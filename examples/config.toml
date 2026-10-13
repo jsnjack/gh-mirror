@@ -1,0 +1,9 @@
+# Default paths, GitHub endpoints and intervals can be omitted.
+workers = 8
+
+[repos."owner/repository"]
+preset = "all"
+pull_request_review_comments = false
+
+[repos."owner/code"]
+preset = "pull_requests"

@@ -46,17 +46,29 @@ type Config struct {
 	ReconcileInterval  string                                `json:"reconcile_interval"`
 }
 
-// DefaultPath returns the XDG configuration filename.
+// DefaultPath prefers TOML and falls back to an existing legacy JSON configuration.
 func DefaultPath() (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve config directory: %w", err)
 	}
-	return filepath.Join(dir, "gh-mirror", "config.json"), nil
+	dir = filepath.Join(dir, "gh-mirror")
+	path := filepath.Join(dir, "config.toml")
+	if _, err := os.Stat(path); err == nil {
+		return path, nil
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("inspect TOML configuration: %w", err)
+	}
+	legacy := filepath.Join(dir, "config.json")
+	if _, err := os.Stat(legacy); err == nil {
+		return legacy, nil
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("inspect legacy configuration: %w", err)
+	}
+	return path, nil
 }
 
-// Load reads JSON configuration; an absent default file uses built-in settings.
-func Load(path string, explicit bool) (Config, error) {
+func defaults() (Config, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return Config{}, fmt.Errorf("resolve home directory: %w", err)
@@ -67,6 +79,15 @@ func Load(path string, explicit bool) (Config, error) {
 	}
 	dataDir = filepath.Join(dataDir, "gh-mirror")
 	c := Config{LabelRules: map[string][]representation.LabelRule{}, Database: filepath.Join(dataDir, "state.sqlite"), SnapshotDir: filepath.Join(dataDir, "snapshots"), APIURL: "https://api.github.com", GraphQLURL: "https://api.github.com/graphql", TokenEnv: "GITHUB_TOKEN", APITokenEnv: "GH_MIRROR_API_TOKEN", Listen: "127.0.0.1:8787", Fields: true, Projects: true, MaxRequests: 3000, Workers: DefaultWorkers, Overlap: "5m", EnrichmentInterval: "1h", ReconcileInterval: "24h"}
+	return c, nil
+}
+
+// Load reads TOML or legacy JSON; an absent default file uses built-in settings.
+func Load(path string, explicit bool) (Config, error) {
+	c, err := defaults()
+	if err != nil {
+		return c, err
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) && !explicit {
@@ -74,7 +95,18 @@ func Load(path string, explicit bool) (Config, error) {
 		}
 		return c, fmt.Errorf("open config: %w", err)
 	}
-	decoder := json.NewDecoder(f)
+	var reader io.Reader = f
+	if strings.EqualFold(filepath.Ext(path), ".toml") {
+		raw, err := decodeTOML(f, c)
+		if err != nil {
+			if closeErr := f.Close(); closeErr != nil {
+				return c, fmt.Errorf("decode TOML: %w; close config: %w", err, closeErr)
+			}
+			return c, fmt.Errorf("decode TOML: %w", err)
+		}
+		reader = strings.NewReader(string(raw))
+	}
+	decoder := json.NewDecoder(reader)
 	decoder.DisallowUnknownFields()
 	var raw json.RawMessage
 	decodeErr := decoder.Decode(&raw)
