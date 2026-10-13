@@ -324,6 +324,8 @@ work and reduces retrieval noise, while bulk GitHub comment requests stay the sa
 Apply changed settings locally with `index`; `sync` also applies the policy, including
 with `--index=false`. Readers use the policy saved in their database or snapshot;
 a configuration edit takes effect after `index` or `sync`.
+Standalone indexing without configured repositories preserves the mirror's saved
+policy. Configure repository tables when changing retrieval rules.
 
 ```sh
 gh-mirror index
@@ -340,6 +342,8 @@ retains every source comment. Policy changes invalidate retrieval cursors withou
 changing collection checkpoints, the model or tokenizer. Unchanged vectors and
 indexing checkpoints remain reusable. Disabling filtering restores source documents
 locally and embeds only restored passages; exports omit unused shared vectors.
+Evaluation reports record the retrieval generation and reject concurrent policy,
+vector or collection changes.
 
 ## Offline semantic and hybrid search
 

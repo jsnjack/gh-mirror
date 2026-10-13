@@ -3,9 +3,13 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
+
+	"gh-mirror/internal/commentpolicy"
 )
 
 func TestRetrievalEvaluation(t *testing.T) {
@@ -74,6 +78,57 @@ func TestRetrievalEvaluation(t *testing.T) {
 		}
 	}
 	t.Logf("synthetic fixture: search P@10 %.3f, candidate Recall@20 %.3f; sparse judgments limit maximum P@10", *report.SearchPrecisionAt10, *report.CandidateRecallAt20)
+}
+
+type changingEvaluationEncoder struct {
+	*fakeVectorizer
+	once   sync.Once
+	change func(context.Context) error
+}
+
+func (e *changingEvaluationEncoder) Embed(ctx context.Context, text string) ([]float32, error) {
+	var changeErr error
+	e.once.Do(func() { changeErr = e.change(ctx) })
+	if changeErr != nil {
+		return nil, fmt.Errorf("change evaluation fixture: %w", changeErr)
+	}
+	return e.fakeVectorizer.Embed(ctx, text)
+}
+
+func TestEvaluationGenerationChanges(t *testing.T) {
+	for _, name := range []string{"comment policy", "vectors", "collection", "unchanged"} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			db := testStore(t)
+			seed(t, db)
+			e := &fakeVectorizer{}
+			if _, err := db.Index(ctx, e, IndexOptions{Workers: 1, CommentPolicies: map[string]commentpolicy.Policy{}}); err != nil {
+				t.Fatal(err)
+			}
+			db.vectorizer = &changingEvaluationEncoder{fakeVectorizer: e, change: func(ctx context.Context) error {
+				return db.Update(ctx, func(w *Writer) error {
+					switch name {
+					case "comment policy":
+						return w.ApplyCommentPolicies(ctx, map[string]commentpolicy.Policy{"o/r": {ExcludeKnownAI: true}})
+					case "vectors":
+						return w.SetMetadata(ctx, "semantic_generation", "changed-vectors")
+					case "collection":
+						return w.SetMetadata(ctx, "generation", "changed-collection")
+					default:
+						return nil
+					}
+				})
+			}}
+			out, err := db.Evaluate(ctx, EvaluationSet{Cases: []EvaluationCase{{Name: "generation consistency", Search: &SearchOptions{Query: "network", Engine: "semantic"}, Relevant: []TicketID{{Repo: "o/r", Number: 1}}}}})
+			if name == "unchanged" {
+				if err != nil || out.RetrievalGeneration == "" || out.Generation != "testgeneration" {
+					t.Fatal(out, err)
+				}
+			} else if !errors.Is(err, ErrCursorConflict) {
+				t.Fatal(out, err)
+			}
+		})
+	}
 }
 func TestEvaluationMetrics(t *testing.T) {
 	ctx := context.Background()

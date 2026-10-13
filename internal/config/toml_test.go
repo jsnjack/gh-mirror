@@ -161,3 +161,15 @@ func TestConfigMigration(t *testing.T) {
 		})
 	}
 }
+
+func TestUnconfiguredCommentPolicy(t *testing.T) {
+	t.Run("standalone indexing preserves saved policies", func(t *testing.T) {
+		c, err := Load(filepath.Join(t.TempDir(), "config.toml"), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.CommentPolicies() != nil {
+			t.Fatal("unconfigured indexing would replace saved policies")
+		}
+	})
+}

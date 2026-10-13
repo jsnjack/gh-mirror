@@ -209,8 +209,11 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// CommentPolicies resolves PR retrieval policies independently of collection scope.
+// CommentPolicies resolves configured repositories; nil preserves an unconfigured mirror's saved policy.
 func (c Config) CommentPolicies() map[string]commentpolicy.Policy {
+	if len(c.Repositories) == 0 {
+		return nil
+	}
 	out := make(map[string]commentpolicy.Policy, len(c.Repositories))
 	for _, repo := range c.Repositories {
 		out[repo] = c.PRComments.Resolve(c.PRCommentOverrides[repo])

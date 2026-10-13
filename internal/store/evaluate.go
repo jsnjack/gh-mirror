@@ -33,6 +33,7 @@ type EvaluationScore struct {
 
 // EvaluationReport summarizes one-generation evaluation without returning ticket content.
 type EvaluationReport struct {
+	RetrievalGeneration string            `json:"retrieval_generation"`
 	Generation          string            `json:"generation"`
 	Cases               []EvaluationScore `json:"cases"`
 	MeanPrecisionAt10   float64           `json:"mean_precision_at_10"`
@@ -64,6 +65,7 @@ func (s *Store) Evaluate(ctx context.Context, set EvaluationSet) (EvaluationRepo
 		return out, err
 	}
 	out.Generation = initial.Generation
+	out.RetrievalGeneration = evaluationGeneration(initial)
 	times := []float64{}
 	var searchTotal, candidateTotal float64
 	var searches, candidates int
@@ -94,7 +96,7 @@ func (s *Store) Evaluate(ctx context.Context, set EvaluationSet) (EvaluationRepo
 		if err != nil {
 			return out, fmt.Errorf("evaluate case %q: %w", c.Name, err)
 		}
-		if result.Status.Generation != out.Generation {
+		if evaluationGeneration(result.Status) != out.RetrievalGeneration {
 			return out, fmt.Errorf("%w during evaluation; use an immutable snapshot", ErrCursorConflict)
 		}
 		relevant := map[TicketID]bool{}
@@ -133,7 +135,7 @@ func (s *Store) Evaluate(ctx context.Context, set EvaluationSet) (EvaluationRepo
 	if err != nil {
 		return out, err
 	}
-	if final.Generation != out.Generation {
+	if evaluationGeneration(final) != out.RetrievalGeneration {
 		return out, fmt.Errorf("%w during evaluation; use an immutable snapshot", ErrCursorConflict)
 	}
 	out.MeanPrecisionAt10 /= float64(len(set.Cases))
@@ -150,4 +152,12 @@ func (s *Store) Evaluate(ctx context.Context, set EvaluationSet) (EvaluationRepo
 		out.CandidateRecallAt20 = &v
 	}
 	return out, nil
+}
+
+func evaluationGeneration(s Status) string {
+	generation := retrievalGeneration(s)
+	if s.Semantic != nil {
+		generation += ":" + s.Semantic.Generation + ":" + s.Semantic.Fingerprint
+	}
+	return generation
 }

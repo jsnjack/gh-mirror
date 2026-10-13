@@ -309,3 +309,5 @@ raw history. Bind lexical/comment cursors to the local policy generation while
 collection Generation remains unchanged. bots shows detected actors and actual
 exclusion counts. Effective TOML explicitly renders false policy overrides and
 empty author lists so copying it preserves inheritance semantics.
+Evaluation pins collection, comment-policy and semantic generations/model identity,
+rejecting concurrent local policy/index changes as well as collection updates.
