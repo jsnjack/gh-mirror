@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -43,6 +44,7 @@ func (l *runtimeLog) text() string { l.mu.Lock(); defer l.mu.Unlock(); return st
 
 type vulkanRuntime struct {
 	url, key, device string
+	keyDir           string
 	client           *http.Client
 	stop             context.CancelFunc
 	done             chan struct{}
@@ -96,18 +98,24 @@ func startVulkan(ctx context.Context, o Options) (*vulkanRuntime, error) {
 	if _, err := rand.Read(key); err != nil {
 		return nil, fmt.Errorf("create local inference key: %w", err)
 	}
+	keyDir, keyFile, err := writeKeyFile(hex.EncodeToString(key))
+	if err != nil {
+		return nil, err
+	}
 	child, cancel := context.WithCancel(ctx)
 	tokens := strconv.Itoa(o.BatchSize * MaxTokens)
-	args := []string{"--model", model, "--host", "127.0.0.1", "--port", port, "--embedding", "--pooling", "mean", "--embd-normalize", "2", "--gpu-layers", "99", "--device", o.Device, "--batch-size", tokens, "--ubatch-size", tokens, "--ctx-size", tokens, "--parallel", strconv.Itoa(o.BatchSize), "--threads", "1", "--offline", "--alias", runtimeModel, "--flash-attn", "off", "--log-verbosity", "4", "--api-key", hex.EncodeToString(key)}
+	// A key file keeps the local inference key out of the process list.
+	args := []string{"--model", model, "--host", "127.0.0.1", "--port", port, "--embedding", "--pooling", "mean", "--embd-normalize", "2", "--gpu-layers", "99", "--device", o.Device, "--batch-size", tokens, "--ubatch-size", tokens, "--ctx-size", tokens, "--parallel", strconv.Itoa(o.BatchSize), "--threads", "1", "--offline", "--alias", runtimeModel, "--flash-attn", "off", "--log-verbosity", "4", "--api-key-file", keyFile}
 	command := exec.CommandContext(child, binaryPath, args...)
 	command.Env = vulkanEnvironment()
+	command.SysProcAttr = childAttributes()
 	logs := &runtimeLog{}
 	command.Stdout, command.Stderr = logs, logs
 	if err := command.Start(); err != nil {
 		cancel()
-		return nil, fmt.Errorf("start Lemonade Vulkan runtime: %w", err)
+		return nil, errors.Join(fmt.Errorf("start Lemonade Vulkan runtime: %w", err), removeKeyDir(keyDir))
 	}
-	r := &vulkanRuntime{url: "http://127.0.0.1:" + port, key: hex.EncodeToString(key), stop: cancel, done: make(chan struct{}), client: localClient()}
+	r := &vulkanRuntime{url: "http://127.0.0.1:" + port, key: hex.EncodeToString(key), keyDir: keyDir, stop: cancel, done: make(chan struct{}), client: localClient()}
 	go func() {
 		if err := command.Wait(); err != nil && child.Err() == nil {
 			slog.Debug("Lemonade Vulkan process exited", "error", err)
@@ -185,7 +193,32 @@ func (r *vulkanRuntime) close() {
 		if r.client != nil {
 			r.client.CloseIdleConnections()
 		}
+		if err := removeKeyDir(r.keyDir); err != nil {
+			slog.Debug("remove local inference key", "error", err)
+		}
 	})
+}
+
+func writeKeyFile(key string) (string, string, error) {
+	dir, err := os.MkdirTemp("", "gh-mirror-inference-")
+	if err != nil {
+		return "", "", fmt.Errorf("create local inference key directory: %w", err)
+	}
+	path := filepath.Join(dir, "api-key")
+	if err := os.WriteFile(path, []byte(key+"\n"), 0600); err != nil {
+		return "", "", errors.Join(fmt.Errorf("write local inference key: %w", err), removeKeyDir(dir))
+	}
+	return dir, path, nil
+}
+
+func removeKeyDir(dir string) error {
+	if dir == "" {
+		return nil
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("remove local inference key: %w", err)
+	}
+	return nil
 }
 
 func loadedVulkan(logs, device string) (string, error) {

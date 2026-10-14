@@ -34,6 +34,8 @@ type fixture struct {
 	timestamp              string
 	membershipOverflow     bool
 	repeatMembershipCursor bool
+	// gone lists tickets deleted upstream: listings omit them, GraphQL returns null and REST returns 410.
+	gone map[int]bool
 }
 
 func (f *fixture) issue(n int) map[string]any {
@@ -81,7 +83,9 @@ func (f *fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		items := []any{}
 		for n := (page-1)*100 + 1; n <= min(page*100, count); n++ {
-			items = append(items, f.issue(n))
+			if !f.gone[n] {
+				items = append(items, f.issue(n))
+			}
 		}
 		out = items
 		if page*100 < count {
@@ -97,7 +101,7 @@ func (f *fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
-		if f.stage == "delete" {
+		if f.stage == "delete" || f.gone[1] {
 			break
 		}
 		body := "initialcomment"
@@ -153,9 +157,15 @@ func (f *fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		nodes := []any{}
-		for _, id := range input.Variables.IDs {
-			if f.missingNode && id == "I_1" {
+		errs := []any{}
+		for i, id := range input.Variables.IDs {
+			number, err := strconv.Atoi(strings.TrimPrefix(id, "I_"))
+			if err != nil {
+				f.t.Error(err)
+			}
+			if (f.missingNode && id == "I_1") || f.gone[number] {
 				nodes = append(nodes, nil)
+				errs = append(errs, map[string]any{"type": "NOT_FOUND", "path": []any{"nodes", i}, "message": "Could not resolve to a node with the global id of '" + id + "'"})
 				continue
 			}
 			node := map[string]any{"id": id, "__typename": "Issue", "parent": nil, "subIssues": emptyConnection([]any{}, false, ""), "blockedBy": emptyConnection([]any{}, false, ""), "blocking": emptyConnection([]any{}, false, ""), "issueFieldValues": emptyConnection([]any{map[string]any{"id": "fv1", "value": "P1"}}, id == "I_1", "next")}
@@ -173,7 +183,18 @@ func (f *fixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			nodes = append(nodes, node)
 		}
 		out = map[string]any{"data": map[string]any{"nodes": nodes}}
+		if len(errs) > 0 {
+			out = map[string]any{"data": map[string]any{"nodes": nodes}, "errors": errs}
+		}
 	default:
+		if number, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/repos/o/r/issues/")); err == nil && strings.HasPrefix(r.URL.Path, "/repos/o/r/issues/") {
+			if f.gone[number] || (f.stage == "delete" && number > 1) {
+				w.WriteHeader(http.StatusGone)
+				return
+			}
+			out = f.issue(number)
+			break
+		}
 		f.t.Error("unexpected fixture path", r.URL.Path)
 		w.WriteHeader(http.StatusNotFound)
 		return

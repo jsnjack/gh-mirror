@@ -58,7 +58,7 @@ func TestMembershipUpgrade(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			query := url.Values{"state": {"all"}, "per_page": {"100"}, "sort": {"updated"}, "direction": {"asc"}, "since": {started.Add(-overlap).Format(time.RFC3339)}}
+			query := url.Values{"state": {"all"}, "per_page": {"100"}, "sort": {"created"}, "direction": {"asc"}, "since": {started.Add(-overlap).Format(time.RFC3339)}}
 			for _, key := range []string{
 				"GET:" + c.APIURL + "/repos/o/r/issues?" + query.Encode(),
 				"GET:" + c.APIURL + "/orgs/o/projectsV2/1/items?per_page=100",

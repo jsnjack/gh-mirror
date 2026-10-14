@@ -12,12 +12,13 @@ import (
 	"testing"
 	"time"
 
+	"gh-mirror/internal/config"
 	"gh-mirror/internal/progress"
 	"gh-mirror/internal/store"
 )
 
 func TestCommentParents(t *testing.T) {
-	for _, name := range []string{"bootstrap omission", "full reconciliation omission", "incremental new parent", "incremental existing parent", "resume after recovery", "inaccessible parent", "wrong parent identity"} {
+	for _, name := range []string{"bootstrap omission", "full reconciliation omission", "incremental new parent", "incremental existing parent", "resume after recovery", "inaccessible parent", "wrong parent identity", "incremental out-of-scope parent"} {
 		t.Run(name, func(t *testing.T) {
 			count := 2
 			if name == "full reconciliation omission" {
@@ -53,7 +54,11 @@ func TestCommentParents(t *testing.T) {
 						if name == "wrong parent identity" {
 							number++
 						}
-						out = f.issue(number)
+						issue := f.issue(number)
+						if name == "incremental out-of-scope parent" {
+							issue["pull_request"] = map[string]any{"url": fmt.Sprintf("%s/repos/o/r/pulls/%d", f.url, number)}
+						}
+						out = issue
 					}
 					if err := json.NewEncoder(w).Encode(out); err != nil {
 						t.Error(err)
@@ -65,6 +70,9 @@ func TestCommentParents(t *testing.T) {
 			defer server.Close()
 			f.url = server.URL
 			c.APIURL, c.GraphQLURL = server.URL, server.URL+"/graphql"
+			if name == "incremental out-of-scope parent" {
+				c.RepositoryOptions = map[string]config.Scope{"o/r": {Issues: true, IssueComments: true}}
+			}
 			var old store.Status
 			incremental := strings.HasPrefix(name, "incremental")
 			if incremental || name == "full reconciliation omission" {
@@ -114,6 +122,12 @@ func TestCommentParents(t *testing.T) {
 			}
 			if err != nil {
 				t.Fatal(err)
+			}
+			if name == "incremental out-of-scope parent" {
+				if result.Status.Issues != 2 || result.Status.Comments != 1 || recovered.Load() != 1 {
+					t.Fatal("recovered pull request stored outside repository scope", result.Status, recovered.Load())
+				}
+				return
 			}
 			wantIssues, wantFetches := 3, int32(1)
 			if name == "incremental existing parent" {

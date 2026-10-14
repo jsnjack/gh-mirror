@@ -3,7 +3,9 @@ package embedding
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 )
@@ -102,4 +104,26 @@ func TestVulkanEnvironment(t *testing.T) {
 	if !strings.Contains(env, "GGML_VK_DISABLE_F16=1") {
 		t.Fatal("FP32 shader mode missing")
 	}
+}
+
+func TestInferenceKeyFile(t *testing.T) {
+	t.Run("private file removed on close", func(t *testing.T) {
+		dir, path, err := writeKeyFile("abc123")
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().Perm() != 0600 {
+			t.Fatal("inference key file is not private", info, err)
+		}
+		body, err := os.ReadFile(path)
+		if err != nil || strings.TrimSpace(string(body)) != "abc123" {
+			t.Fatal("inference key file content", string(body), err)
+		}
+		r := &vulkanRuntime{keyDir: dir}
+		r.close()
+		if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("inference key survived runtime close", err)
+		}
+	})
 }

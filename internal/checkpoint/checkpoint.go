@@ -6,13 +6,24 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+
+	"gh-mirror/internal/diagnostics"
 
 	_ "modernc.org/sqlite"
 )
+
+const schema = `CREATE TABLE IF NOT EXISTS session(id INTEGER PRIMARY KEY CHECK(id=1), signature TEXT NOT NULL, started TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS responses(key TEXT PRIMARY KEY, body BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS failures(id INTEGER PRIMARY KEY CHECK(id=1), attempts INTEGER NOT NULL, error TEXT NOT NULL, failed_at TEXT NOT NULL);`
+
+// maxErrorBytes bounds the recorded failure text shown by status.
+const maxErrorBytes = 2048
 
 // Store keeps one compatible sync session outside the published mirror database.
 type Store struct {
@@ -20,6 +31,15 @@ type Store struct {
 	Started  time.Time
 	Resuming bool
 	Saved    int
+}
+
+// Pending describes an uncommitted sync session for status reporting.
+type Pending struct {
+	Started   time.Time `json:"started"`
+	Saved     int       `json:"saved_responses"`
+	Failures  int       `json:"failures"`
+	LastError string    `json:"last_error,omitempty"`
+	FailedAt  time.Time `json:"failed_at,omitzero"`
 }
 
 func database(path string) (*sql.DB, error) {
@@ -67,7 +87,7 @@ func Open(ctx context.Context, path, signature string, started time.Time, restar
 			}
 		}
 	}()
-	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS session(id INTEGER PRIMARY KEY CHECK(id=1), signature TEXT NOT NULL, started TEXT NOT NULL); CREATE TABLE IF NOT EXISTS responses(key TEXT PRIMARY KEY, body BLOB NOT NULL);`); err != nil {
+	if _, err := db.ExecContext(ctx, schema); err != nil {
 		return nil, fmt.Errorf("initialize checkpoint: %w", err)
 	}
 	var prior, timestamp string
@@ -91,24 +111,84 @@ func Open(ctx context.Context, path, signature string, started time.Time, restar
 	if err != nil {
 		return nil, fmt.Errorf("begin checkpoint reset: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, "DELETE FROM responses; DELETE FROM session;"); err == nil {
-		_, err = tx.ExecContext(ctx, "INSERT INTO session(id,signature,started) VALUES(1,?,?)", signature, started.Format(time.RFC3339Nano))
-		if err == nil {
-			err = tx.Commit()
+	defer func() {
+		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+			openErr = errors.Join(openErr, fmt.Errorf("rollback checkpoint reset: %w", err))
 		}
-		if err == nil {
-			return s, nil
-		}
-		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
-			err = errors.Join(err, fmt.Errorf("rollback checkpoint reset: %w", rollbackErr))
-		}
-		return nil, fmt.Errorf("reset checkpoint session: %w", err)
-	} else {
-		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
-			err = errors.Join(err, fmt.Errorf("rollback checkpoint reset: %w", rollbackErr))
-		}
+	}()
+	if _, err := tx.ExecContext(ctx, "DELETE FROM responses; DELETE FROM session; DELETE FROM failures;"); err != nil {
 		return nil, fmt.Errorf("clear checkpoint responses: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, "INSERT INTO session(id,signature,started) VALUES(1,?,?)", signature, started.Format(time.RFC3339Nano)); err != nil {
+		return nil, fmt.Errorf("reset checkpoint session: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("reset checkpoint session: %w", err)
+	}
+	return s, nil
+}
+
+// RecordFailure counts a failed attempt so status can report a sync that keeps failing.
+func (s *Store) RecordFailure(ctx context.Context, cause error, at time.Time) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	text := cause.Error()
+	if len(text) > maxErrorBytes {
+		text = strings.ToValidUTF8(text[:maxErrorBytes], "") + "…"
+	}
+	if _, err := s.db.ExecContext(ctx, "INSERT INTO failures(id,attempts,error,failed_at) VALUES(1,1,?,?) ON CONFLICT(id) DO UPDATE SET attempts=attempts+1,error=excluded.error,failed_at=excluded.failed_at", text, at.UTC().Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("record failed sync attempt: %w", err)
+	}
+	return nil
+}
+
+// Inspect reads a pending session without creating or changing the checkpoint file.
+func Inspect(ctx context.Context, path string) (Pending, bool, error) {
+	var out Pending
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return out, false, nil
+	} else if err != nil {
+		return out, false, fmt.Errorf("inspect pending sync: %w", err)
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return out, false, fmt.Errorf("resolve checkpoint path: %w", err)
+	}
+	u := url.URL{Scheme: "file", Path: abs, RawQuery: url.Values{"mode": {"ro"}, "_pragma": {"busy_timeout(2000)"}}.Encode()}
+	db, err := sql.Open("sqlite", u.String())
+	if err != nil {
+		return out, false, fmt.Errorf("open pending sync: %w", err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			slog.Log(ctx, diagnostics.TraceLevel, "close inspected checkpoint", "error", err)
+		}
+	}()
+	var started string
+	if err := db.QueryRowContext(ctx, "SELECT started FROM session WHERE id=1").Scan(&started); err != nil {
+		if errors.Is(err, sql.ErrNoRows) || strings.Contains(err.Error(), "no such table") {
+			return out, false, nil
+		}
+		return out, false, fmt.Errorf("read pending sync: %w", err)
+	}
+	if out.Started, err = time.Parse(time.RFC3339Nano, started); err != nil {
+		return out, false, fmt.Errorf("parse pending sync start: %w", err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM responses").Scan(&out.Saved); err != nil {
+		return out, false, fmt.Errorf("count pending responses: %w", err)
+	}
+	var failedAt string
+	err = db.QueryRowContext(ctx, "SELECT attempts,error,failed_at FROM failures WHERE id=1").Scan(&out.Failures, &out.LastError, &failedAt)
+	if errors.Is(err, sql.ErrNoRows) || (err != nil && strings.Contains(err.Error(), "no such table")) {
+		return out, true, nil
+	}
+	if err != nil {
+		return out, false, fmt.Errorf("read pending sync failures: %w", err)
+	}
+	if out.FailedAt, err = time.Parse(time.RFC3339Nano, failedAt); err != nil {
+		return out, false, fmt.Errorf("parse pending sync failure time: %w", err)
+	}
+	return out, true, nil
 }
 
 // Load returns a completed fetch from the active session.

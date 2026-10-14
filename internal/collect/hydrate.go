@@ -49,16 +49,23 @@ func selection(name, cursor string) string {
 type hydratedIssue struct {
 	ref           store.IssueRef
 	values, extra json.RawMessage
+	missing       bool
 }
 
-func hydrate(ctx context.Context, c *github.Client, w *store.Writer, refs []store.IssueRef, fields, projects, relationships bool, workers int) error {
-	return parallelFetch(ctx, workers, (len(refs)+49)/50,
+// hydrate returns stored tickets whose GraphQL nodes no longer resolve.
+func hydrate(ctx context.Context, c *github.Client, w *store.Writer, refs []store.IssueRef, fields, projects, relationships bool, workers int) ([]store.IssueRef, error) {
+	missing := []store.IssueRef{}
+	err := parallelFetch(ctx, workers, (len(refs)+49)/50,
 		func(ctx context.Context, index int) ([]hydratedIssue, error) {
 			start := index * 50
 			return fetchBatch(ctx, c, refs[start:min(start+50, len(refs))], fields, projects, relationships)
 		},
 		func(batch []hydratedIssue) error {
 			for _, issue := range batch {
+				if issue.missing {
+					missing = append(missing, issue.ref)
+					continue
+				}
 				if err := w.PutExtra(ctx, issue.ref, issue.values, issue.extra); err != nil {
 					return fmt.Errorf("store hydrated issue: %w", err)
 				}
@@ -66,6 +73,7 @@ func hydrate(ctx context.Context, c *github.Client, w *store.Writer, refs []stor
 			c.Report(progress.Event{Advance: len(batch)})
 			return nil
 		})
+	return missing, err
 }
 
 func fetchBatch(ctx context.Context, c *github.Client, batch []store.IssueRef, fields, projects, relationships bool) ([]hydratedIssue, error) {
@@ -102,7 +110,7 @@ func fetchBatch(ctx context.Context, c *github.Client, batch []store.IssueRef, f
 		Nodes []json.RawMessage `json:"nodes"`
 	}
 	if err := c.GraphQLValidated(ctx, query, map[string]any{"ids": ids}, &data, func(raw json.RawMessage) error {
-		return validateBatch(raw, batch, names, projects, relationships)
+		return validateBatch(raw, batch, names, projects, relationships, func(ref store.IssueRef) error { return confirmVanished(ctx, c, ref) })
 	}); err != nil {
 		return nil, fmt.Errorf("batch issue metadata: %w", err)
 	}
@@ -110,6 +118,10 @@ func fetchBatch(ctx context.Context, c *github.Client, batch []store.IssueRef, f
 		return nil, fmt.Errorf("GraphQL issue inventory count mismatch")
 	}
 	for i, raw := range data.Nodes {
+		if string(raw) == "null" {
+			out = append(out, hydratedIssue{ref: batch[i], missing: true})
+			continue
+		}
 		object, err := store.Object(raw)
 		if err != nil {
 			return nil, fmt.Errorf("inaccessible GraphQL node %s: %w", batch[i].NodeID, err)
@@ -163,7 +175,7 @@ func fetchBatch(ctx context.Context, c *github.Client, batch []store.IssueRef, f
 		if err != nil {
 			return nil, fmt.Errorf("encode issue observations: %w", err)
 		}
-		out = append(out, hydratedIssue{batch[i], values, extra})
+		out = append(out, hydratedIssue{ref: batch[i], values: values, extra: extra})
 	}
 
 	return out, nil
@@ -209,7 +221,7 @@ func validateConnection(raw json.RawMessage) (connection, error) {
 	return page, nil
 }
 
-func validateBatch(raw json.RawMessage, batch []store.IssueRef, names []string, projects, relationships bool) error {
+func validateBatch(raw json.RawMessage, batch []store.IssueRef, names []string, projects, relationships bool, confirmVanished func(store.IssueRef) error) error {
 	var data struct {
 		Nodes []json.RawMessage `json:"nodes"`
 	}
@@ -220,6 +232,13 @@ func validateBatch(raw json.RawMessage, batch []store.IssueRef, names []string, 
 		return fmt.Errorf("GraphQL issue inventory count mismatch")
 	}
 	for i, raw := range data.Nodes {
+		// Deleted, transferred or converted tickets resolve to null; REST must confirm the absence.
+		if string(raw) == "null" {
+			if err := confirmVanished(batch[i]); err != nil {
+				return err
+			}
+			continue
+		}
 		object, err := store.Object(raw)
 		if err != nil {
 			return fmt.Errorf("inaccessible GraphQL node %s: %w", batch[i].NodeID, err)
@@ -300,4 +319,15 @@ func connectionItems(ctx context.Context, c *github.Client, ref store.IssueRef, 
 		}
 		raw = data.Node[name]
 	}
+}
+
+func confirmVanished(ctx context.Context, c *github.Client, ref store.IssueRef) error {
+	_, found, err := fetchIssue(ctx, c, ref.Repo, ref.Number)
+	if err != nil {
+		return fmt.Errorf("confirm missing GraphQL node %s: %w", ref.NodeID, err)
+	}
+	if found {
+		return fmt.Errorf("inaccessible GraphQL node %s for %s#%d although REST returns it", ref.NodeID, ref.Repo, ref.Number)
+	}
+	return nil
 }

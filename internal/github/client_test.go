@@ -76,7 +76,7 @@ func TestClient(t *testing.T) {
 					w.WriteHeader(302)
 					return
 				case "GraphQL partial errors":
-					if _, err := w.Write([]byte(`{"data":{"nodes":[]},"errors":[{"message":"secret body"}]}`)); err != nil {
+					if _, err := w.Write([]byte(`{"data":{"nodes":[]},"errors":[{"type":"FORBIDDEN","message":"Resource not accessible by integration"}]}`)); err != nil {
 						t.Error(err)
 					}
 					return
@@ -86,7 +86,7 @@ func TestClient(t *testing.T) {
 					}
 					return
 				case "rate wait bounded":
-					w.Header().Set("Retry-After", "3600")
+					w.Header().Set("Retry-After", "7200")
 					w.WriteHeader(429)
 					return
 				}
@@ -113,8 +113,12 @@ func TestClient(t *testing.T) {
 					query = "mutation{deleteIssue{id}}"
 				}
 				var out any
-				if err := client.GraphQL(context.Background(), query, nil, &out); err == nil || strings.Contains(err.Error(), "secret body") {
-					t.Fatal("GraphQL failure ignored or payload leaked", err)
+				err := client.GraphQL(context.Background(), query, nil, &out)
+				if err == nil || strings.Contains(err.Error(), "secret") {
+					t.Fatal("GraphQL failure ignored or credential leaked", err)
+				}
+				if name == "GraphQL partial errors" && !strings.Contains(err.Error(), `FORBIDDEN: Resource not accessible by integration`) {
+					t.Fatal("GraphQL error message lost", err)
 				}
 				if name == "GraphQL mutation" && calls != 0 {
 					t.Fatal("mutation sent upstream")

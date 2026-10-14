@@ -34,7 +34,10 @@ func TestLogging(t *testing.T) {
 			if !strings.Contains(stderr.String(), "warn message") || strings.Contains(stderr.String(), "debug message") != tc.debug || strings.Contains(stderr.String(), "trace message") {
 				t.Fatal(stderr.String())
 			}
-			path := filepath.Join(dir, "gh-mirror.log")
+			path := TracePath()
+			if filepath.Dir(path) != dir {
+				t.Fatal("trace outside the temporary directory", path)
+			}
 			if tc.trace {
 				body, err := os.ReadFile(path)
 				if err != nil || !strings.Contains(string(body), "trace message") || !strings.Contains(string(body), "debug message") {

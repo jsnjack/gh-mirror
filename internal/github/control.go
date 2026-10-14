@@ -28,7 +28,7 @@ func (c *Client) acquire(ctx context.Context) (int, error) {
 			<-c.slots
 			return 0, err
 		}
-		wait := time.Until(c.pausedUntil)
+		wait := c.pausedUntil.Sub(c.now())
 		if wait <= 0 {
 			if c.remaining <= 0 {
 				err := fmt.Errorf("GitHub request budget exhausted after %d attempts", c.used)
@@ -46,13 +46,9 @@ func (c *Client) acquire(ctx context.Context) (int, error) {
 			return number, nil
 		}
 		c.mu.Unlock()
-		timer := time.NewTimer(wait)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
+		if err := c.sleep(ctx, wait); err != nil {
 			<-c.slots
-			return 0, fmt.Errorf("cancel GitHub retry wait: %w", ctx.Err())
-		case <-timer.C:
+			return 0, fmt.Errorf("cancel GitHub retry wait: %w", err)
 		}
 	}
 }
@@ -75,7 +71,7 @@ func (c *Client) fail(err error) {
 
 func (c *Client) pause(delay time.Duration) {
 	c.mu.Lock()
-	if until := time.Now().Add(delay); until.After(c.pausedUntil) {
+	if until := c.now().Add(delay); until.After(c.pausedUntil) {
 		c.pausedUntil = until
 	}
 	c.mu.Unlock()

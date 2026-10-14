@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -45,8 +46,11 @@ func syncAt(ctx context.Context, db *store.Store, c config.Config, options Optio
 	return syncVersion(ctx, db, c, options, started, store.CollectionVersion)
 }
 
+// syncVersion receives the current time as started; a resumed session replaces it with
+// the original watermark while interval checks keep using the current time.
 func syncVersion(ctx context.Context, db *store.Store, c config.Config, options Options, started time.Time, version int) (Result, error) {
 	full, report := options.Full, options.Progress
+	now := started
 	var result Result
 	report.Send(progress.Event{Phase: "Checking checkpoints", Limit: c.MaxRequests})
 	if err := c.Validate(); err != nil {
@@ -115,7 +119,7 @@ func syncVersion(ctx context.Context, db *store.Store, c config.Config, options 
 			return fmt.Errorf("encode previous scope: %w", err)
 		}
 		scopeChanged := string(prior) != string(scope) || old.Upstream != strings.TrimRight(c.APIURL, "/")
-		refresh := full || scopeChanged || due(old.EnrichedAt, started, enrichment)
+		refresh := full || scopeChanged || due(old.EnrichedAt, now, enrichment)
 		scopes := c.Scopes()
 		priorScopes, err := previousScopes(ctx, w, c, old)
 		if err != nil {
@@ -144,6 +148,8 @@ func syncVersion(ctx context.Context, db *store.Store, c config.Config, options 
 		owners := map[string]bool{}
 		ownerTypes := map[string]bool{}
 		groups := map[hydrationScope][]store.IssueRef{}
+		coverages := map[string]store.Coverage{}
+		unreconciled := map[string]bool{}
 		for repository, repo := range repos {
 			scope := scopes[repo]
 			priorScope, knownScope := priorScopes[repo]
@@ -165,9 +171,11 @@ func syncVersion(ctx context.Context, db *store.Store, c config.Config, options 
 					previous = coverage
 				}
 			}
-			inventory := full || scopeChanged || changedInventory || due(previous.ReconciledAt, started, reconcile)
-			query := url.Values{"state": {"all"}, "per_page": {"100"}, "sort": {"updated"}, "direction": {"asc"}}
-			commentQuery := url.Values{"per_page": {"100"}, "sort": {"updated"}, "direction": {"asc"}}
+			inventory := full || scopeChanged || changedInventory || due(previous.ReconciledAt, now, reconcile)
+			// Creation order stays fixed when records are edited, so numbered pages do not shift
+			// during or between page fetches; since still filters by update time.
+			query := url.Values{"state": {"all"}, "per_page": {"100"}, "sort": {"created"}, "direction": {"asc"}}
+			commentQuery := url.Values{"per_page": {"100"}, "sort": {"created"}, "direction": {"asc"}}
 			if !inventory {
 				checkpoint, err := time.Parse(time.RFC3339Nano, previous.CollectedAt)
 				if err != nil {
@@ -297,6 +305,11 @@ func syncVersion(ctx context.Context, db *store.Store, c config.Config, options 
 				}
 			}
 			if inventory {
+				confirmed, err := confirmMissing(ctx, client, w, repo, scope, c.Workers, seenIssues)
+				if err != nil {
+					return err
+				}
+				changed = append(changed, confirmed...)
 				client.Report(progress.Event{Phase: "Reconciling inventories", Scope: repo})
 				if err := w.Reconcile(ctx, repo, seenIssues, seenComments); err != nil {
 					return fmt.Errorf("reconcile %s: %w", repo, err)
@@ -330,8 +343,24 @@ func syncVersion(ctx context.Context, db *store.Store, c config.Config, options 
 					if (kind == "labels" && !scope.Labels) || (kind == "milestones" && !scope.Milestones) {
 						continue
 					}
-					if err := catalog(ctx, client, w, kind, repo, "/repos/"+repo+path); err != nil {
+					var prior store.CatalogResult
+					if kind == "labels" && !inventory {
+						// The committed mirror still holds the previous catalog; this transaction already reset it.
+						if prior, err = db.Catalog(ctx, kind, repo); err != nil {
+							return fmt.Errorf("read previous label catalog: %w", err)
+						}
+					}
+					items, err := catalog(ctx, client, w, kind, repo, "/repos/"+repo+path)
+					if err != nil {
 						return err
+					}
+					if kind == "labels" && !inventory {
+						relabeled, absent, err := refreshRelabeled(ctx, db, client, w, repo, scope, c.Workers, prior.Items, items)
+						if err != nil {
+							return err
+						}
+						changed = append(changed, relabeled...)
+						unreconciled[repo] = unreconciled[repo] || absent
 					}
 				}
 				for kind, enabled := range map[string]bool{"issue_types": scope.IssueTypes, "issue_fields": scope.Fields, "projects": scope.Projects} {
@@ -345,7 +374,7 @@ func syncVersion(ctx context.Context, db *store.Store, c config.Config, options 
 						}
 					} else {
 						resource := strings.ReplaceAll(kind, "_", "-")
-						if err := catalog(ctx, client, w, kind, owner, "/orgs/"+owner+"/"+resource+"?per_page=100"); err != nil {
+						if _, err := catalog(ctx, client, w, kind, owner, "/orgs/"+owner+"/"+resource+"?per_page=100"); err != nil {
 							return err
 						}
 					}
@@ -375,9 +404,7 @@ func syncVersion(ctx context.Context, db *store.Store, c config.Config, options 
 			}
 			previous.Projects = projectCoverage
 			previous.CollectedAt = started.Format(time.RFC3339Nano)
-			if err := w.SetCoverage(ctx, previous); err != nil {
-				return fmt.Errorf("checkpoint %s: %w", repo, err)
-			}
+			coverages[repo] = previous
 			slog.DebugContext(ctx, "collected repository", "repo", repo, "issues", len(issues), "comments", len(comments), "full", inventory, "enrichment", repoRefresh)
 		}
 		total := 0
@@ -391,10 +418,25 @@ func syncVersion(ctx context.Context, db *store.Store, c config.Config, options 
 			for _, projects := range []bool{true, false} {
 				for _, relationships := range []bool{true, false} {
 					key := hydrationScope{fields, projects, relationships}
-					if err := hydrate(ctx, client, w, groups[key], fields, projects, relationships, c.Workers); err != nil {
+					missing, err := hydrate(ctx, client, w, groups[key], fields, projects, relationships, c.Workers)
+					if err != nil {
 						return fmt.Errorf("hydrate ticket batches: %w", err)
 					}
+					for _, ref := range missing {
+						unreconciled[ref.Repo] = true
+					}
 				}
+			}
+		}
+		for _, repo := range repos {
+			coverage := coverages[repo]
+			if unreconciled[repo] {
+				// The next sync lists the repository completely and removes confirmed absences.
+				coverage.ReconciledAt = ""
+				slog.DebugContext(ctx, "schedule reconciliation for removed tickets", "repo", repo)
+			}
+			if err := w.SetCoverage(ctx, coverage); err != nil {
+				return fmt.Errorf("checkpoint %s: %w", repo, err)
 			}
 		}
 		client.Report(progress.Event{Phase: "Applying PR comment policy"})
@@ -420,6 +462,11 @@ func syncVersion(ctx context.Context, db *store.Store, c config.Config, options 
 		return nil
 	})
 	if pending != nil {
+		if err != nil && ctx.Err() == nil {
+			if recordErr := pending.RecordFailure(ctx, err, now); recordErr != nil {
+				slog.Log(ctx, diagnostics.TraceLevel, "record failed sync attempt", "error", recordErr)
+			}
+		}
 		if closeErr := pending.Close(); closeErr != nil {
 			err = errors.Join(err, closeErr)
 		}
@@ -437,22 +484,141 @@ func syncVersion(ctx context.Context, db *store.Store, c config.Config, options 
 }
 
 func recoverIssue(ctx context.Context, c *github.Client, w *store.Writer, repo string, number int, scope config.Scope) (store.IssueRef, error) {
-	raw, err := c.Get(ctx, fmt.Sprintf("/repos/%s/issues/%d", repo, number))
+	raw, found, err := fetchIssue(ctx, c, repo, number)
 	if err != nil {
-		return store.IssueRef{}, fmt.Errorf("fetch missing issue %s#%d: %w", repo, number, err)
+		return store.IssueRef{}, err
 	}
-	object, err := store.Object(raw)
-	if err != nil {
-		return store.IssueRef{}, fmt.Errorf("decode missing issue: %w", err)
+	if !found {
+		return store.IssueRef{}, fmt.Errorf("missing issue %s#%d is inaccessible", repo, number)
 	}
-	if store.Identity(object, "number") != strconv.Itoa(number) {
-		return store.IssueRef{}, fmt.Errorf("missing issue %s#%d returned a different issue number", repo, number)
-	}
-	ref, err := w.PutIssue(ctx, repo, raw)
+	ref, err := retainIssue(ctx, w, repo, raw, scope)
 	if err != nil {
 		return ref, fmt.Errorf("store recovered issue %s#%d: %w", repo, number, err)
 	}
 	return ref, nil
+}
+
+func fetchIssue(ctx context.Context, c *github.Client, repo string, number int) (json.RawMessage, bool, error) {
+	raw, found, err := c.Lookup(ctx, fmt.Sprintf("/repos/%s/issues/%d", repo, number))
+	if err != nil {
+		return nil, false, fmt.Errorf("fetch issue %s#%d: %w", repo, number, err)
+	}
+	if !found {
+		return nil, false, nil
+	}
+	object, err := store.Object(raw)
+	if err != nil {
+		return nil, false, fmt.Errorf("decode issue %s#%d: %w", repo, number, err)
+	}
+	if store.Identity(object, "number") != strconv.Itoa(number) {
+		return nil, false, fmt.Errorf("issue %s#%d returned a different issue number", repo, number)
+	}
+	return raw, true, nil
+}
+
+// refetchIssues retains live issues and reports whether any were confirmed absent.
+func refetchIssues(ctx context.Context, c *github.Client, w *store.Writer, repo string, scope config.Scope, workers int, numbers []int, seen map[int]bool) ([]store.IssueRef, bool, error) {
+	changed := []store.IssueRef{}
+	absent := false
+	err := parallelFetch(ctx, workers, len(numbers), func(ctx context.Context, index int) (json.RawMessage, error) {
+		raw, _, err := fetchIssue(ctx, c, repo, numbers[index])
+		return raw, err
+	}, func(raw json.RawMessage) error {
+		if raw == nil {
+			absent = true
+			return nil
+		}
+		ref, err := retainIssue(ctx, w, repo, raw, scope)
+		if err != nil {
+			return fmt.Errorf("store refetched issue for %s: %w", repo, err)
+		}
+		if !scope.Includes(ref.Kind) {
+			return nil
+		}
+		if seen != nil {
+			seen[ref.Number] = true
+		}
+		if ref.Changed {
+			changed = append(changed, ref)
+		}
+		return nil
+	})
+	return changed, absent, err
+}
+
+// confirmMissing keeps stored issues that a complete listing skipped but GitHub still serves.
+func confirmMissing(ctx context.Context, c *github.Client, w *store.Writer, repo string, scope config.Scope, workers int, seen map[int]bool) ([]store.IssueRef, error) {
+	refs, err := w.IssueRefs(ctx, repo)
+	if err != nil {
+		return nil, fmt.Errorf("read reconciliation inventory: %w", err)
+	}
+	missing := []int{}
+	for _, ref := range refs {
+		if !seen[ref.Number] && scope.Includes(ref.Kind) {
+			missing = append(missing, ref.Number)
+		}
+	}
+	if len(missing) == 0 {
+		return nil, nil
+	}
+	c.Report(progress.Event{Phase: "Confirming missing issues", Scope: repo, Total: len(missing)})
+	changed, _, err := refetchIssues(ctx, c, w, repo, scope, workers, missing, seen)
+	if err != nil {
+		return nil, fmt.Errorf("confirm issues missing from %s listing: %w", repo, err)
+	}
+	return changed, nil
+}
+
+// refreshRelabeled refetches issues carrying renamed or deleted labels, which GitHub
+// changes without advancing issue updated_at.
+func refreshRelabeled(ctx context.Context, db *store.Store, c *github.Client, w *store.Writer, repo string, scope config.Scope, workers int, prior, current []json.RawMessage) ([]store.IssueRef, bool, error) {
+	names := map[string]string{}
+	for _, raw := range current {
+		object, err := store.Object(raw)
+		if err != nil {
+			return nil, false, fmt.Errorf("decode label catalog: %w", err)
+		}
+		names[store.Identity(object, "id")] = store.Text(object, "name")
+	}
+	stale := []string{}
+	for _, raw := range prior {
+		object, err := store.Object(raw)
+		if err != nil {
+			return nil, false, fmt.Errorf("decode previous label catalog: %w", err)
+		}
+		if name := store.Text(object, "name"); name != "" && names[store.Identity(object, "id")] != name {
+			stale = append(stale, name)
+		}
+	}
+	if len(stale) == 0 {
+		return nil, false, nil
+	}
+	numbers := []int{}
+	// Listing filters accept at most 100 label names per request.
+	for start := 0; start < len(stale); start += 100 {
+		cursor := ""
+		for {
+			page, err := db.List(ctx, store.ListOptions{Repo: repo, QueryFilters: store.QueryFilters{LabelsAny: stale[start:min(start+100, len(stale))]}, Limit: 100, Cursor: cursor})
+			if err != nil {
+				return nil, false, fmt.Errorf("find issues with changed labels: %w", err)
+			}
+			for _, ticket := range page.Issues {
+				numbers = append(numbers, ticket.Number)
+			}
+			if !page.HasMore {
+				break
+			}
+			cursor = page.NextCursor
+		}
+	}
+	slices.Sort(numbers)
+	numbers = slices.Compact(numbers)
+	c.Report(progress.Event{Phase: "Refreshing relabeled issues", Scope: repo, Total: len(numbers)})
+	changed, absent, err := refetchIssues(ctx, c, w, repo, scope, workers, numbers, nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("refresh issues with changed labels in %s: %w", repo, err)
+	}
+	return changed, absent, nil
 }
 
 func due(timestamp string, now time.Time, interval time.Duration) bool {
@@ -462,16 +628,16 @@ func due(timestamp string, now time.Time, interval time.Duration) bool {
 	last, err := time.Parse(time.RFC3339Nano, timestamp)
 	return err != nil || now.Sub(last) >= interval
 }
-func catalog(ctx context.Context, c *github.Client, w *store.Writer, kind, scope, path string) error {
+func catalog(ctx context.Context, c *github.Client, w *store.Writer, kind, scope, path string) ([]json.RawMessage, error) {
 	c.Report(progress.Event{Phase: "Refreshing " + strings.ReplaceAll(kind, "_", " "), Scope: scope})
 	items, err := c.List(ctx, path)
 	if err != nil {
-		return fmt.Errorf("collect %s catalog: %w", kind, err)
+		return nil, fmt.Errorf("collect %s catalog: %w", kind, err)
 	}
 	if err := w.ReplaceCatalog(ctx, kind, scope, items); err != nil {
-		return fmt.Errorf("replace %s catalog: %w", kind, err)
+		return nil, fmt.Errorf("replace %s catalog: %w", kind, err)
 	}
-	return nil
+	return items, nil
 }
 func projects(ctx context.Context, c *github.Client, w *store.Writer, owner string, organization bool) error {
 	c.Report(progress.Event{Phase: "Listing projects", Scope: owner})

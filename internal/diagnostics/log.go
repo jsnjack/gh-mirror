@@ -58,16 +58,53 @@ func Setup(debug, trace bool, stderr io.Writer) (*slog.Logger, io.Closer, error)
 	if !trace {
 		return slog.New(h), nil, nil
 	}
-	f, err := os.OpenFile(filepath.Join(os.TempDir(), "gh-mirror.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	f, err := openTrace(TracePath())
 	if err != nil {
-		return nil, nil, fmt.Errorf("open trace log: %w", err)
-	}
-	if err := f.Chmod(0600); err != nil {
-		if closeErr := f.Close(); closeErr != nil {
-			return nil, nil, fmt.Errorf("set trace permissions: %w; close: %v", err, closeErr)
-		}
-		return nil, nil, fmt.Errorf("set trace permissions: %w", err)
+		return nil, nil, err
 	}
 	h.handlers = append(h.handlers, slog.NewTextHandler(f, &slog.HandlerOptions{Level: TraceLevel}))
 	return slog.New(h), f, nil
+}
+
+// TracePath returns the per-user trace log location in the temporary directory.
+func TracePath() string {
+	name := "gh-mirror.log"
+	if uid := os.Getuid(); uid >= 0 {
+		name = fmt.Sprintf("gh-mirror-%d.log", uid)
+	}
+	return filepath.Join(os.TempDir(), name)
+}
+
+// openTrace refuses links planted in the shared temporary directory and truncates only
+// a regular single-link file this user owns.
+func openTrace(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|noFollow, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("open trace log: %w", err)
+	}
+	if err := checkTrace(f); err != nil {
+		if closeErr := f.Close(); closeErr != nil {
+			return nil, fmt.Errorf("%w; close: %v", err, closeErr)
+		}
+		return nil, err
+	}
+	return f, nil
+}
+
+func checkTrace(f *os.File) error {
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("inspect trace log: %w", err)
+	}
+	if !info.Mode().IsRegular() || !singleLink(info) {
+		return fmt.Errorf("trace log %s is not a private regular file", f.Name())
+	}
+	// Chmod fails unless this user owns the file.
+	if err := f.Chmod(0600); err != nil {
+		return fmt.Errorf("set trace permissions: %w", err)
+	}
+	if err := f.Truncate(0); err != nil {
+		return fmt.Errorf("truncate trace log: %w", err)
+	}
+	return nil
 }

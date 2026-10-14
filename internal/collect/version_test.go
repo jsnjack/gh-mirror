@@ -37,7 +37,7 @@ func TestCollectionCompatibility(t *testing.T) {
 			if name == "compatible" {
 				f.stage = "delta"
 			}
-			query := url.Values{"state": {"all"}, "per_page": {"100"}, "sort": {"updated"}, "direction": {"asc"}}
+			query := url.Values{"state": {"all"}, "per_page": {"100"}, "sort": {"created"}, "direction": {"asc"}}
 			listing := c.APIURL + "/repos/o/r/issues?" + query.Encode()
 			if err := db.Update(ctx, func(w *store.Writer) error {
 				return w.Cache(ctx, listing, "obsolete-etag", []byte(`{"body":[],"link":""}`))
