@@ -1,16 +1,18 @@
-desc: Acquire a private mirror before the gh-tidy analysis tasks
+desc: Copy the published mirror before the gh-tidy analysis tasks
 params:
   - REPOSITORY: owner/repository
   - ISSUE_NUMBER: "123"
 
 tasks:
-  - name: Acquire pinned mirror
+  - name: Copy the latest snapshot
     run: >-
-      /home/client/bin/gh-mirror acquire
-      --source /home/client/gh-mirror/snapshots/latest.json
-      --dest "${WAKE_BUILD_WORKSPACE}/mirror.sqlite"
-      --repo "${REPOSITORY}"
-      --max-age 2h > mirror-manifest.json
+      cp "/home/client/gh-mirror/snapshots/$(jq -r .filename /home/client/gh-mirror/snapshots/latest.json)"
+      "${WAKE_BUILD_WORKSPACE}/mirror.sqlite"
+
+  - name: Check freshness
+    run: >-
+      /home/client/bin/gh-mirror --db "${WAKE_BUILD_WORKSPACE}/mirror.sqlite"
+      doctor --max-age 2h
 
   - name: Retrieve local candidates
     run: >-

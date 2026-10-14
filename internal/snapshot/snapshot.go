@@ -15,6 +15,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -24,6 +25,9 @@ import (
 )
 
 const maxSnapshot = 2 << 30
+
+// keepSnapshots bounds disk use; consumers copy the file latest.json names before reading it.
+const keepSnapshots = 3
 
 var filenamePattern = regexp.MustCompile(`^mirror-[A-Za-z0-9_-]+\.sqlite$`)
 
@@ -182,7 +186,39 @@ func Publish(ctx context.Context, db *store.Store, dir string) (Manifest, error)
 	if err := atomicBytes(dir, "latest.json", append(encoded, '\n')); err != nil {
 		return m, fmt.Errorf("publish manifest: %w", err)
 	}
+	prune(ctx, dir, m.Filename)
 	return m, nil
+}
+
+// prune removes all but the newest snapshots, never the one latest.json names.
+// Failures only leave extra files behind, so they do not fail the publication.
+func prune(ctx context.Context, dir, current string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		slog.WarnContext(ctx, "list snapshots for pruning", "error", err)
+		return
+	}
+	type snapshot struct {
+		name     string
+		modified time.Time
+	}
+	var old []snapshot
+	for _, e := range entries {
+		if !e.Type().IsRegular() || !ValidFilename(e.Name()) || e.Name() == current {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		old = append(old, snapshot{e.Name(), info.ModTime()})
+	}
+	slices.SortFunc(old, func(a, b snapshot) int { return b.modified.Compare(a.modified) })
+	for _, s := range old[min(len(old), keepSnapshots-1):] {
+		if err := os.Remove(filepath.Join(dir, s.name)); err != nil && !os.IsNotExist(err) {
+			slog.WarnContext(ctx, "remove old snapshot", "file", s.name, "error", err)
+		}
+	}
 }
 func atomicBytes(dir, name string, body []byte) error {
 	f, err := os.CreateTemp(dir, ".manifest-*")

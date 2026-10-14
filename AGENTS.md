@@ -128,7 +128,8 @@ retain valid saved pages and batches when a later request fails.
 
 Readers open existing databases without migrations or writes. Publish standalone
 SQLite exports, never copies of live WAL databases. Complete and validate the export
-before atomically replacing `latest.json`. Acquisition resolves the manifest once,
+before atomically replacing `latest.json`, then prune all but the three newest
+snapshot files. Same-host consumers copy the named file; `acquire` serves remote hosts. Acquisition resolves the manifest once,
 verifies checksum, scope, schema and freshness, and installs a private local copy.
 Exports remove all conditional response caches and local credential identity, then
 compact the private export to remove deleted payload bytes. Prune disabled field

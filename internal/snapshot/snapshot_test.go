@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -183,5 +184,43 @@ func TestSnapshots(t *testing.T) {
 				t.Fatal("destination permissions", err)
 			}
 		})
+	}
+}
+
+func TestPublishPrunesOldSnapshots(t *testing.T) {
+	ctx := context.Background()
+	db, dir := source(t)
+	base := time.Now().Add(-time.Hour)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 5 {
+		name := filepath.Join(dir, fmt.Sprintf("mirror-old%d-000000000000.sqlite", i))
+		if err := os.WriteFile(name, []byte("old"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(name, base, base.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	m, err := Publish(ctx, db, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	want := []string{"latest.json", m.Filename, "mirror-old3-000000000000.sqlite", "mirror-old4-000000000000.sqlite", "notes.txt"}
+	slices.Sort(want)
+	if !slices.Equal(names, want) {
+		t.Fatalf("got %v, want %v", names, want)
 	}
 }

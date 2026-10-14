@@ -670,9 +670,23 @@ The publisher exports a standalone SQLite file including its search index, remov
 collector response caches and credential identity, compacts it to remove deleted
 payload bytes, assigns
 an immutable filename, and atomically updates `latest.json`. Use this export rather
-than copying the main file of a live SQLite database with WAL sidecars.
+than copying the main file of a live SQLite database with WAL sidecars. Each publish
+keeps the three newest snapshot files and removes older ones.
 
-Acquire from a shared directory:
+On the collector host, copy the file `latest.json` names and query the copy.
+Snapshot files never change, and readers open them read-only, so any number of
+jobs can query their copies at once:
+
+```sh
+SNAPSHOTS=/srv/gh-mirror/snapshots
+cp "$SNAPSHOTS/$(jq -r .filename "$SNAPSHOTS/latest.json")" ./mirror.sqlite
+gh-mirror --db ./mirror.sqlite doctor --max-age 2h
+gh-mirror --db ./mirror.sqlite search 'socket timeout'
+```
+
+Copy instead of reading the published file in place: pruning may remove it during
+a long job. `acquire` adds checksum, scope and age checks, and downloads from
+another host. Acquire from a shared directory:
 
 ```sh
 gh-mirror acquire \

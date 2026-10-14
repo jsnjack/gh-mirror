@@ -244,8 +244,9 @@ immutable filename. Finally atomically replace and fsync `latest.json`. The mani
 contains filename, checksum, schema and collection versions, generation, scope,
 collection time and enrichment time. Publication and acquisition reject unsupported
 collection versions; missing manifest versions default to legacy version 1.
-Failed publication leaves the previous pointer intact. Versioned files are retained
-until explicitly removed by operators; automatic retention is outside this version.
+Failed publication leaves the previous pointer intact. After `latest.json` is
+replaced, publication keeps the three newest versioned files, never removes the one
+it names, and only logs pruning failures. Consumers copy the named file before use.
 Acquisition currently bounds database downloads to 2 GiB.
 
 Acquisition reads a local or HTTP manifest once, validates its fields and freshness,
@@ -260,9 +261,10 @@ published snapshot is never opened for writes. Copying a live WAL file is unsupp
 
 Keep collector state outside WakeCI build workspaces, for example
 `/home/client/gh-mirror/`. A scheduled collector job runs with concurrency one and
-publishes after success. A gh-tidy build acquires one snapshot into
-`${WAKE_BUILD_WORKSPACE}`, validates a configured maximum age, and pins it for its
-whole batch. Record generation/checksum in the triage report. Before applying changes,
+publishes after success. A gh-tidy build on the same host copies the file
+`latest.json` names into `${WAKE_BUILD_WORKSPACE}` and pins it for its whole batch;
+gh-tidy rejects a copy older than its configured maximum age. Remote hosts use
+`acquire`. Record generation/checksum in the triage report. Before applying changes,
 gh-tidy refreshes affected upstream tickets and supporting evidence.
 
 Missing or stale snapshots fail explicitly; consumers never bootstrap the corpus
