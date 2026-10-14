@@ -56,7 +56,7 @@ func TestRESTMCPParity(t *testing.T) {
 	cases := []struct {
 		name, path, tool string
 		args             map[string]any
-	}{{"list", "/v1/issues?label=client%3AAcme&limit=1", "list_issues", map[string]any{"label": "client:Acme", "limit": 1}}, {"search", "/v1/search?q=acme", "search_issues", map[string]any{"query": "acme"}}, {"get", "/v1/issues/o/r/1", "get_issue", map[string]any{"repo": "o/r", "number": 1}}, {"catalog", "/v1/catalog?kind=labels&scope=o/r", "get_catalog", map[string]any{"kind": "labels", "scope": "o/r"}}, {"project", "/v1/projects?owner=o&number=1", "get_project", map[string]any{"owner": "o", "number": 1}}, {"candidates", "/v1/candidates?repo=o/r&number=1", "find_duplicate_candidates", map[string]any{"repo": "o/r", "number": 1}}, {"status", "/v1/status", "get_sync_status", map[string]any{}}}
+	}{{"list", "/v1/issues?label=client%3AAcme&limit=1", "list_issues", map[string]any{"label": "client:Acme", "limit": 1}}, {"search", "/v1/search?q=acme", "search_issues", map[string]any{"query": "acme"}}, {"get", "/v1/issues/o/r/1", "get_issue", map[string]any{"repo": "o/r", "number": 1, "view": "full", "comments": "all"}}, {"catalog", "/v1/catalog?kind=labels&scope=o/r", "get_catalog", map[string]any{"kind": "labels", "scope": "o/r"}}, {"project", "/v1/projects?owner=o&number=1", "get_project", map[string]any{"owner": "o", "number": 1}}, {"candidates", "/v1/candidates?repo=o/r&number=1", "find_duplicate_candidates", map[string]any{"repo": "o/r", "number": 1}}, {"status", "/v1/status", "get_sync_status", map[string]any{}}}
 	cases = append(cases, struct {
 		name, path, tool string
 		args             map[string]any
@@ -64,6 +64,7 @@ func TestRESTMCPParity(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			svc := fixture(t)
+			svc.Tools = ToolsAll
 			ctx := context.Background()
 			a, b := mcp.NewInMemoryTransports()
 			serverSession, err := svc.MCP().Connect(ctx, a, nil)
@@ -112,9 +113,9 @@ func TestRESTMCPParity(t *testing.T) {
 			if response.Code != 200 {
 				t.Fatal(response.Code, response.Body.String())
 			}
-			var restOut any
-			if err := json.Unmarshal(response.Body.Bytes(), &restOut); err != nil {
-				t.Fatal(err)
+			restOut := decodeJSON(t, response.Body.Bytes())
+			if tc.tool != "get_sync_status" {
+				restOut = compactREST(t, response.Body.Bytes())
 			}
 			if !reflect.DeepEqual(mcpOut, restOut) {
 				t.Fatalf("REST and MCP differ:\n%s\n%s", encoded, response.Body.String())
@@ -265,16 +266,33 @@ func TestOfflineSearchEngines(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var got, want any
-			if err := json.Unmarshal(raw, &got); err != nil {
-				t.Fatal(err)
-			}
-			if err := json.Unmarshal(response.Body.Bytes(), &want); err != nil {
-				t.Fatal(err)
-			}
+			got, want := decodeJSON(t, raw), compactREST(t, response.Body.Bytes())
 			if !reflect.DeepEqual(got, want) {
 				t.Fatal("REST/MCP semantic parity failure")
 			}
 		})
 	}
+}
+
+func decodeJSON(t *testing.T, raw []byte) any {
+	t.Helper()
+	var out any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// compactREST applies the MCP status compaction to a REST body for parity checks.
+func compactREST(t *testing.T, body []byte) any {
+	t.Helper()
+	compact, err := compactResult(json.RawMessage(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(compact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return decodeJSON(t, raw)
 }

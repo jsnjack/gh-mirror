@@ -88,3 +88,31 @@ func TestValidRepository(t *testing.T) {
 		})
 	}
 }
+
+func TestDefaultRepository(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		config  Config
+		want    string
+		invalid bool
+	}{
+		{name: "explicit", config: Config{DefaultRepo: "o/b", Repositories: []string{"o/a"}}, want: "o/b"},
+		{name: "single repository", config: Config{Repositories: []string{"o/a"}}, want: "o/a"},
+		{name: "several repositories", config: Config{Repositories: []string{"o/a", "o/b"}}},
+		{name: "invalid", config: Config{DefaultRepo: "../x"}, invalid: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.config.DefaultRepository(); got != tc.want && !tc.invalid {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+			base, err := defaults()
+			if err != nil {
+				t.Fatal(err)
+			}
+			base.DefaultRepo, base.Repositories = tc.config.DefaultRepo, tc.config.Repositories
+			if err := base.Validate(); (err != nil) != tc.invalid {
+				t.Fatalf("validation error %v, invalid %t", err, tc.invalid)
+			}
+		})
+	}
+}

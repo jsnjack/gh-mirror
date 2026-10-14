@@ -15,9 +15,13 @@ bundled for pure Go CPU inference. Cobra follows workspace
 standards. modernc.org/sqlite supplies SQLite and FTS5 without platform-specific
 C libraries. The official Go MCP SDK handles stdio and Streamable HTTP.
 
-The CLI supports `sync`, `index`, `model`, `search`, `get`, `candidates`, `catalog`, `status`, `snapshot`,
-`acquire`, `list`, `scope`, `config`, `serve`, and `mcp`. All commands inherit `--config`/`-c`, `--debug`/`-d`,
-and `--trace`. The root supports `--version`. Configuration is TOML with legacy JSON support under the XDG
+Help groups the CLI commands by task. Query: `search`, `list`, `show`, `comments`, `context`, `related`,
+`catalog`. Collect: `sync`, `index`, `snapshot`, `acquire`. Serve: `serve`, `mcp`. Inspect: `status`,
+`doctor`, `scope`, `bots`, `model`, `config`. Advanced: `evaluate`. Hidden deprecated aliases `get`,
+`batch` and `candidates` keep earlier scripts working. Ticket commands accept REF as `owner/repo#N`, a
+GitHub issue/pull URL, or `#N`/`N` with `default_repo` or a single configured repository. Embedding
+flags appear only on commands that encode text. All commands inherit `--config`/`-c`, `--debug`/`-d`,
+`--format`, `--db` and `--trace`. The root supports `--version`. Configuration is TOML with legacy JSON support under the XDG
 configuration directory. Durable data uses the XDG data directory. Tokens are
 read from named environment variables, never configuration values or databases.
 
@@ -56,6 +60,9 @@ repository comments have independent updated-time checkpoints with a five-minute
 overlap. A successful checkpoint records collection start time; changes during
 collection remain eligible for the next run. Upserts reject stale timestamped
 responses, replace label membership, and update the index in the same transaction.
+Issue and comment listings sort by creation time in ascending order, while `since`
+still selects by update time. Edits during or between numbered page fetches
+therefore do not move records across page boundaries.
 
 Comment listings can reference issues absent from the bulk issue inventory. Recover
 each missing parent through a single issue GET before storing its comments. Deltas
@@ -78,9 +85,20 @@ obsolete project detail catalogs without forcing enrichment. Narrowing collectio
 reuses compatible request checkpoints.
 Periodic full issue/comment reconciliation detects removed records. `--full` requests
 it explicitly; the default reconciliation interval is 24 hours. A full listing removes
-unseen records only after every page succeeds. A 404 or 403 is an access/collection
-failure rather than proof of deletion. Removing a configured repository removes its
-records at the next successful sync and changes published scope.
+unseen records only after every page succeeds. A 404 or 403 on a listing is an
+access/collection failure rather than proof of deletion. Before removing a stored
+in-scope ticket that a complete listing omitted, fetch it individually. A returned
+ticket is kept and refreshed; only 404, 410 or 301 confirms removal. This also
+repairs listings shifted by deletions during pagination. Removing a configured
+repository removes its records at the next successful sync and changes published scope.
+A hydration batch may return a null node for a deleted, transferred or converted
+ticket. A REST 404, 410 or 301 for that ticket confirms the removal: the sync
+commits without that observation and clears the repository's reconciliation time,
+so the next sync lists it completely. A ticket that REST still returns fails
+validation as before.
+When the enrichment refresh finds renamed or deleted labels, delta syncs refetch
+stored tickets that carry the old names. GitHub does not advance `updated_at` for
+these changes.
 
 One SQLite immediate write transaction serializes collectors across processes and
 commits configured repositories, catalogs, indexes, and checkpoints together.
@@ -103,8 +121,14 @@ collection version and pending-session fingerprints unchanged.
 Network errors, invalid payloads, GraphQL errors/partial responses, repeated pagination
 cursors, or request-budget exhaustion roll back the collection. Readers use WAL
 transactions. HTTP retries have bounded attempts and wait time, obey Retry-After and
-rate-limit reset headers, and respect cancellation. Requests have deadlines and a
-shared per-sync budget. Trace logs record resource/count/status metadata without
+rate-limit reset headers, and respect cancellation. Secondary limits (429, or 403
+without Retry-After) wait one minute, then back off, for at most five attempts.
+An exhausted primary quota waits until its reset. Waits longer than 61 minutes stop
+collection. GraphQL `RATE_LIMITED` errors retry the same way. Other GraphQL errors
+fail with their type and message; `NOT_FOUND` for a `nodes(ids:)` entry leaves a
+null node for validation. Requests have deadlines and a
+shared per-sync budget. Trace logs are written to `gh-mirror-<uid>.log` in the
+temporary directory. They refuse symbolic and hard links and record resource/count/status metadata without
 credentials or ticket bodies. No upstream mutation API exists.
 
 Fetch concurrency defaults to four workers and is bounded to 1–16 through `workers`
@@ -121,7 +145,10 @@ rolls back the visible mirror while retaining these fetches, even across process
 termination. Resume replays saved responses and requests only missing work; reused
 responses do not consume the current invocation's request budget. Pending work keeps
 its original collection start timestamp so the next delta can cover changes made
-while collection was stopped. Only a completed sync advances visible coverage.
+while collection was stopped. Enrichment and reconciliation intervals use the current
+time, so a session that keeps failing still reaches its scheduled refreshes. Each
+failed attempt records its error and count in the checkpoint for status reporting.
+Only a completed sync advances visible coverage.
 
 An opaque session fingerprint covers the previous generation, scope, upstreams,
 collection settings, full mode, credential identity, and checkpoint format version.
@@ -180,14 +207,27 @@ mirrors receive a transactional local backfill from stored payloads on the next
 sync, recorded by `label_index_version`, without invalidating pending work or
 forcing extra upstream requests. Unused labels remain catalog data.
 
-`get` returns the complete stored issue, comments, native field values, relationships,
-and project memberships. Project queries return the local project catalog record
-and collection status. REST and MCP call the same query functions. Reads report the
-database generation and resource coverage; they never contact GitHub. MCP tools are
-`list_issues`, `search_issues`, `get_issue`, `get_catalog`, `get_project`,
-`find_duplicate_candidates`, and `get_sync_status`. HTTP provides `/health`,
-`/v1/search`, `/v1/issues`, `/v1/issues/{owner}/{repo}/{number}`, `/v1/catalog`, `/v1/projects`,
-`/v1/candidates`, `/v1/status`, `/snapshots/latest`, and `/snapshots/{filename}`.
+`show` returns ticket summaries or raw records without comments; `comments` pages
+comments. Project queries return the local project catalog record and collection
+status. REST and MCP call the same query functions. Reads report the database
+generation and resource coverage; they never contact GitHub. `status` adds the
+absolute `db_path` and `pending_sync` when unfinished sync work exists; `doctor`
+checks configuration, token, database, freshness, index, encoder and PR comment
+policy and exits 1 on failure.
+
+The core MCP tools are `search_issues`, `find_duplicate_candidates`,
+`get_issue_context`, `get_issues`, `get_issue`, `list_comments` and
+`get_sync_status`. `mcp --tools all` and `serve --mcp-tools all` add `list_issues`,
+`get_catalog`, `list_catalog` and `get_project`. Input fields carry descriptions
+and enums; tools advertise no output schemas. Results other than `get_sync_status`
+carry a compact `status` with `generation` and `collected_at`. `get_issue`
+defaults to summary view without comments.
+
+HTTP provides `/health`, `/v1/status`, `/v1/search`, `/v1/issues`,
+`/v1/issues/{owner}/{repo}/{number}` and its `/comments`, `/context` and `/related`
+subresources, `POST /v1/issues/batch`, `/v1/catalog`, `/v1/projects`,
+`/snapshots/latest`, and `/snapshots/{filename}`. `/v1/candidates` is a deprecated
+alias of `/related`.
 HTTP requires bearer authentication outside loopback. Stdio MCP uses local filesystem
 access. The HTTP server uses request limits/timeouts and graceful shutdown.
 
@@ -262,7 +302,9 @@ Changing the embedding fingerprint rebuilds this derived index without GitHub
 collection or invalidating compatible collection checkpoints.
 
 Optional `embedding.backend: lemonade-vulkan` starts a dedicated authenticated
-loopback process using Lemonade's installed Vulkan runtime. It exports the exact
+loopback process using Lemonade's installed Vulkan runtime. The API key is passed
+in a private temporary `--api-key-file`, removed when the runtime closes. On Linux
+the process receives SIGKILL when gh-mirror exits. It exports the exact
 bundled FP32 tensors to GGUF locally and sends bundled tokenizer IDs directly.
 Inference is offline after backend installation. GPU batching and CPU fallback
 are bounded; missing devices, incompatible vectors and runtime failures select
@@ -393,8 +435,11 @@ bounded recent comments 0.5, averaging passages within each source family before
 normalizing. Hybrid combines independent lexical and semantic ticket ranks with
 reciprocal rank fusion constant 60, with lexical/semantic weights 1 and whole-ticket evidence weight 3. Preserve exact ticket filters, source scopes,
 exclusions, counts, facets, projections, evidence and deterministic pagination.
-Report score meanings and component scores; semantic/hybrid default to descending
-relevance. Evidence includes field, source, byte offsets, cosine similarity and
+Report score meanings and component scores. Every engine reports higher-is-better
+scores, with lexical BM25 negated, and relevance defaults to descending order.
+Semantic retrieval keeps the 200 most similar tickets; hybrid adds every literal or
+whole-ticket evidence match, including tickets without vectors in the selected
+fields. Totals, facets and has_more describe that retrieved set. Evidence includes field, source, byte offsets, cosine similarity and
 stored comment/review context. Candidate seeds are excluded from results.
 
 For an omitted engine, unavailable, incomplete or incompatible selected indexing
@@ -427,7 +472,11 @@ section ranges, absent/empty section observations, native and explicit source
 relationships, selected query-matching/recent comments and bounded related
 summaries. The default source-text budget is 12000 Unicode characters, with up to
 10 comments and 5 expanded relationships. Limits and omissions are explicit.
-Code fences do not introduce Markdown sections or issue references. Views require
+Code fences do not introduce Markdown sections or issue references. One shared
+fence parser serves sections, references and AI attribution; a backtick fence's
+info string cannot contain backticks, so inline triple backticks open no fence.
+Shorthand references require valid owner/repository syntax and a preceding
+boundary; URLs count only as GitHub issue or pull request links. Views require
 neither embeddings nor network calls and work with legacy snapshots. Purpose
 controls source selection, not classification or duplicate decisions.
 Classification label definitions contain source names and descriptions, with attached

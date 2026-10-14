@@ -32,6 +32,7 @@ type Config struct {
 	PRCommentOverrides map[string]commentpolicy.Override     `json:"pr_comment_overrides,omitempty"`
 	LabelRules         map[string][]representation.LabelRule `json:"label_rules,omitempty"`
 	Repositories       []string                              `json:"repositories"`
+	DefaultRepo        string                                `json:"default_repo,omitempty"`
 	RepositoryOptions  map[string]Scope                      `json:"repository_options,omitempty"`
 	Database           string                                `json:"database"`
 	SnapshotDir        string                                `json:"snapshot_dir"`
@@ -166,6 +167,9 @@ func (c Config) Validate() error {
 	if c.Workers < 1 || c.Workers > MaxWorkers {
 		return fmt.Errorf("workers must be between 1 and %d", MaxWorkers)
 	}
+	if c.DefaultRepo != "" && !ValidRepository(c.DefaultRepo) {
+		return fmt.Errorf("invalid default_repo %q", c.DefaultRepo)
+	}
 	seen := map[string]bool{}
 	for _, repo := range c.Repositories {
 		if !ValidRepository(repo) || seen[strings.ToLower(repo)] {
@@ -219,6 +223,17 @@ func (c Config) CommentPolicies() map[string]commentpolicy.Policy {
 		out[repo] = c.PRComments.Resolve(c.PRCommentOverrides[repo])
 	}
 	return out
+}
+
+// DefaultRepository returns default_repo, or the only configured repository, for short ticket references.
+func (c Config) DefaultRepository() string {
+	if c.DefaultRepo != "" {
+		return c.DefaultRepo
+	}
+	if len(c.Repositories) == 1 {
+		return c.Repositories[0]
+	}
+	return ""
 }
 
 // ValidRepository reports whether a name has a usable owner/repository shape.

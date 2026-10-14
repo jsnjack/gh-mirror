@@ -38,22 +38,36 @@ var embeddingBackend, embeddingRuntime, embeddingDevice string
 var embeddingBatchSize int
 var root = &cobra.Command{Use: "gh-mirror", Short: "Mirror GitHub tickets into a portable, searchable SQLite database", SilenceUsage: true, SilenceErrors: true}
 
+// Command groups order the help output by task.
+const (
+	groupQuery    = "query"
+	groupCollect  = "collect"
+	groupServe    = "serve"
+	groupInspect  = "inspect"
+	groupAdvanced = "advanced"
+)
+
+// configOptional marks commands that report setup errors instead of failing before running.
+const configOptional = "gh-mirror/config-optional"
+
+// setupErr keeps the configuration or encoder error for commands marked configOptional.
+var setupErr error
+
 func init() {
 	root.Version = Version
 	root.SetVersionTemplate("{{.Version}}\n")
 	root.Flags().Bool("version", false, "Print the version and exit")
 	root.PersistentFlags().Bool("help", false, "Show command help")
-	root.CompletionOptions.DisableDefaultCmd = true
+	root.AddGroup(&cobra.Group{ID: groupQuery, Title: "Query the local mirror:"}, &cobra.Group{ID: groupCollect, Title: "Collect and publish:"}, &cobra.Group{ID: groupServe, Title: "Serve agents and clients:"}, &cobra.Group{ID: groupInspect, Title: "Inspect configuration and state:"}, &cobra.Group{ID: groupAdvanced, Title: "Advanced:"})
 	root.PersistentFlags().StringVarP(&configPath, "config", "c", "", "Configuration file (default: XDG gh-mirror/config.toml; legacy JSON accepted)")
 	root.PersistentFlags().StringVar(&database, "db", "", "Override the database path")
-	root.PersistentFlags().StringVar(&embeddingBackend, "embedding-backend", "", "Embedding backend: cpu or lemonade-vulkan (defaults to configuration)")
-	root.PersistentFlags().StringVar(&embeddingRuntime, "embedding-runtime", "", "Absolute path to Lemonade's installed Vulkan llama-server")
-	root.PersistentFlags().StringVar(&embeddingDevice, "embedding-device", "", "Vulkan device, such as Vulkan0 (defaults to configuration)")
-	root.PersistentFlags().IntVar(&embeddingBatchSize, "embedding-batch-size", 0, "Maximum Vulkan batch size (1–32; default 8)")
 	root.PersistentFlags().StringVar(&outputFormat, "format", "auto", "Output format: auto (text in terminals, JSON when piped), text or json")
 	root.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Verbose diagnostics on stderr")
-	root.PersistentFlags().BoolVar(&trace, "trace", false, "Detailed diagnostics in the temporary gh-mirror.log")
+	root.PersistentFlags().BoolVar(&trace, "trace", false, "Detailed diagnostics in the temporary gh-mirror-<uid>.log")
 	root.PersistentPreRunE = func(command *cobra.Command, _ []string) error {
+		if completionCommand(command) {
+			return nil
+		}
 		if _, err := resolveOutputFormat(outputFormat, false); err != nil {
 			return err
 		}
@@ -63,48 +77,9 @@ func init() {
 		}
 		logCloser = closer
 		slog.SetDefault(logger)
-		path := configPath
-		if path == "" {
-			path, err = config.DefaultPath()
-			if err != nil {
-				return fmt.Errorf("resolve settings: %w", err)
-			}
-		}
-		settings, err = config.Load(path, configPath != "")
-		if err != nil {
-			return fmt.Errorf("load settings: %w", err)
-		}
-		if database != "" {
-			settings.Database = database
-		}
-		if command.Flags().Changed("embedding-backend") {
-			settings.Embedding.Backend = embeddingBackend
-		}
-		if command.Flags().Changed("embedding-runtime") {
-			settings.Embedding.Runtime = embeddingRuntime
-		}
-		if command.Flags().Changed("embedding-device") {
-			settings.Embedding.Device = embeddingDevice
-		}
-		if command.Flags().Changed("embedding-batch-size") {
-			if embeddingBatchSize < 1 {
-				return fmt.Errorf("embedding-batch-size must be between 1 and 32")
-			}
-			settings.Embedding.BatchSize = embeddingBatchSize
-		}
-		if err := settings.Validate(); err != nil {
-			return fmt.Errorf("validate settings: %w", err)
-		}
-		if embeddingProvider != nil {
-			if err := embeddingProvider.Close(); err != nil {
-				return err
-			}
-		}
-		opts := settings.Embedding
-		opts.Workers = settings.Workers
-		embeddingProvider, err = embedding.New(command.Context(), opts)
-		if err != nil {
-			return err
+		setupErr = setup(command)
+		if setupErr != nil && command.Annotations[configOptional] == "" {
+			return setupErr
 		}
 		return nil
 	}
@@ -115,6 +90,57 @@ func init() {
 	addQueries()
 	addSnapshots()
 	addServers()
+	addDoctor()
+	addCompletions()
+}
+
+func setup(command *cobra.Command) error {
+	path := configPath
+	if path == "" {
+		var err error
+		path, err = config.DefaultPath()
+		if err != nil {
+			return fmt.Errorf("resolve settings: %w", err)
+		}
+	}
+	var err error
+	settings, err = config.Load(path, configPath != "")
+	if err != nil {
+		return fmt.Errorf("load settings: %w", err)
+	}
+	if database != "" {
+		settings.Database = database
+	}
+	if command.Flags().Changed("embedding-backend") {
+		settings.Embedding.Backend = embeddingBackend
+	}
+	if command.Flags().Changed("embedding-runtime") {
+		settings.Embedding.Runtime = embeddingRuntime
+	}
+	if command.Flags().Changed("embedding-device") {
+		settings.Embedding.Device = embeddingDevice
+	}
+	if command.Flags().Changed("embedding-batch-size") {
+		if embeddingBatchSize < 1 {
+			return fmt.Errorf("embedding-batch-size must be between 1 and 32")
+		}
+		settings.Embedding.BatchSize = embeddingBatchSize
+	}
+	if err := settings.Validate(); err != nil {
+		return fmt.Errorf("validate settings: %w", err)
+	}
+	if embeddingProvider != nil {
+		if err := embeddingProvider.Close(); err != nil {
+			return err
+		}
+	}
+	opts := settings.Embedding
+	opts.Workers = settings.Workers
+	embeddingProvider, err = embedding.New(command.Context(), opts)
+	if err != nil {
+		return fmt.Errorf("start embedding provider: %w", err)
+	}
+	return nil
 }
 
 // Execute runs commands with interrupt cancellation and closes trace diagnostics.
@@ -154,7 +180,7 @@ func closeStore(ctx context.Context, db *store.Store) {
 func addCollection() {
 	var full, publish, quiet, restart, index bool
 	var workers, indexWorkers int
-	command := &cobra.Command{Use: "sync", Short: "Bootstrap or incrementally collect the configured repositories", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) (runErr error) {
+	command := &cobra.Command{Use: "sync", GroupID: groupCollect, Short: "Collect configured repositories from GitHub, then index and publish", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) (runErr error) {
 		if command.Flags().Changed("workers") {
 			settings.Workers = workers
 			if err := settings.Validate(); err != nil {
@@ -234,14 +260,15 @@ func addCollection() {
 	command.Flags().BoolVar(&full, "full", false, "Force complete inventories and enrichment")
 	command.Flags().BoolVar(&publish, "publish", true, "Publish a standalone snapshot after collection")
 	command.Flags().BoolVar(&quiet, "quiet", false, "Suppress sync progress; retain results and errors")
+	addEmbeddingFlags(command)
 	root.AddCommand(command)
 }
 func addQueries() {
-	root.AddCommand(&cobra.Command{Use: "scope", Short: "Show resolved true/false collection options per repository", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+	root.AddCommand(&cobra.Command{Use: "scope", GroupID: groupInspect, Short: "Show resolved collection switches per repository", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
 		return output(command, settings.Scopes())
 	}})
 	var search store.SearchOptions
-	command := &cobra.Command{Use: "search WORDS", Short: "Retrieve relevant local tickets and source evidence", Args: cobra.ExactArgs(1), RunE: func(command *cobra.Command, args []string) error {
+	command := &cobra.Command{Use: "search WORDS", GroupID: groupQuery, Short: "Search tickets and comments by words or meaning", Args: cobra.ExactArgs(1), RunE: func(command *cobra.Command, args []string) error {
 		db, err := open(true)
 		if err != nil {
 			return err
@@ -261,7 +288,6 @@ func addQueries() {
 	command.Flags().StringVar(&search.Repo, "repo", "", "Filter repository owner/name")
 	command.Flags().StringVar(&search.Engine, "engine", store.DefaultSearchEngine, "Search using lexical, semantic or hybrid retrieval (default falls back to lexical with a warning)")
 	command.Flags().StringVar(&search.State, "state", "", "Filter open or closed")
-	command.Flags().StringVar(&search.Label, "label", "", "Filter label name")
 	command.Flags().StringVar(&search.Type, "type", "", "Filter native issue type name")
 	command.Flags().StringVar(&search.Kind, "kind", "", "Filter issue or pull_request")
 	command.Flags().StringVar(&search.Project, "project", "", "Filter project membership owner/number, including archived memberships")
@@ -273,114 +299,17 @@ func addQueries() {
 	command.Flags().StringArrayVar(&search.ExcludeWords, "exclude-word", nil, "Exclude tickets containing these literal words; repeat")
 	command.Flags().StringVar(&search.Cursor, "cursor", "", "Continue next_cursor with the same query")
 	command.Flags().IntVar(&search.EvidenceLimit, "evidence-limit", 3, "Maximum supporting sources per ticket (1–10)")
-
+	addEmbeddingFlags(command)
 	root.AddCommand(command)
 	addList()
 	addReads()
+	addRelated()
+	addCatalog()
+	addStatus()
 	addEvaluate()
-	for _, kind := range []string{"get", "candidates"} {
-		var repo string
-		var number, limit int
-		var read store.ReadOptions
-		var candidates store.CandidateOptions
-		var includeLabels bool
-		command := &cobra.Command{Use: kind, Short: "Read local ticket data or retrieve duplicate candidates", Args: cobra.NoArgs}
-		command.Flags().StringVar(&repo, "repo", "", "Repository owner/name")
-		command.Flags().IntVar(&number, "number", 0, "Issue number")
-		command.Flags().IntVar(&limit, "limit", 30, "Maximum candidate results (1–100)")
-		if kind == "candidates" {
-			command.Flags().StringVar(&candidates.Engine, "engine", store.DefaultSearchEngine, "Retrieve candidates using lexical, semantic or hybrid search (default falls back to lexical with a warning)")
-			command.Flags().StringArrayVar(&candidates.Repositories, "repositories", nil, "Search these repositories; repeat (default seed repo)")
-			command.Flags().BoolVar(&includeLabels, "include-labels", true, "Use attached labels in seed terms")
-			command.Flags().BoolVar(&candidates.IncludeComments, "include-comments", false, "Use recent seed comments")
-			command.Flags().IntVar(&candidates.CommentLimit, "comment-limit", 20, "Recent seed comment limit (1–100)")
-			command.Flags().StringVar(&candidates.Cursor, "cursor", "", "Continue next_cursor")
-			command.Flags().BoolVar(&candidates.Count, "count", false, "Count all candidates")
-			command.Flags().BoolVar(&candidates.Facets, "facets", false, "Count candidate labels, types and projects")
-			command.Flags().StringVar(&candidates.View, "view", "summary", "Return summary or full raw records")
-		}
-		if kind == "get" {
-			command.Flags().BoolVar(&read.IncludeExcluded, "include-excluded", false, "Include policy-excluded comments in page mode (legacy all retains every source)")
-			command.Flags().StringVar(&read.View, "view", "full", "Return summary or full raw ticket")
-			command.Flags().StringVar(&read.Comments, "comments", "", "Include none, page or legacy all comments")
-			command.Flags().StringVar(&read.Cursor, "cursor", "", "Continue a comment page")
-			command.Flags().StringVar(&read.CommentKind, "comment-kind", "", "Filter discussion or review comments in page mode")
-		}
-		command.RunE = func(command *cobra.Command, _ []string) error {
-			if !config.ValidRepository(repo) || number < 1 {
-				return fmt.Errorf("valid --repo and positive --number are required")
-			}
-			db, err := open(true)
-			if err != nil {
-				return err
-			}
-			defer closeStore(command.Context(), db)
-			var out any
-			if kind == "get" {
-				read.Repo, read.Number = repo, number
-				if command.Flags().Changed("limit") {
-					read.Limit = limit
-				}
-				out, err = db.Read(command.Context(), read)
-			} else {
-				candidates.Repo, candidates.Number, candidates.Limit = repo, number, limit
-				candidates.IncludeLabels = &includeLabels
-				options := candidates
-				if !command.Flags().Changed("engine") {
-					options.Engine = ""
-				}
-				out, err = db.FindCandidates(command.Context(), options)
-			}
-			if err != nil {
-				return fmt.Errorf("read local ticket: %w", err)
-			}
-			return output(command, out)
-		}
-		root.AddCommand(command)
-	}
-	var kind, scope string
-	var catalogLimit int
-	var catalogCursor string
-	catalog := &cobra.Command{Use: "catalog", Short: "Read labels, milestones, issue fields/types or project catalogs", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
-		if kind == "" || scope == "" {
-			return fmt.Errorf("--kind and --scope are required")
-		}
-		db, err := open(true)
-		if err != nil {
-			return err
-		}
-		defer closeStore(command.Context(), db)
-		var out store.CatalogResult
-		if command.Flags().Changed("limit") || catalogCursor != "" {
-			out, err = db.CatalogPage(command.Context(), store.CatalogOptions{Kind: kind, Scope: scope, Limit: catalogLimit, Cursor: catalogCursor})
-		} else {
-			out, err = db.Catalog(command.Context(), kind, scope)
-		}
-		if err != nil {
-			return fmt.Errorf("read local catalog: %w", err)
-		}
-		return output(command, out)
-	}}
-	catalog.Flags().StringVar(&kind, "kind", "", "Catalog name")
-	catalog.Flags().StringVar(&scope, "scope", "", "Repository, owner or owner/project-number")
-	catalog.Flags().IntVar(&catalogLimit, "limit", 30, "Enable pagination with this page size (1–100)")
-	catalog.Flags().StringVar(&catalogCursor, "cursor", "", "Continue next_cursor")
-	root.AddCommand(catalog)
-	root.AddCommand(&cobra.Command{Use: "status", Short: "Read generation, scope and coverage", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
-		db, err := open(true)
-		if err != nil {
-			return err
-		}
-		defer closeStore(command.Context(), db)
-		out, err := db.Status(command.Context())
-		if err != nil {
-			return fmt.Errorf("read local status: %w", err)
-		}
-		return output(command, out)
-	}})
 }
 func addSnapshots() {
-	root.AddCommand(&cobra.Command{Use: "snapshot", Short: "Publish an immutable snapshot of the last successful collection", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+	root.AddCommand(&cobra.Command{Use: "snapshot", GroupID: groupCollect, Short: "Publish an immutable snapshot of the last successful collection", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
 		db, err := open(true)
 		if err != nil {
 			return err
@@ -395,7 +324,7 @@ func addSnapshots() {
 	var source, dest string
 	var repos []string
 	var maxAge, maxEnrichmentAge time.Duration
-	command := &cobra.Command{Use: "acquire", Short: "Verify and install one private snapshot for a CI job", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+	command := &cobra.Command{Use: "acquire", GroupID: groupCollect, Short: "Verify and install a published snapshot for a CI job", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
 		if len(repos) == 0 {
 			repos = settings.Repositories
 		}
@@ -416,8 +345,8 @@ func addSnapshots() {
 	root.AddCommand(command)
 }
 func addServers() {
-	var listen string
-	command := &cobra.Command{Use: "serve", Short: "Serve local REST, MCP HTTP and immutable snapshots", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+	var listen, serveTools, mcpTools string
+	command := &cobra.Command{Use: "serve", GroupID: groupServe, Short: "Serve REST, MCP over HTTP and snapshots", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
 		address := listen
 		if address == "" {
 			address = settings.Listen
@@ -431,7 +360,10 @@ func addServers() {
 			return err
 		}
 		defer closeStore(command.Context(), db)
-		svc := &service.Service{Store: db, SnapshotDir: settings.SnapshotDir, Token: token, Version: Version}
+		svc := &service.Service{Store: db, SnapshotDir: settings.SnapshotDir, Token: token, Version: Version, Tools: serveTools}
+		if err := svc.ValidateTools(); err != nil {
+			return err
+		}
 		listener, err := net.Listen("tcp", address)
 		if err != nil {
 			return fmt.Errorf("listen: %w", err)
@@ -472,14 +404,23 @@ func addServers() {
 		return nil
 	}}
 	command.Flags().StringVar(&listen, "listen", "", "Override listening address")
+	command.Flags().StringVar(&serveTools, "mcp-tools", service.ToolsCore, "MCP tool set: core or all")
+	addEmbeddingFlags(command)
 	root.AddCommand(command)
-	root.AddCommand(&cobra.Command{Use: "mcp", Short: "Serve local read tools over MCP stdio", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+	mcpCommand := &cobra.Command{Use: "mcp", GroupID: groupServe, Short: "Serve read tools to agents over MCP stdio", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+		svc := &service.Service{Version: Version, Tools: mcpTools}
+		if err := svc.ValidateTools(); err != nil {
+			return err
+		}
 		db, err := open(true)
 		if err != nil {
 			return err
 		}
 		defer closeStore(command.Context(), db)
-		svc := &service.Service{Store: db, Version: Version}
+		svc.Store = db
 		return svc.RunMCP(command.Context())
-	}})
+	}}
+	mcpCommand.Flags().StringVar(&mcpTools, "tools", service.ToolsCore, "Tool set: core (search and ticket reads) or all (adds listing, catalogs and projects)")
+	addEmbeddingFlags(mcpCommand)
+	root.AddCommand(mcpCommand)
 }

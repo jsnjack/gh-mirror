@@ -5,7 +5,18 @@ import (
 	"gh-mirror/internal/embedding"
 	"gh-mirror/internal/progress"
 	"gh-mirror/internal/store"
+
+	"github.com/spf13/cobra"
 )
+
+// addEmbeddingFlags exposes encoder overrides only on commands that embed text.
+func addEmbeddingFlags(command *cobra.Command) {
+	flags := command.Flags()
+	flags.StringVar(&embeddingBackend, "embedding-backend", "", "Embedding backend: cpu or lemonade-vulkan (defaults to configuration)")
+	flags.StringVar(&embeddingRuntime, "embedding-runtime", "", "Absolute path to Lemonade's installed Vulkan llama-server")
+	flags.StringVar(&embeddingDevice, "embedding-device", "", "Vulkan device, such as Vulkan0 (defaults to configuration)")
+	flags.IntVar(&embeddingBatchSize, "embedding-batch-size", 0, "Maximum Vulkan batch size (1–32; default 8)")
+}
 
 func configureIndexEncoder(ctx context.Context, workers int) error {
 	if embeddingProvider == nil {

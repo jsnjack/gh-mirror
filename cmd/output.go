@@ -7,6 +7,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 
 	"gh-mirror/internal/store"
@@ -29,13 +30,23 @@ func resolveOutputFormat(format string, terminal bool) (string, error) {
 	}
 }
 
-func output(command *cobra.Command, value any) error {
-	w := command.OutOrStdout()
+func commandFormat(command *cobra.Command) (string, error) {
 	terminal := false
-	if file, ok := w.(interface{ Fd() uintptr }); ok {
+	if file, ok := command.OutOrStdout().(interface{ Fd() uintptr }); ok {
 		terminal = isatty.IsTerminal(file.Fd()) || isatty.IsCygwinTerminal(file.Fd())
 	}
-	format, err := resolveOutputFormat(outputFormat, terminal)
+	return resolveOutputFormat(outputFormat, terminal)
+}
+
+// textOutput reports whether a command renders readable text rather than JSON.
+func textOutput(command *cobra.Command) (bool, error) {
+	format, err := commandFormat(command)
+	return format == "text", err
+}
+
+func output(command *cobra.Command, value any) error {
+	w := command.OutOrStdout()
+	format, err := commandFormat(command)
 	if err != nil {
 		return err
 	}
@@ -151,15 +162,25 @@ func humanOutput(value any) (string, error) {
 		}
 		lines = append(lines, "", "Metrics use supplied judgments; unjudged results are not confirmed negatives.")
 	case store.Status:
-		lines = append(lines, fmt.Sprintf("Mirror: %d tickets | %d comments | %d repositories", v.Issues, v.Comments, len(v.Repositories)), "Repositories: "+cleanLine(strings.Join(v.Repositories, ", ")), "Collected: "+cleanLine(v.CollectedAt), "Enriched: "+cleanLine(v.EnrichedAt), fmt.Sprintf("Schema: %d | Collection: %d", v.SchemaVersion, v.CollectionVersion))
-		if v.Semantic != nil {
-			lines = append(lines, semanticLines(*v.Semantic)...)
+		lines = statusLines(v)
+	case statusReport:
+		lines = append(lines, "Database: "+cleanLine(v.DBPath))
+		if v.PendingSync != nil {
+			lines = append(lines, "Pending sync: unfinished work saved "+cleanLine(v.PendingSync.UpdatedAt)+"; the next sync resumes it")
+			if p := v.PendingSync.Pending; p != nil && p.Failures > 0 {
+				lines = append(lines, fmt.Sprintf("Sync failures: %d since %s | last: %s", p.Failures, p.Started.UTC().Format(time.RFC3339), cleanLine(p.LastError)))
+			}
 		}
-		if v.CommentFiltering != nil {
-			lines = append(lines, fmt.Sprintf("PR comment policy: registry %s | %d comments excluded from retrieval", cleanLine(v.CommentFiltering.RegistryVersion), v.CommentFiltering.Excluded))
+		lines = append(lines, statusLines(v.Status)...)
+	case doctorReport:
+		marks := map[string]string{checkOK: "✓", checkWarn: "!", checkFail: "✗"}
+		for _, c := range v.Checks {
+			lines = append(lines, fmt.Sprintf("%s %s: %s", marks[c.Status], cleanLine(c.Name), cleanLine(c.Detail)))
 		}
-		for _, c := range v.Coverage {
-			lines = append(lines, fmt.Sprintf("%s | fields: %s | projects: %s | reconciled: %s", cleanLine(c.Repo), cleanLine(c.Fields), cleanLine(c.Projects), cleanLine(c.ReconciledAt)))
+	case ticketDetails:
+		var err error
+		if lines, err = ticketDetailLines(v); err != nil {
+			return "", err
 		}
 	case store.SemanticStatus:
 		lines = semanticLines(v)
@@ -167,6 +188,90 @@ func humanOutput(value any) (string, error) {
 		return humanFields(value)
 	}
 	return strings.Join(lines, "\n") + "\n", nil
+}
+
+func statusLines(v store.Status) []string {
+	lines := []string{fmt.Sprintf("Mirror: %d tickets | %d comments | %d repositories", v.Issues, v.Comments, len(v.Repositories)), "Repositories: " + cleanLine(strings.Join(v.Repositories, ", ")), "Collected: " + cleanLine(v.CollectedAt), "Enriched: " + cleanLine(v.EnrichedAt), fmt.Sprintf("Schema: %d | Collection: %d", v.SchemaVersion, v.CollectionVersion)}
+	if v.Semantic != nil {
+		lines = append(lines, semanticLines(*v.Semantic)...)
+	}
+	if v.CommentFiltering != nil {
+		lines = append(lines, fmt.Sprintf("PR comment policy: registry %s | %d comments excluded from retrieval", cleanLine(v.CommentFiltering.RegistryVersion), v.CommentFiltering.Excluded))
+	}
+	for _, c := range v.Coverage {
+		lines = append(lines, fmt.Sprintf("%s | fields: %s | projects: %s | reconciled: %s", cleanLine(c.Repo), cleanLine(c.Fields), cleanLine(c.Projects), cleanLine(c.ReconciledAt)))
+	}
+	return lines
+}
+
+// bodyExcerptRunes bounds the ticket body shown by show in summary view.
+const bodyExcerptRunes = 800
+
+func ticketDetailLines(v ticketDetails) ([]string, error) {
+	lines := []string{}
+	for i, t := range v.Issues {
+		if i > 0 {
+			lines = append(lines, "", strings.Repeat("─", 40))
+		}
+		var payload struct {
+			Body     string `json:"body"`
+			Comments *int   `json:"comments"`
+		}
+		if len(t.Payload) > 0 {
+			if err := json.Unmarshal(t.Payload, &payload); err != nil {
+				return nil, fmt.Errorf("decode %s#%d: %w", t.Repo, t.Number, err)
+			}
+		}
+		lines = append(lines, fmt.Sprintf("%s#%d  %s", cleanLine(t.Repo), t.Number, summaryTitle(t.Summary)))
+		if s := t.Summary; s != nil {
+			state := cleanLine(s.State)
+			if s.StateReason != "" {
+				state += " (" + cleanLine(s.StateReason) + ")"
+			}
+			if s.Draft {
+				state += " | draft"
+			}
+			lines = append(lines, cleanLine(t.Kind)+" | "+state, cleanLine(s.URL))
+			for _, field := range []struct{ name, value string }{{"Type", s.Type}, {"Author", s.Author}, {"Labels", strings.Join(s.Labels, ", ")}, {"Assignees", strings.Join(s.Assignees, ", ")}, {"Milestone", s.Milestone}, {"Projects", strings.Join(s.Projects, ", ")}} {
+				if field.value != "" {
+					lines = append(lines, field.name+": "+cleanLine(field.value))
+				}
+			}
+			dates := "Created: " + cleanLine(s.CreatedAt) + " | Updated: " + cleanLine(s.UpdatedAt)
+			if s.ClosedAt != "" {
+				dates += " | Closed: " + cleanLine(s.ClosedAt)
+			}
+			if s.MergedAt != "" {
+				dates += " | Merged: " + cleanLine(s.MergedAt)
+			}
+			lines = append(lines, dates)
+		}
+		if payload.Comments != nil {
+			lines = append(lines, fmt.Sprintf("Comments: %d (gh-mirror comments %s#%d)", *payload.Comments, cleanLine(t.Repo), t.Number))
+		}
+		body := strings.TrimSpace(cleanText(payload.Body))
+		if body == "" {
+			continue
+		}
+		runes := []rune(body)
+		lines = append(lines, "")
+		if !v.fullBody && len(runes) > bodyExcerptRunes {
+			lines = append(lines, string(runes[:bodyExcerptRunes])+"…", "[Body shortened; use --view full for the whole body]")
+			continue
+		}
+		lines = append(lines, body)
+	}
+	for _, m := range v.Missing {
+		lines = append(lines, fmt.Sprintf("Not in mirror: %s#%d", cleanLine(m.Repo), m.Number))
+	}
+	return lines, nil
+}
+
+func summaryTitle(s *store.TicketSummary) string {
+	if s == nil {
+		return ""
+	}
+	return cleanLine(s.Title)
 }
 
 func semanticLines(s store.SemanticStatus) []string {

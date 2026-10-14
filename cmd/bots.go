@@ -8,7 +8,7 @@ import (
 
 func addBots() {
 	var repo string
-	command := &cobra.Command{Use: "bots", Short: "Inspect local PR automation accounts and applied exclusions", Args: cobra.NoArgs, RunE: func(c *cobra.Command, _ []string) error {
+	command := &cobra.Command{Use: "bots", GroupID: groupInspect, Short: "Show PR automation accounts and policy exclusions", Args: cobra.NoArgs, RunE: func(c *cobra.Command, _ []string) error {
 		db, err := open(true)
 		if err != nil {
 			return err

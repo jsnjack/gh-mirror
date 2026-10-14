@@ -2,10 +2,12 @@ package service
 
 import (
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 
+	"gh-mirror/internal/config"
 	"gh-mirror/internal/store"
 )
 
@@ -85,5 +87,42 @@ func listParams(q url.Values) (store.ListOptions, error) {
 		o.Repo = ""
 	}
 	o.Limit, err = intParam(q, "limit", 30)
+	return o, err
+}
+
+// pathTicket reads the {owner}/{repo}/{number} ticket identity shared by issue routes.
+func pathTicket(r *http.Request) (string, int, error) {
+	repo := r.PathValue("owner") + "/" + r.PathValue("repo")
+	number, err := strconv.Atoi(r.PathValue("number"))
+	if err != nil || number < 1 || !config.ValidRepository(repo) {
+		return "", 0, badInput("invalid issue identity")
+	}
+	return repo, number, nil
+}
+func candidateParams(q url.Values, repo string, number int) (store.CandidateOptions, error) {
+	filters, page, err := queryParams(q)
+	if err != nil {
+		return store.CandidateOptions{}, err
+	}
+	o := store.CandidateOptions{Engine: q.Get("engine"), Repo: repo, Number: number, QueryFilters: filters, PageOptions: page, Cursor: q.Get("cursor")}
+	o.Limit, err = intParam(q, "limit", 30)
+	if err != nil {
+		return o, err
+	}
+	if o.Limit < 1 || o.Limit > 100 {
+		return o, badInput("limit must be between 1 and 100")
+	}
+	o.IncludeComments, err = boolParam(q, "include_comments")
+	if err != nil {
+		return o, err
+	}
+	if q.Has("include_labels") {
+		labels, err := boolParam(q, "include_labels")
+		if err != nil {
+			return o, err
+		}
+		o.IncludeLabels = &labels
+	}
+	o.CommentLimit, err = intParam(q, "comment_limit", 20)
 	return o, err
 }

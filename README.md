@@ -34,18 +34,27 @@ gh-mirror --help
 ```
 
 Commands use readable text when stdout is a terminal and JSON when redirected or
-piped. Search and candidate results show ranked tickets, labels and evidence;
+piped. Search and related-ticket results show ranked tickets, labels and evidence;
 `evaluate` shows a metrics table. Select a format explicitly with `--format`:
 
 ```sh
 gh-mirror search 'socket timeout' --format text
-gh-mirror candidates --repo owner/repository --number 123 --format text
+gh-mirror related owner/repository#123 --format text
 gh-mirror status --format json
 gh-mirror search 'socket timeout' | jq '.matches'
 ```
 
 `--format json` preserves the complete structured output. Text results use compact
 previews; REST and MCP always retain their structured contracts.
+
+Shell completion suggests configured repositories, label names from the local
+database, catalog kinds and fixed flag values. Install it for your shell:
+
+```sh
+gh-mirror completion bash > ~/.local/share/bash-completion/completions/gh-mirror
+gh-mirror completion zsh > "${fpath[1]}/_gh-mirror"
+gh-mirror completion fish > ~/.config/fish/completions/gh-mirror.fish
+```
 
 ## Configure
 
@@ -78,6 +87,10 @@ gh-mirror config show --effective
 
 `config show` prints compact TOML, including when piped. `--effective` expands all
 defaults and repository switches. Explicit `--format json` prints resolved JSON.
+
+Commands that read one ticket accept `#123` or `123` when a default repository is
+known. Set it with `default_repo = "owner/repository"`; with exactly one configured
+repository, that repository is the default.
 
 The default database and snapshots are under `~/.local/share/gh-mirror/`.
 Set `database` and `snapshot_dir` in the configuration to use other locations.
@@ -161,7 +174,254 @@ without forcing full ticket listings. Interrupted changes preserve the previous
 mirror and resume fetched work. Bulk comment streams use a private number/kind
 inventory to avoid fetching each excluded comment parent.
 
-## Create and update a mirror
+## Query locally
+
+Queries read the local database and need no GitHub credential. Use
+`gh-mirror --db /path/to/mirror.sqlite ...` to query another database, including an
+acquired snapshot.
+
+| Command | Purpose |
+| --- | --- |
+| `search WORDS` | Rank tickets by words or meaning, with source evidence |
+| `list` | List tickets by filters without search words |
+| `show REF...` | Read up to 100 tickets without comments |
+| `comments REF` | Page through discussion and review comments |
+| `context REF` | Read bounded evidence for evaluation, classification, duplicates or proofreading |
+| `related REF` | Find related tickets and duplicate candidates for a ticket |
+| `catalog KIND [SCOPE]` | Read labels, milestones, issue types, issue fields or projects |
+
+`REF` is `owner/repo#123`, a GitHub issue or pull request URL, or `#123`/`123` with
+a default repository. The `--repo` and `--number` flags remain accepted.
+
+```sh
+gh-mirror search 'socket timeout' --repo owner/repository --state closed --labels-all bug
+gh-mirror show owner/repository#123 https://github.com/owner/repository/pull/456
+gh-mirror comments owner/repository#123 --kind review --limit 20
+gh-mirror context '#123' --query 'session continuation'
+gh-mirror related 123 --include-comments --labels-any 'client:Acme'
+gh-mirror catalog labels
+gh-mirror catalog projects owner
+```
+
+Every query command returns summaries by default; `--view full` adds raw GitHub
+records. The text view of `show` lists the title, state, kind, labels, assignees,
+milestone, type, URL, dates, comment count and the start of the body. `--view full`
+prints the whole body, and `--view full --format json` returns the raw records.
+`show` never includes comments; read them with `comments`.
+
+The commands `get`, `batch` and `candidates` from earlier releases still work.
+They are hidden from help and print a notice naming `show`, `comments` or `related`.
+
+### Search
+
+Search defaults to hybrid retrieval across all collected source fields and both open
+and closed tickets. In lexical retrieval, `--match any` joins literal words with
+OR. `--match all` requires every word somewhere in the selected ticket: a label and
+a separate comment can satisfy it together. `--match phrase` requires consecutive
+words in one source. Punctuation is tokenized; operators in the query are literal
+words. Lexical queries exceeding 32 terms or 16,384 bytes fail explicitly.
+
+```sh
+gh-mirror search 'Acme timeout' --match all --count --facets
+gh-mirror search 'socket timeout' --match phrase --in body --in comments
+gh-mirror search 'auth' --prefix --in title --exclude-word deprecated
+gh-mirror search 'timeout' --repositories owner/support --repositories owner/code --limit 20
+gh-mirror search 'timeout' --project owner/1 --kind issue --type Bug
+```
+
+`--prefix` matches word prefixes; in phrase mode it applies only to the final word.
+`--in` selects title, body, labels, discussion comments (`comments`) or inline
+review comments (`reviews`). Repeat it to select several sources; omitting it
+searches all. Excluded words apply across the selected sources of the whole ticket.
+
+Each match contains the title, URL, source, snippet and the engine's score, plus
+labels, assignees, issue type, milestone, author, project identities and timestamps
+under `summary`. `evidence` holds up to three matching sources (`--evidence-limit`
+accepts 1–10) with the field, excerpt, URL and comment identity. Inline review
+evidence includes file/line context and at most 1,024 characters of diff.
+
+Search, listing and related tickets return `has_more`, `next_cursor`, collection
+`status` and structured `warnings`. Follow the cursor with the same options; page
+size can change. A changed generation requires restarting or querying an immutable
+snapshot. `--count` adds `total` before pagination. Lexical totals count literal
+matches; semantic and hybrid totals count the retrieved set, so they stay the same
+on every page. `--facets` adds label, type and
+project counts over the same set, capped at 100 values per facet. Warnings identify
+uncollected repositories, disabled resources and stale enrichment;
+`--max-enrichment-age 2h` changes the default 24-hour warning threshold.
+
+With `--engine lexical`, `score` is the negated SQLite FTS5 [BM25 ranking](https://www.sqlite.org/fts5.html#the_bm25_function),
+as is hybrid `lexical_score`. Higher scores rank first for every engine. Lexical
+cursors from releases that reported raw BM25 return a stale-cursor conflict.
+Titles and label names have a weight of five and body/comment text a weight of one. Scores rank results within one query; they
+are not percentages or duplicate probabilities. A client name that appears only in
+an attached label is searchable.
+
+### Filters and ordering
+
+`list` orders by repository and ticket number; search orders by relevance. Both
+accept `--sort number|updated|created` and `--order asc|desc`; timestamps and relevance
+default to descending (best first), number to ascending. Ties use repository and number for stable continuation. `search`,
+`list` and `related` share these filters:
+
+| CLI flag | REST/MCP field | Meaning |
+| --- | --- | --- |
+| `--repo` | `repo` | One repository (search and list) |
+| `--repositories` | `repositories` | Any of these repositories; repeat |
+| `--state`, `--kind`, `--type` | `state`, `kind`, `type` | Ticket state, issue/PR kind, exact native type (search and list) |
+| `--labels-all` | `labels_all` | Require every exact label; repeat |
+| `--labels-any` | `labels_any` | Require any listed exact label; repeat |
+| `--exclude-label` | `exclude_labels` | Exclude each exact label; repeat |
+| `--author` | `author` | Ticket author login |
+| `--assignee` | `assignees` | Any selected assignee login; repeat |
+| `--milestone` | `milestone` | Exact milestone title or number |
+| `--created-after`, `--created-before` | `created_after`, `created_before` | Inclusive creation bounds |
+| `--updated-after`, `--updated-before` | `updated_after`, `updated_before` | Inclusive update bounds |
+| `--project` | `project` | Project membership owner/number, including archived memberships (search and list) |
+| `--field 'Priority=High'` | REST: `field=Priority=High`; MCP: `field_values` | Require every collected field predicate; repeat |
+
+Date bounds accept RFC3339 timestamps, `YYYY-MM-DD` dates and relative ages such
+as `12h`, `7d` or `2w`. A date starts at UTC midnight for `*-after` and covers the
+whole UTC day for `*-before`. A relative age means that long before the query runs.
+
+MCP array fields accept JSON arrays. REST array fields use repeated parameters;
+repeated `repo` parameters also select multiple repositories. MCP `field_values`
+is an array of `{"name":"Priority","value":"High"}`. Native fields match text,
+date and number values or selection option names. Predicates combine with AND;
+assignees and `labels_any` combine with OR within their lists. The hidden `--label`
+flag is an alias for `--labels-all`.
+
+```sh
+gh-mirror list --repo owner/repository --labels-all 'client:Acme' --limit 100
+# Continue using next_cursor from the previous JSON, with the same filters:
+gh-mirror list --repo owner/repository --labels-all 'client:Acme' --limit 100 --cursor "$next_cursor"
+```
+
+### Tickets and comments
+
+`show` reads up to 100 tickets from one generation, de-duplicates them and reports
+missing ones under `missing`. `comments` pages through `--kind all|discussion|review`
+comments in creation order. Summary previews stop at 1,024 Unicode characters and
+report `truncated`; `--view full` preserves complete text and raw JSON.
+`excluded_by_policy` and its warning count only comments of the selected kind.
+Disabled review collection is reported only for pull requests or `--kind review`. Comment IDs
+are strings, keeping large numeric IDs intact.
+
+### Related tickets
+
+`related` selects up to 24 distinctive seed terms using local ticket frequency.
+Titles receive more weight than descriptions, repeated boilerplate is de-duplicated,
+and technical acronyms and error identifiers such as CSS, API and 403 are retained.
+Attached seed labels contribute by default; `--include-labels=false` excludes them.
+Recent seed comments are opt-in with `--include-comments` and bounded by
+`--comment-limit` (default 20, maximum 100). Results include closed history,
+exclude the seed and default to the seed repository; `--repositories` widens it.
+
+```sh
+gh-mirror related owner/support#123 --include-comments --count
+gh-mirror related owner/support#123 --repositories owner/support --repositories owner/code
+```
+
+### Ticket context for agents
+
+`context` reads bounded evidence for evaluating one ticket:
+
+```sh
+gh-mirror context owner/repository#123 --query 'session continuation' --format text
+gh-mirror context owner/repository#123 --purpose proofread --max-characters 20000
+```
+
+The same view is available at `GET /v1/issues/owner/repository/123/context` and
+through the MCP `get_issue_context` tool. It includes original description text,
+section byte offsets, absent or empty sections, structured label attributes,
+closure and merge metadata, selected relevant and recent comments, and bounded
+one-hop related tickets. References distinguish native relationships, mentions,
+explicit duplicate references and fix references. Shorthand `owner/repo#N` and `#N`
+must not follow a word character, slash, colon or dot, so version strings and URL
+fragments are ignored. Links count only as GitHub issue or pull request URLs.
+These are source observations;
+an agent must evaluate whether two tickets describe the same problem.
+
+`--comment-limit`, `--related-limit` and `--max-characters` bound the response.
+Coverage reports omitted comments, relationship expansion and truncated text.
+`comments_total` counts comments eligible for selection; policy exclusions appear
+only in `comments_excluded_by_policy` unless `--include-excluded` is set.
+Proofreading gives the original description priority; other purposes reserve
+space for discussion. Full source records remain available through `show --view full`
+and `comments --view full`. Section extraction preserves Markdown, code and Unicode.
+
+Labels such as `client:Acme`, `feature:continuation` and `comp:browser` expose
+roles and values without discarding their original names. Multiple labels in a
+role remain separate. Configure other conventions per repository:
+
+```json
+{
+  "label_rules": {
+    "owner/repository": [
+      {"prefix": "customer:", "role": "client"},
+      {"label": "account:example", "role": "client", "value": "Example",
+       "aliases": ["Example Ltd"], "description": "Affected customer"}
+    ]
+  }
+}
+```
+
+Run `gh-mirror index` to save rules in the snapshot locally. `sync` also saves
+rules when indexing is enabled. Exact rules override prefix rules; the longest
+matching prefix wins. Attached label catalog definitions accompany context when
+available. Changing rules does not fetch GitHub or change the embedding model.
+
+### Catalogs
+
+| Catalog kinds | Default SCOPE |
+| --- | --- |
+| `labels`, `milestones` | Default repository |
+| `issue_types`, `issue_fields`, `projects` | Owner of the default repository |
+
+Other kinds are rejected with an error that lists the supported kinds.
+
+`catalog` returns the whole catalog. `--limit N` or `--cursor` switches to bounded
+pages. Ticket results include project memberships under `extra.projectItems`, with
+the project ID, number, title, URL and archived state. Project coverage in `status`
+is `memberships` when enabled and `disabled` when excluded.
+
+### Retrieve context for ticket evaluation
+
+Agents can use the mirror to investigate behavior, find earlier decisions and
+workarounds, connect a report to previous fixes, and assess its scope. Duplicate
+discovery is one use of the same retrieval and reading tools.
+
+Start with a focused question and any useful exact terms, such as a client label,
+error message or component name. Search includes titles, bodies, attached labels,
+discussion comments and inline reviews by default. Retain closed history when
+looking for resolutions. Repository, project and label filters narrow the context;
+use multiple repositories when support tickets and code history live separately.
+
+```sh
+gh-mirror search 'workaround for downloads after reconnecting' --limit 10
+gh-mirror search 'session token retry fix' --in reviews --limit 10
+gh-mirror search 'file transfer failure' --labels-all 'client:Acme' --evidence-limit 5
+gh-mirror search 'ECONNRESET' --engine lexical
+gh-mirror show owner/support#123 owner/code#456
+gh-mirror comments owner/support#123 --view full --limit 30
+```
+
+For MCP, use `search_issues` for questions and `find_duplicate_candidates` for
+history related to a known seed ticket. Inspect summaries and source-linked
+`evidence`, then use `get_issues` to batch-read selected tickets, `get_issue` for
+one ticket, and `list_comments` for bounded discussion
+or review pages. Follow comment cursors if more context is needed. Cite the source
+URLs supporting an assessment and check `status` and `warnings` for stale or disabled
+resources. A search snippet is an excerpt; read the surrounding discussion before
+interpreting a decision or fix.
+
+Scores order potentially useful context. They do not establish relevance, correctness
+or duplicate status, and semantic retrieval can return unrelated low-ranked tickets.
+The initial duplicate-reference benchmark supports the hybrid default, but broader
+ticket-evaluation quality needs reviewed queries about causes, workarounds, decisions
+and fixes. The `evaluate` command accepts those relevance judgments too.
+
+## Sync
 
 The first sync creates the database and collects the configured repositories.
 Later runs update the same database incrementally:
@@ -173,9 +433,20 @@ gh-mirror status
 
 `sync` runs once and exits. It publishes a portable snapshot after successful
 collection. Use `sync --publish=false` if you only need the local database.
-`status` reports the generation, repository scope, coverage, counts, and collection
-and enrichment timestamps. A failed collection rolls back its data, indexes, and
+`status` reports the absolute database path (`db_path`), generation, repository
+scope, coverage, counts, and collection and enrichment timestamps. It adds
+`pending_sync` while an interrupted sync has unfinished work. A failed collection rolls back its data, indexes, and
 checkpoints together, leaving the previous successful generation available.
+
+`doctor` checks the configuration, the GitHub token variable, the database,
+collection age (`--max-age`, default 24h), pending sync work, semantic index
+coverage, the encoder and the saved PR comment policy. It prints one ✓, ! or ✗
+line per check and exits with status 1 when a check fails.
+
+```sh
+gh-mirror doctor
+gh-mirror doctor --max-age 2h --format json
+```
 
 `collection_version` records data compatibility separately from the application
 release and SQLite schema. When an incompatible collection upgrade changes this
@@ -208,6 +479,9 @@ to be repeated. Saved responses cost no API requests on resume; the progress dis
 and JSON result (`resumed_responses`) report how many were reused. The original sync
 start time is retained, so the next incremental update can catch changes made
 during the interruption. After a long interruption, run sync again to catch up.
+Scheduled enrichment and reconciliation are measured from the current time, so a
+sync that keeps failing still reaches them. Each failed attempt records its error
+in the pending file.
 
 Keep the database directory on persistent storage, including the pending file and
 its SQLite sidecars. This private staging data is removed after a successful commit
@@ -260,7 +534,11 @@ relationships, and projects are refreshed every `enrichment_interval` (default
 one hour). Full issue/comment inventories are reconciled every
 `reconcile_interval` (default 24 hours) to remove deleted or transferred records.
 These separate refreshes cover changes GitHub does not reliably expose through
-issue timestamps.
+issue timestamps. Before removing a ticket missing from a complete listing, sync
+fetches it individually and keeps it if GitHub still returns it. A ticket deleted
+between reconciliations no longer blocks enrichment; the next sync reconciles its
+repository. Renamed or deleted labels cause the enrichment refresh to refetch the
+tickets that carried them.
 
 Force complete inventories and enrichment immediately with:
 
@@ -276,7 +554,323 @@ from snapshots and status. Permission changes on an unchanged token still requir
 or upstream API host automatically forces complete collection and removes data
 outside the new scope.
 
-## Filter AI review comments
+## Run MCP
+
+For an MCP client using stdio, configure the executable and database:
+
+```json
+{
+  "mcpServers": {
+    "gh-mirror": {
+      "command": "/absolute/path/to/gh-mirror",
+      "args": ["--db", "/absolute/path/to/mirror.sqlite", "mcp"]
+    }
+  }
+}
+```
+
+The stdio command is `gh-mirror --db /path/to/mirror.sqlite mcp`; stdout contains
+only protocol traffic. The HTTP server also provides Streamable HTTP MCP at
+`http://127.0.0.1:8787/mcp`, with the same bearer authentication as REST.
+
+All tools are read-only. By default the server lists seven core tools; `mcp --tools all`
+and `serve --mcp-tools all` add four more.
+
+| Tool | Set | Purpose |
+| --- | --- | --- |
+| `search_issues` | core | Search with filters, evidence and cursors |
+| `find_duplicate_candidates` | core | Related tickets for a seed ticket |
+| `get_issue_context` | core | Bounded evidence for one ticket |
+| `get_issues` | core | Up to 100 tickets without comments |
+| `get_issue` | core | One ticket; summary without comments by default |
+| `list_comments` | core | A bounded page of comments |
+| `get_sync_status` | core | Full generation, scope, coverage and freshness |
+| `list_issues` | all | Filtered listing without search words |
+| `get_catalog` | all | A complete catalog |
+| `list_catalog` | all | A bounded catalog page |
+| `get_project` | all | A project catalog record |
+
+Every input field has a description, and fixed choices such as `view`, `engine` and
+`sort` list their allowed values. Tools do not advertise output schemas. Results
+carry `status` with only `generation` and `collected_at`; `get_sync_status` returns
+the full status. `get_issue` defaults to `view=summary` and `comments=none`; pass
+`comments=page` for a bounded page or `comments=all` for every comment.
+`search_issues` and `find_duplicate_candidates` accept `engine` with the same
+choices and hybrid default as REST and the CLI. Read `query.engine`, `ranking` and
+`warnings` to identify the effective engine, score direction and coverage.
+
+## Run the REST API
+
+Start a server against the existing database:
+
+```sh
+gh-mirror serve --listen 127.0.0.1:8787
+```
+
+Query it from another terminal:
+
+```sh
+curl 'http://127.0.0.1:8787/v1/status'
+curl 'http://127.0.0.1:8787/v1/search?q=socket+timeout&repo=owner/repository'
+curl 'http://127.0.0.1:8787/v1/search?q=file+transfers+get+stuck&engine=hybrid&limit=10'
+curl 'http://127.0.0.1:8787/v1/issues/owner/repository/123'
+```
+
+| Endpoint | Purpose |
+| --- | --- |
+| `/health` | Health check |
+| `/v1/status` | Generation, scope, coverage, and freshness |
+| `GET /v1/search?q=...` | Search modes, source selection, shared filters, sorting, evidence, counts/facets and cursor |
+| `GET /v1/issues` | Paginated listing with shared filters, projection and ordering |
+| `GET /v1/issues/{owner}/{repo}/{number}` | Ticket; `view`, `comments`, `limit`, `cursor`, `comment_kind` control size |
+| `GET /v1/issues/{owner}/{repo}/{number}/comments` | Bounded comments; `kind`, `view`, `order`, `limit`, `cursor` |
+| `POST /v1/issues/batch` | Up to 100 ticket identities; JSON `tickets` and optional `view` |
+| `GET /v1/catalog?kind=...&scope=...` | Add `limit`/`cursor` for bounded pages; legacy calls return the full catalog |
+| `/v1/projects?owner=...&number=...` | Project catalog record and collection status |
+| `GET /v1/issues/{owner}/{repo}/{number}/context` | Bounded ticket evidence; `purpose`, `query`, limits |
+| `GET /v1/issues/{owner}/{repo}/{number}/related` | Related tickets with shared filters, sorting and cursor |
+| `/v1/candidates?repo=...&number=...` | Deprecated alias of `/related` |
+| `/snapshots/latest` | Latest snapshot manifest |
+| `/snapshots/{filename}` | Immutable snapshot file |
+
+REST accepts `engine=lexical|semantic|hybrid` for search and related tickets; omitting it
+uses hybrid with a warned lexical fallback when vector coverage is unavailable. It also
+uses `match`, `prefix`, repeated `in` and `exclude_words` parameters for search.
+`count` and `facets` are booleans. For example:
+
+```sh
+curl 'http://127.0.0.1:8787/v1/search?q=Acme+timeout&match=all&count=true&facets=true&limit=20'
+curl 'http://127.0.0.1:8787/v1/issues/owner/repository/123?view=summary'
+curl -X POST 'http://127.0.0.1:8787/v1/issues/batch' -H 'Content-Type: application/json' \
+  --data '{"tickets":[{"repo":"owner/repository","number":123}],"view":"summary"}'
+```
+
+Errors contain `error` and a machine-readable `code`: invalid input is HTTP 400
+(`invalid_query`), missing resources 404 (`not_found`), stale generation cursors 409
+(`stale_cursor`), unavailable semantic indexes 503 (`semantic_index_unavailable`)
+and internal failures 500 (`internal_error`). Lexical query upgrades work against
+existing snapshots. Semantic engines require a compatible local index; building
+it migrates the local schema without requesting GitHub data.
+
+Non-loopback listeners require `GH_MIRROR_API_TOKEN`; requests then use
+`Authorization: Bearer <token>`. Setting the token enables authentication for all
+endpoints even on loopback. Use a TLS proxy when exposing the service remotely.
+
+## Snapshots
+
+Use snapshots to give another machine, CI job, or batch process a private copy of
+one complete generation. `sync` publishes a snapshot by default; publish the last
+successful collection separately with:
+
+```sh
+gh-mirror snapshot
+```
+
+The publisher exports a standalone SQLite file including its search index, removes
+collector response caches and credential identity, compacts it to remove deleted
+payload bytes, assigns
+an immutable filename, and atomically updates `latest.json`. Use this export rather
+than copying the main file of a live SQLite database with WAL sidecars.
+
+Acquire from a shared directory:
+
+```sh
+gh-mirror acquire \
+  --source /srv/gh-mirror/snapshots/latest.json \
+  --dest ./mirror.sqlite \
+  --repo owner/repository --max-age 2h > mirror-manifest.json
+
+gh-mirror --db ./mirror.sqlite search 'socket timeout'
+```
+
+Or acquire through the REST server behind an HTTPS proxy:
+
+```sh
+gh-mirror acquire --source https://mirror.example/snapshots/latest \
+  --dest ./mirror.sqlite --repo owner/repository --max-age 2h
+```
+
+Acquisition resolves the manifest once, checks age and exact repository scope,
+verifies SHA-256, schema and collection versions, and embedded metadata, then
+atomically installs the private file. Legacy manifests without collection version
+are interpreted as version 1. To require fresh fields and project memberships, add
+`--max-enrichment-age 2h`; this is independent of `--max-age` for issue/comment
+updates. The enrichment check is disabled by default.
+For multiple repositories, repeat `--repo` or use a comma-separated list. Failed
+acquisition preserves the previous destination. The destination must have no live
+WAL sidecars; the current download limit is 2 GiB.
+
+Keep the database pinned for the whole batch and retain the manifest to record its
+generation and checksum. Snapshot files remain until you remove them. Serialize
+publication and retain generations long enough for in-flight acquisitions to finish.
+
+## Advanced
+
+### Offline semantic and hybrid search
+
+The executable includes MiniLM L6 weights, its WordPiece tokenizer and model
+configuration (about 91 MB of model assets). Inference defaults to Go on the CPU.
+The first use extracts verified bundled assets into
+`$XDG_CACHE_HOME/gh-mirror/models/` (default `~/.cache/gh-mirror/models/`).
+That cache directory must be writable on first use. `gh-mirror model` reports the
+pinned model, revision, dimensionality and compatibility fingerprint.
+
+#### Optional Vulkan embeddings
+
+On a machine with Lemonade installed, its Vulkan runtime can accelerate indexing
+and query embeddings. Start Lemonade for the installation step, then install its
+backend if it is absent:
+
+```sh
+lemonade --no-discovery backends install llamacpp:vulkan
+gh-mirror model --check --embedding-backend lemonade-vulkan --format text
+gh-mirror index --workers 8 --embedding-backend lemonade-vulkan
+gh-mirror search 'file transfers stop after reconnecting' --engine hybrid --embedding-backend lemonade-vulkan
+```
+
+gh-mirror starts a dedicated, authenticated localhost `llama-server` from
+Lemonade's installed Vulkan backend. It uses a local FP32 GGUF export of the exact
+bundled MiniLM tensors, passes the bundled tokenizer's token IDs directly, and
+selects mean pooling and L2 normalization. Export needs about 87 MiB of additional
+cache space and no Python conversion tools. The process runs with `--offline`,
+does not use the Lemonade daemon during inference, and stops when the command
+exits. On Linux it also stops if gh-mirror is killed. The local API key is passed
+through a private temporary file rather than the command line. A standalone installation can continue using the bundled Go CPU encoder.
+
+Persist the choice in your configuration:
+
+```json
+"embedding": {
+  "backend": "lemonade-vulkan",
+  "batch_size": 8,
+  "device": "Vulkan0"
+}
+```
+
+The default executable is under the user's Lemonade cache at
+`lemonade/bin/llamacpp/vulkan/llama-server` (`.exe` on Windows). Set
+`embedding.runtime` or `--embedding-runtime` to an absolute path if it is installed
+elsewhere. `--embedding-device` selects a numbered Vulkan device;
+`--embedding-batch-size` bounds batches between 1 and 32 passages (default 8).
+Index workers
+prepare documents and commit results; the GPU queue combines passages from those
+workers, including batches within long documents. REST and MCP use the configured
+encoder for semantic and hybrid queries.
+
+Before accepting GPU vectors, gh-mirror verifies complete Vulkan layer offload and
+compares reference vectors, tokenizer IDs, and a full 256-token passage. Each
+comparison requires cosine similarity of at least 0.9999 and a maximum coordinate
+difference of 0.001. The runtimes use different floating point implementations,
+so their outputs need not be identical. Every response must retain model identity,
+ordering, dimensionality, finite coordinates and unit norm.
+
+Missing runtimes/devices, failed verification and inference errors trigger CPU
+fallback with a visible reason. No alternate model is selected. Progress shows the
+effective backend/device, actual batch size and vectors per second in addition to
+document throughput. Switching compatible CPU/Vulkan backends preserves saved
+vectors and checkpoints. A changed model fingerprint rebuilds vectors from stored
+documents through `index`, without GitHub requests. Use `--embedding-backend cpu`
+to override a configured GPU backend.
+The [Vulkan benchmark](docs/vulkan-benchmark-2026-10-10.md) records model
+compatibility, indexing throughput, query latency and interruption tests on
+Ryzen AI / Radeon 890M hardware.
+
+Build vectors for an existing mirror without requesting GitHub data:
+
+```sh
+gh-mirror index
+gh-mirror index --workers 8
+gh-mirror search 'file transfers get stuck indefinitely' --engine semantic
+gh-mirror search 'Acme attachments fail after reconnecting' --engine hybrid --labels-all 'client:Acme'
+gh-mirror related owner/repository#123 --engine hybrid
+```
+
+`sync` now incrementally indexes vectors after committing collection and before
+publishing its snapshot. `--index-workers` controls CPU concurrency separately from
+GitHub request workers; when omitted, it inherits the effective `--workers` or
+configured `workers` value. Standalone `index` also inherits configuration unless
+its `--workers` flag overrides it. The built-in default remains four.
+For example, `sync --workers 8` uses eight for each phase, while
+`sync --workers 8 --index-workers 4` limits CPU indexing to four.
+Use `sync --index=false` to skip vector indexing. Search and related tickets default
+to hybrid retrieval, combining exact words with similarity in meaning.
+Use `--engine lexical` for literal retrieval or `--engine semantic` for similarity alone.
+When no engine is supplied and the selected vector index is missing, incomplete
+or incompatible, retrieval falls back to lexical with a `search_engine_fallback`
+warning and instructions to run `index`. Results identify the actual engine and
+its score meaning. Explicit `--engine hybrid` or `--engine semantic` require a
+complete compatible index and return an error when it is unavailable.
+
+Indexing shows document progress, throughput, an ETA and active workers on stderr.
+The sync display labels GitHub and CPU workers separately. A bounded document queue
+keeps workers running across database pages, so one long document does not hold up
+the next page of work.
+Completed passages are committed as they finish. Interrupt with Ctrl-C and rerun
+`index` to resume. Unchanged documents are skipped; changed documents reuse identical
+passages and encode their new passages. Metadata-only changes do not re-encode text.
+Inference runs in parallel while checkpoint writes queue for SQLite's single writer.
+Readers remain concurrent, and each checkpoint retains FULL synchronous durability.
+Deleted tickets/comments remove their vectors. Model or chunking changes rebuild
+only the derived local vector index, without refetching GitHub data.
+If collection has finished and indexing is interrupted, `index --workers 8` resumes
+the remaining local work without repeating collection. Run `snapshot` afterward
+to publish the completed index, or rerun `sync` to finish the normal workflow.
+
+Titles, bodies, labels, discussion comments and inline review comments are indexed
+as separate passages. Long text is split at the tokenizer's 256-token budget with
+small overlaps, preserving its tail. Semantic evidence includes passage similarity
+and byte offsets into the indicated field. Seed-based semantic candidates reuse
+stored vectors for the entire seed title/body and selected labels/comments, avoiding
+another inference pass. Recent seed comments remain opt-in and bounded.
+
+`semantic` uses exact cosine similarity, with higher scores ranking first. `hybrid`
+combines lexical, semantic and whole-ticket evidence rankings using reciprocal rank
+fusion: `1/(60+lexical rank) + 1/(60+semantic rank) + 3/(60+ticket rank)`.
+Ticket evidence rewards distinctive query terms across selected fields and client
+or partner label matches, including configured aliases. Entity matches are soft
+boosts; explicit label filters remain hard constraints. Semantic ranking combines
+the strongest passage with the best evidence per field, so repeated comments do
+not multiply a ticket’s weight. Results report detected query entities, matched
+terms/fields, component ranks, the algorithm, `semantic_score`
+and, where present, `lexical_score`. These scores are neither relevance percentages
+nor duplicate probabilities.
+Semantic retrieval returns the 200 tickets with the most similar selected passages;
+low-ranked results can be unrelated. Hybrid retrieval returns every literal or
+ticket evidence match plus those 200 semantic results, so literal matches without
+an indexed passage in the selected fields still appear. Inspect evidence and bound
+the returned page.
+
+Repository, label, state, project, author, date and other ticket filters work with
+all three engines. `--in`, exclusions, counts, facets, views and pagination also
+work with semantic/hybrid search. Literal `--match all`, `--match phrase` and
+`--prefix` select lexical retrieval when no engine is supplied, with a
+`search_engine_selected` explanation. They require lexical when an engine is explicit.
+Natural-language queries are limited to
+16,384 bytes and 16 passages; hybrid queries allow at most 512 literal terms.
+For explicit semantic/hybrid requests, an incomplete or incompatible index produces
+an error with instructions to run `index`; REST returns 503 with code
+`semantic_index_unavailable`. Automatic fallback applies only to unavailable vector
+coverage; input errors, inference failures and database errors are returned.
+`status.semantic` reports coverage, pending documents and model compatibility.
+Semantic cursors also bind the vector generation and model fingerprint.
+They bind the actual query vector too: small numerical changes during CPU/GPU
+fallback invalidate pagination with a stale-cursor response. A change between
+lexical and hybrid retrieval also invalidates continuation. Restart the query
+after that response or when continuing a semantic cursor from an older binary.
+
+Snapshots include completed vectors in the same SQLite file. CI consumers acquire
+that file and search offline with the same binary. They do not need a separate model
+service or rebuild a complete compatible index. Exports omit incomplete/obsolete
+passages while the collector retains its private resumable work. Existing schema-1
+snapshots remain readable for lexical queries, and schema-2 snapshots remain
+readable with their existing vectors. `index` performs a local schema-3 migration
+for shared embedding storage. Older binaries cannot open schema-3 snapshots.
+
+MiniLM is English-oriented. Hybrid search is useful for retaining exact client labels
+and technical terms. The [model research](docs/semantic-model-research.md) compares
+compact and larger alternatives, licenses and measurements on the target hardware.
+
+### Filter AI review comments
 
 PR descriptions remain searchable. To exclude known AI reviewer comments and
 inline threads they start from retrieval:
@@ -333,8 +927,8 @@ policy. Configure repository tables when changing retrieval rules.
 gh-mirror index
 gh-mirror bots --format text
 gh-mirror status --format text
-gh-mirror comments --repo owner/code --number 123 --include-excluded --format text
-gh-mirror context --repo owner/code --number 123 --include-excluded --format text
+gh-mirror comments owner/code#123 --include-excluded --format text
+gh-mirror context owner/code#123 --include-excluded --format text
 ```
 
 `bots` reports detected accounts, provider identities and applied exclusion counts.
@@ -343,462 +937,15 @@ human accounts that post both AI-attributed and ordinary comments. Custom workfl
 can append `<!-- gh-mirror:ai-generated:claude -->` on its own final line to declare
 AI-generated comments explicitly.
 Coverage and warnings report omitted comments. REST and MCP comment/context reads
-accept `include_excluded=true`; paged `get` does too. Legacy `get --comments all`
-retains every source comment. Policy changes invalidate retrieval cursors without
+accept `include_excluded=true`; paged `get_issue` does too. `get_issue` with
+`comments=all` retains every source comment. Policy changes invalidate retrieval cursors without
 changing collection checkpoints, the model or tokenizer. Unchanged vectors and
 indexing checkpoints remain reusable. Disabling filtering restores source documents
 locally and embeds only restored passages; exports omit unused shared vectors.
 Evaluation reports record the retrieval generation and reject concurrent policy,
 vector or collection changes.
 
-## Offline semantic and hybrid search
-
-The executable includes MiniLM L6 weights, its WordPiece tokenizer and model
-configuration (about 91 MB of model assets). Inference defaults to Go on the CPU.
-The first use extracts verified bundled assets into
-`$XDG_CACHE_HOME/gh-mirror/models/` (default `~/.cache/gh-mirror/models/`).
-That cache directory must be writable on first use. `gh-mirror model` reports the
-pinned model, revision, dimensionality and compatibility fingerprint.
-
-### Optional Vulkan embeddings
-
-On a machine with Lemonade installed, its Vulkan runtime can accelerate indexing
-and query embeddings. Start Lemonade for the installation step, then install its
-backend if it is absent:
-
-```sh
-lemonade --no-discovery backends install llamacpp:vulkan
-gh-mirror model --check --embedding-backend lemonade-vulkan --format text
-gh-mirror index --workers 8 --embedding-backend lemonade-vulkan
-gh-mirror search 'file transfers stop after reconnecting' --engine hybrid --embedding-backend lemonade-vulkan
-```
-
-gh-mirror starts a dedicated, authenticated localhost `llama-server` from
-Lemonade's installed Vulkan backend. It uses a local FP32 GGUF export of the exact
-bundled MiniLM tensors, passes the bundled tokenizer's token IDs directly, and
-selects mean pooling and L2 normalization. Export needs about 87 MiB of additional
-cache space and no Python conversion tools. The process runs with `--offline`,
-does not use the Lemonade daemon during inference, and stops when the command
-exits. A standalone installation can continue using the bundled Go CPU encoder.
-
-Persist the choice in your configuration:
-
-```json
-"embedding": {
-  "backend": "lemonade-vulkan",
-  "batch_size": 8,
-  "device": "Vulkan0"
-}
-```
-
-The default executable is under the user's Lemonade cache at
-`lemonade/bin/llamacpp/vulkan/llama-server` (`.exe` on Windows). Set
-`embedding.runtime` or `--embedding-runtime` to an absolute path if it is installed
-elsewhere. `--embedding-device` selects a numbered Vulkan device;
-`--embedding-batch-size` bounds batches between 1 and 32 passages (default 8).
-Index workers
-prepare documents and commit results; the GPU queue combines passages from those
-workers, including batches within long documents. REST and MCP use the configured
-encoder for semantic and hybrid queries.
-
-Before accepting GPU vectors, gh-mirror verifies complete Vulkan layer offload and
-compares reference vectors, tokenizer IDs, and a full 256-token passage. Each
-comparison requires cosine similarity of at least 0.9999 and a maximum coordinate
-difference of 0.001. The runtimes use different floating point implementations,
-so their outputs need not be identical. Every response must retain model identity,
-ordering, dimensionality, finite coordinates and unit norm.
-
-Missing runtimes/devices, failed verification and inference errors trigger CPU
-fallback with a visible reason. No alternate model is selected. Progress shows the
-effective backend/device, actual batch size and vectors per second in addition to
-document throughput. Switching compatible CPU/Vulkan backends preserves saved
-vectors and checkpoints. A changed model fingerprint rebuilds vectors from stored
-documents through `index`, without GitHub requests. Use `--embedding-backend cpu`
-to override a configured GPU backend.
-The [Vulkan benchmark](docs/vulkan-benchmark-2026-10-10.md) records model
-compatibility, indexing throughput, query latency and interruption tests on
-Ryzen AI / Radeon 890M hardware.
-
-Build vectors for an existing mirror without requesting GitHub data:
-
-```sh
-gh-mirror index
-gh-mirror index --workers 8
-gh-mirror search 'file transfers get stuck indefinitely' --engine semantic
-gh-mirror search 'Acme attachments fail after reconnecting' --engine hybrid --label 'client:Acme'
-gh-mirror candidates --repo owner/repository --number 123 --engine hybrid
-```
-
-`sync` now incrementally indexes vectors after committing collection and before
-publishing its snapshot. `--index-workers` controls CPU concurrency separately from
-GitHub request workers; when omitted, it inherits the effective `--workers` or
-configured `workers` value. Standalone `index` also inherits configuration unless
-its `--workers` flag overrides it. The built-in default remains four.
-For example, `sync --workers 8` uses eight for each phase, while
-`sync --workers 8 --index-workers 4` limits CPU indexing to four.
-Use `sync --index=false` to skip vector indexing. Search and candidates default
-to hybrid retrieval, combining exact words with similarity in meaning.
-Use `--engine lexical` for literal retrieval or `--engine semantic` for similarity alone.
-When no engine is supplied and the selected vector index is missing, incomplete
-or incompatible, retrieval falls back to lexical with a `search_engine_fallback`
-warning and instructions to run `index`. Results identify the actual engine and
-its score meaning. Explicit `--engine hybrid` or `--engine semantic` require a
-complete compatible index and return an error when it is unavailable.
-
-Indexing shows document progress, throughput, an ETA and active workers on stderr.
-The sync display labels GitHub and CPU workers separately. A bounded document queue
-keeps workers running across database pages, so one long document does not hold up
-the next page of work.
-Completed passages are committed as they finish. Interrupt with Ctrl-C and rerun
-`index` to resume. Unchanged documents are skipped; changed documents reuse identical
-passages and encode their new passages. Metadata-only changes do not re-encode text.
-Inference runs in parallel while checkpoint writes queue for SQLite's single writer.
-Readers remain concurrent, and each checkpoint retains FULL synchronous durability.
-Deleted tickets/comments remove their vectors. Model or chunking changes rebuild
-only the derived local vector index, without refetching GitHub data.
-If collection has finished and indexing is interrupted, `index --workers 8` resumes
-the remaining local work without repeating collection. Run `snapshot` afterward
-to publish the completed index, or rerun `sync` to finish the normal workflow.
-
-Titles, bodies, labels, discussion comments and inline review comments are indexed
-as separate passages. Long text is split at the tokenizer's 256-token budget with
-small overlaps, preserving its tail. Semantic evidence includes passage similarity
-and byte offsets into the indicated field. Seed-based semantic candidates reuse
-stored vectors for the entire seed title/body and selected labels/comments, avoiding
-another inference pass. Recent seed comments remain opt-in and bounded.
-
-`semantic` uses exact cosine similarity, with higher scores ranking first. `hybrid`
-combines lexical, semantic and whole-ticket evidence rankings using reciprocal rank
-fusion: `1/(60+lexical rank) + 1/(60+semantic rank) + 3/(60+ticket rank)`.
-Ticket evidence rewards distinctive query terms across selected fields and client
-or partner label matches, including configured aliases. Entity matches are soft
-boosts; explicit label filters remain hard constraints. Semantic ranking combines
-the strongest passage with the best evidence per field, so repeated comments do
-not multiply a ticket’s weight. Results report detected query entities, matched
-terms/fields, component ranks, the algorithm, `semantic_score`
-and, where present, `lexical_score`. These scores are neither relevance percentages
-nor duplicate probabilities.
-Semantic retrieval ranks every eligible ticket with a selected indexed passage;
-low-ranked results can be unrelated. Inspect evidence and bound the returned page.
-
-Repository, label, state, project, author, date and other ticket filters work with
-all three engines. `--in`, exclusions, counts, facets, views and pagination also
-work with semantic/hybrid search. Literal `--match all`, `--match phrase` and
-`--prefix` select lexical retrieval when no engine is supplied, with a
-`search_engine_selected` explanation. They require lexical when an engine is explicit.
-Natural-language queries are limited to
-16,384 bytes and 16 passages; hybrid queries allow at most 512 literal terms.
-For explicit semantic/hybrid requests, an incomplete or incompatible index produces
-an error with instructions to run `index`; REST returns 503 with code
-`semantic_index_unavailable`. Automatic fallback applies only to unavailable vector
-coverage; input errors, inference failures and database errors are returned.
-`status.semantic` reports coverage, pending documents and model compatibility.
-Semantic cursors also bind the vector generation and model fingerprint.
-They bind the actual query vector too: small numerical changes during CPU/GPU
-fallback invalidate pagination with a stale-cursor response. A change between
-lexical and hybrid retrieval also invalidates continuation. Restart the query
-after that response or when continuing a semantic cursor from an older binary.
-
-Snapshots include completed vectors in the same SQLite file. CI consumers acquire
-that file and search offline with the same binary. They do not need a separate model
-service or rebuild a complete compatible index. Exports omit incomplete/obsolete
-passages while the collector retains its private resumable work. Existing schema-1
-snapshots remain readable for lexical queries, and schema-2 snapshots remain
-readable with their existing vectors. `index` performs a local schema-3 migration
-for shared embedding storage. Older binaries cannot open schema-3 snapshots.
-
-MiniLM is English-oriented. Hybrid search is useful for retaining exact client labels
-and technical terms. The [model research](docs/semantic-model-research.md) compares
-compact and larger alternatives, licenses and measurements on the target hardware.
-
-## Query locally
-
-Search issue titles, bodies, attached label names, and comments:
-
-```sh
-gh-mirror search 'socket timeout'
-gh-mirror search 'socket timeout' --repo owner/repository --state closed --label bug --limit 20
-gh-mirror search 'socket timeout' --type Bug
-gh-mirror search 'Acme' --repo owner/repository
-gh-mirror search 'timeout' --project owner/1 --kind issue
-```
-
-Queries use readable terminal output or piped JSON; `--format` overrides it.
-Search defaults to hybrid across all collected source fields and both open and
-closed tickets. In lexical retrieval, `--match any` joins literal words with
-OR. `--match all` requires every word somewhere in the selected ticket: a label and
-a separate comment can satisfy it together. `--match phrase` requires consecutive
-words in one source. Punctuation is tokenized; operators in the query are literal
-words. Lexical queries exceeding 32 terms or 16,384 bytes fail explicitly.
-
-```sh
-gh-mirror search 'Acme timeout' --match all --count --facets
-gh-mirror search 'socket timeout' --match phrase --in body --in comments
-gh-mirror search 'auth' --prefix --in title --exclude-word deprecated
-gh-mirror search 'timeout' --repositories owner/support --repositories owner/code --limit 20
-```
-
-`--prefix` matches word prefixes; in phrase mode it applies only to the final word.
-`--in` selects title, body, labels, discussion comments (`comments`) or inline
-review comments (`reviews`). Repeat it to select several sources; omitting it
-searches all. Excluded words apply across the selected sources of the whole ticket.
-
-Search returns compact summaries by default. Each match contains the legacy title,
-URL, source, snippet and the selected engine's score, plus labels, assignees, issue type, milestone,
-author, project identities and timestamps under `summary`. `evidence` contains up
-to three matching sources with the field, excerpt, URL and comment identity/time.
-Inline review evidence also includes stored file/line context and at most 1,024
-characters of diff context. `--evidence-limit` accepts 1–10. Use `--view full` to add
-raw ticket records, fields and memberships; comments are retrieved separately.
-
-Search and listing return `has_more`, `next_cursor`, collection `status` and
-structured `warnings`. Follow the cursor using the same query options; page size
-can change. A changed generation requires restarting or querying an immutable
-snapshot. `--count` adds `total` over all matching tickets before pagination.
-`--facets` adds label/type/project counts over that same set, capped at 100 values
-per facet with `truncated` indicating omitted values. These aggregate operations
-are opt-in. Warnings identify uncollected repositories, disabled requested
-resources and stale enrichment; `--max-enrichment-age 2h` changes the default
-24-hour warning threshold for requested fields/projects.
-
-With `--engine lexical`, `score` uses SQLite FTS5's [BM25 ranking](https://www.sqlite.org/fts5.html#the_bm25_function).
-Lower, more negative scores rank first. Titles and label names have a weight of five and
-body/comment text a weight of one. Compare scores within the same query; they are
-text relevance values, not percentages or duplicate probabilities.
-
-A client name that appears only in an attached label is searchable. `--label`
-still applies an exact label filter. Label additions, renames, and removals update
-the index with the issue. The next sync upgrades existing mirrors from stored
-payloads without extra GitHub requests; publish or acquire a new snapshot to use
-that index in a consumer. Unused label names are available through the catalog.
-
-List tickets without requiring search words:
-
-```sh
-gh-mirror list --repo owner/repository --label 'client:Acme' --limit 100
-gh-mirror list --kind pull_request --project owner/1 --limit 100
-# Continue using next_cursor from the previous JSON, with the same filters:
-gh-mirror list --repo owner/repository --label 'client:Acme' --limit 100 --cursor "$next_cursor"
-```
-
-Listing preserves full raw records by default; `--view summary` omits them and
-returns common metadata. Default ordering is repository and ticket number.
-Search defaults to relevance. Both support `--sort number`, `--sort updated` and
-`--sort created`, with `--order asc` or `desc`; timestamps default to descending,
-number/relevance to ascending. Ties use repository/number for stable continuation.
-Project filters include archived memberships and use `owner/project-number`.
-
-Search and listing share these filters:
-
-| CLI flag | REST/MCP field | Meaning |
-| --- | --- | --- |
-| `--repo` | `repo` | One repository |
-| `--repositories` | `repositories` | Any of these repositories; repeat |
-| `--state`, `--kind`, `--type` | `state`, `kind`, `type` | Ticket state, issue/PR kind, exact native type |
-| `--label`, `--labels-all` | `label`, `labels_all` | Require every exact label; repeat `labels-all` |
-| `--labels-any` | `labels_any` | Require any listed exact label; repeat |
-| `--exclude-label` | `exclude_labels` | Exclude each exact label; repeat |
-| `--author` | `author` | Ticket author login |
-| `--assignee` | `assignees` | Any selected assignee login; repeat |
-| `--milestone` | `milestone` | Exact milestone title or number |
-| `--created-after`, `--created-before` | `created_after`, `created_before` | Inclusive RFC3339 creation bounds |
-| `--updated-after`, `--updated-before` | `updated_after`, `updated_before` | Inclusive RFC3339 update bounds |
-| `--project` | `project` | Project membership owner/number |
-| `--field 'Priority=High'` | REST: `field=Priority=High`; MCP: `field_values` | Require every collected field predicate; repeat |
-
-MCP array fields accept JSON arrays. REST array fields use repeated parameters;
-repeated `repo` parameters also select multiple repositories. MCP `field_values`
-is an array of `{"name":"Priority","value":"High"}`. Native fields match text,
-date and number values or selection option names. Singular and compound predicates
-combine with AND; assignees and `labels_any` combine with OR within their lists.
-Project membership filters do not change text ranking.
-
-Read a complete issue with its comments and collected metadata, or retrieve
-possible duplicates:
-
-```sh
-gh-mirror get --repo owner/repository --number 123
-gh-mirror candidates --repo owner/repository --number 123 --limit 30
-```
-
-Candidates select up to 24 distinctive seed terms using local ticket frequency.
-Titles receive more weight than descriptions, repeated boilerplate is de-duplicated,
-and technical acronyms/error identifiers such as CSS, API and 403 are retained.
-Attached seed labels contribute by default; use `--include-labels=false` to exclude
-them. Recent seed comments are opt-in and bounded by `--comment-limit` (default 20,
-maximum 100). Candidates include closed history and exclude the seed.
-
-```sh
-gh-mirror candidates --repo owner/support --number 123 --include-comments --count
-gh-mirror candidates --repo owner/support --number 123 --repositories owner/support --repositories owner/code
-gh-mirror get --repo owner/repository --number 123 --view summary
-gh-mirror get --repo owner/repository --number 123 --comments none
-gh-mirror get --repo owner/repository --number 123 --comments page --limit 20
-gh-mirror comments --repo owner/repository --number 123 --kind review --limit 20
-gh-mirror batch owner/repository#123 owner/repository#456
-```
-
-`get` retains the legacy full ticket and all comments by default. Summary view
-omits comments by default; explicit `--comments none`, `page` or `all` controls
-inclusion. Paged comments appear in `comment_page`. The `comments` command supports
-`--kind all|discussion|review`, creation order and generation-bound cursors.
-Summary comment previews stop at 1,024 Unicode characters and report `truncated`;
-`--view full` preserves complete text and raw JSON. Comment IDs are strings, keeping
-large numeric IDs intact and distinguishing discussion/review kinds. `batch` reads
-up to 100 identities from one generation without comments, defaults to summaries,
-and returns explicit `missing` identities. Repeat identities are de-duplicated.
-
-Inspect labels, milestones, native issue types/fields, or project data:
-
-```sh
-gh-mirror catalog --kind labels --scope owner/repository
-gh-mirror catalog --kind issue_fields --scope owner
-gh-mirror catalog --kind projects --scope owner
-# Enable bounded catalog pages; continue with --cursor from next_cursor:
-gh-mirror catalog --kind labels --scope owner/repository --limit 30
-```
-
-| Catalog kinds | Scope |
-| --- | --- |
-| `labels`, `milestones` | `owner/repository` |
-| `issue_types`, `issue_fields`, `projects` | `owner` |
-
-Ticket results include memberships under `extra.projectItems`, with the project
-ID, number, title, URL, and membership's archived state. Membership pagination is
-included in the normal batched ticket metadata collection. Project coverage in
-`status` is `memberships` when enabled and `disabled` when excluded.
-
-Mirrors created by older versions retain existing membership metadata and remove
-full project detail catalogs on the next successful sync, without forcing an extra
-enrichment refresh. Compatible saved responses from an interrupted sync are reused
-automatically; do not use `--restart` to upgrade.
-
-Use `gh-mirror --db /path/to/mirror.sqlite ...` to query another database, including
-an acquired snapshot. Local queries need no GitHub credential.
-
-## Run the REST API
-
-Start a server against the existing database:
-
-```sh
-gh-mirror serve --listen 127.0.0.1:8787
-```
-
-Query it from another terminal:
-
-```sh
-curl 'http://127.0.0.1:8787/v1/status'
-curl 'http://127.0.0.1:8787/v1/search?q=socket+timeout&repo=owner/repository'
-curl 'http://127.0.0.1:8787/v1/search?q=file+transfers+get+stuck&engine=hybrid&limit=10'
-curl 'http://127.0.0.1:8787/v1/issues/owner/repository/123'
-```
-
-| Endpoint | Purpose |
-| --- | --- |
-| `/health` | Health check |
-| `/v1/status` | Generation, scope, coverage, and freshness |
-| `GET /v1/search?q=...` | Search modes, source selection, shared filters, sorting, evidence, counts/facets and cursor |
-| `GET /v1/issues` | Paginated listing with shared filters, projection and ordering |
-| `GET /v1/issues/{owner}/{repo}/{number}` | Ticket; `view`, `comments`, `limit`, `cursor`, `comment_kind` control size |
-| `GET /v1/issues/{owner}/{repo}/{number}/comments` | Bounded comments; `kind`, `view`, `order`, `limit`, `cursor` |
-| `POST /v1/issues/batch` | Up to 100 ticket identities; JSON `tickets` and optional `view` |
-| `GET /v1/catalog?kind=...&scope=...` | Add `limit`/`cursor` for bounded pages; legacy calls return the full catalog |
-| `/v1/projects?owner=...&number=...` | Project catalog record and collection status |
-| `/v1/candidates?repo=...&number=...&limit=...` | Possible duplicate issues |
-| `/snapshots/latest` | Latest snapshot manifest |
-| `/snapshots/{filename}` | Immutable snapshot file |
-
-REST accepts `engine=lexical|semantic|hybrid` for search and candidates; omitting it
-uses hybrid with a warned lexical fallback when vector coverage is unavailable. It also
-uses `match`, `prefix`, repeated `in` and `exclude_words` parameters for search.
-`count` and `facets` are booleans. For example:
-
-```sh
-curl 'http://127.0.0.1:8787/v1/search?q=Acme+timeout&match=all&count=true&facets=true&limit=20'
-curl 'http://127.0.0.1:8787/v1/issues/owner/repository/123?view=summary'
-curl -X POST 'http://127.0.0.1:8787/v1/issues/batch' -H 'Content-Type: application/json' \
-  --data '{"tickets":[{"repo":"owner/repository","number":123}],"view":"summary"}'
-```
-
-Errors contain `error` and a machine-readable `code`: invalid input is HTTP 400
-(`invalid_query`), missing resources 404 (`not_found`), stale generation cursors 409
-(`stale_cursor`), unavailable semantic indexes 503 (`semantic_index_unavailable`)
-and internal failures 500 (`internal_error`). Lexical query upgrades work against
-existing snapshots. Semantic engines require a compatible local index; building
-it migrates the local schema without requesting GitHub data.
-
-Non-loopback listeners require `GH_MIRROR_API_TOKEN`; requests then use
-`Authorization: Bearer <token>`. Setting the token enables authentication for all
-endpoints even on loopback. Use a TLS proxy when exposing the service remotely.
-
-## Run MCP
-
-For an MCP client using stdio, configure the executable and database:
-
-```json
-{
-  "mcpServers": {
-    "gh-mirror": {
-      "command": "/absolute/path/to/gh-mirror",
-      "args": ["--db", "/absolute/path/to/mirror.sqlite", "mcp"]
-    }
-  }
-}
-```
-
-The stdio command is `gh-mirror --db /path/to/mirror.sqlite mcp`; stdout contains
-only protocol traffic. The HTTP server also provides Streamable HTTP MCP at
-`http://127.0.0.1:8787/mcp`, with the same bearer authentication as REST.
-
-The ten read-only tools are `list_issues`, `search_issues`, `get_issue`, `get_issues`,
-`list_comments`, `get_catalog`, `list_catalog`, `get_project`,
-`find_duplicate_candidates`, and `get_sync_status`. Each advertises the schema of
-its structured output envelope; preserved GitHub JSON remains unconstrained.
-Use `list_catalog` for bounded pages and `get_catalog` for a legacy complete catalog.
-`search_issues` and `find_duplicate_candidates` accept an `engine` argument with
-the same three choices and hybrid default as REST and the CLI. Read `query.engine`,
-`ranking` and `warnings` to identify the effective engine, score direction and coverage.
-A compact workflow is search, inspect evidence, batch-fetch selected summaries,
-then fetch only the required ticket details or comment pages.
-
-## Retrieve context for ticket evaluation
-
-Agents can use the mirror to investigate behavior, find earlier decisions and
-workarounds, connect a report to previous fixes, and assess its scope. Duplicate
-discovery is one use of the same retrieval and reading tools.
-
-Start with a focused question and any useful exact terms, such as a client label,
-error message or component name. Search includes titles, bodies, attached labels,
-discussion comments and inline reviews by default. Retain closed history when
-looking for resolutions. Repository, project and label filters narrow the context;
-use multiple repositories when support tickets and code history live separately.
-
-```sh
-gh-mirror search 'workaround for downloads after reconnecting' --limit 10
-gh-mirror search 'session token retry fix' --in reviews --limit 10
-gh-mirror search 'file transfer failure' --label 'client:Acme' --evidence-limit 5
-gh-mirror search 'ECONNRESET' --engine lexical
-gh-mirror batch owner/support#123 owner/code#456 --view summary
-gh-mirror get --repo owner/support --number 123 --view full --comments none
-gh-mirror comments --repo owner/support --number 123 --view full --limit 30
-```
-
-For MCP, use `search_issues` for questions and `find_duplicate_candidates` for
-history related to a known seed ticket. Inspect summaries and source-linked
-`evidence`, then use `get_issues` to batch-read selected tickets, `get_issue` with
-`comments=none` for full ticket details, and `list_comments` for bounded discussion
-or review pages. Follow comment cursors if more context is needed. Cite the source
-URLs supporting an assessment and check `status` and `warnings` for stale or disabled
-resources. A search snippet is an excerpt; read the surrounding discussion before
-interpreting a decision or fix.
-
-Scores order potentially useful context. They do not establish relevance, correctness
-or duplicate status, and semantic retrieval can return unrelated low-ranked tickets.
-The initial duplicate-reference benchmark supports the hybrid default, but broader
-ticket-evaluation quality needs reviewed queries about causes, workarounds, decisions
-and fixes. The `evaluate` command accepts those relevance judgments too.
-
-## Evaluate retrieval
+### Evaluate retrieval
 
 Supply local relevance judgments against an existing mirror or immutable snapshot:
 
@@ -850,55 +997,37 @@ SQLite remains the only required retrieval engine. Use representative judgments
 from your repositories to compare lexical, semantic and hybrid retrieval or decide whether reranking
 justifies additional models, storage and deployment dependencies.
 
-## Share a snapshot
+### Derived indexing and shared embeddings
 
-Use snapshots to give another machine, CI job, or batch process a private copy of
-one complete generation. `sync` publishes a snapshot by default; publish the last
-successful collection separately with:
+The local representation version is independent of GitHub collection and the
+embedding model. `index` rebuilds derived passages after representation changes
+without refetching tickets or discarding GitHub response checkpoints. Ticket body
+passages omit empty template answers and known review checklists while retaining
+exact original byte offsets. Raw bodies and the lexical source index are preserved.
 
-```sh
-gh-mirror snapshot
-```
+Identical embedding inputs share one SQLite vector, keyed by the model fingerprint,
+representation version and exact text. Concurrent indexing workers share in-flight
+inference, including duplicates within batches. Saved vectors survive cancellation;
+resuming reuses completed sources and shared inputs. New vectors store source
+attribution separately from the shared value. Schema-2 vectors remain readable
+and migrate locally; unchanged passage vectors are reused during the first rebuild.
+Exports remove incomplete source passages and unreferenced shared vectors.
 
-The publisher exports a standalone SQLite file including its search index, removes
-collector response caches and credential identity, compacts it to remove deleted
-payload bytes, assigns
-an immutable filename, and atomically updates `latest.json`. Use this export rather
-than copying the main file of a live SQLite database with WAL sidecars.
+Classification context includes compact label names and descriptions, prioritizing
+attached labels, and the configured role rules. Label definitions use at most a
+third of the text budget, after ticket evidence and configured rules. The text view
+shows these definitions, label interpretations, custom fields and related ticket
+excerpts. Catalog entries, section lists and relationship lists have bounded counts;
+coverage reports omissions with one warning for omitted labels. Use `catalog labels
+owner/repository` to read complete GitHub label records and additional
+labels before assigning a new classification.
 
-Acquire from a shared directory:
+Hybrid duplicate candidates retain weighted seed-vector and lexical rank fusion.
+They use a different ranking policy from information searches, preserving recall
+without promoting query-specific client matches. Whole-ticket match signals use
+`ticket` for title/body document coverage; passages identify the exact field.
 
-```sh
-gh-mirror acquire \
-  --source /srv/gh-mirror/snapshots/latest.json \
-  --dest ./mirror.sqlite \
-  --repo owner/repository --max-age 2h > mirror-manifest.json
-
-gh-mirror --db ./mirror.sqlite search 'socket timeout'
-```
-
-Or acquire through the REST server behind an HTTPS proxy:
-
-```sh
-gh-mirror acquire --source https://mirror.example/snapshots/latest \
-  --dest ./mirror.sqlite --repo owner/repository --max-age 2h
-```
-
-Acquisition resolves the manifest once, checks age and exact repository scope,
-verifies SHA-256, schema and collection versions, and embedded metadata, then
-atomically installs the private file. Legacy manifests without collection version
-are interpreted as version 1. To require fresh fields and project memberships, add
-`--max-enrichment-age 2h`; this is independent of `--max-age` for issue/comment
-updates. The enrichment check is disabled by default.
-For multiple repositories, repeat `--repo` or use a comma-separated list. Failed
-acquisition preserves the previous destination. The destination must have no live
-WAL sidecars; the current download limit is 2 GiB.
-
-Keep the database pinned for the whole batch and retain the manifest to record its
-generation and checksum. Snapshot files remain until you remove them. Serialize
-publication and retain generations long enough for in-flight acquisitions to finish.
-
-## Collection scope and efficiency
+### Collection scope and efficiency
 
 The selected scope includes accessible open and closed issues, PR ticket records,
 discussion comments and optional inline review comments. Original REST JSON preserves bodies,
@@ -938,12 +1067,14 @@ require no additional requests during incremental updates. Recovery fetches are
 saved for resume along with listing pages.
 
 Each sync reports its actual HTTP attempt count. Pagination, GraphQL, and retries
-share `max_requests` across workers; exhausting the budget or encountering a long
-rate-limit wait stops collection and retains completed fetches for the next run.
+share `max_requests` across workers. Secondary rate limits wait at least one minute
+and back off for up to five attempts; an exhausted quota waits until GitHub's reset.
+Exhausting the budget or a rate-limit wait over 61 minutes stops collection and
+retains completed fetches for the next run.
 The budget applies separately to each invocation. Longer refresh intervals reduce requests
 at the cost of older field, project, or deletion information.
 
-## Development and diagnostics
+### Development and diagnostics
 
 GitHub Actions runs formatting, vetting, build, race tests and linting on pushes
 and pull requests. Run `make release` to package Linux/macOS amd64/arm64 archives.
@@ -957,11 +1088,11 @@ commands for missing tools. The implementation specification is in
 
 `--debug` adds request diagnostics to stderr alongside plain sync progress.
 `--trace` independently writes detailed
-request/count/status metadata to `gh-mirror.log` in the temporary directory
-(normally `/tmp`), truncated at startup.
+request/count/status metadata to `gh-mirror-<uid>.log` in the temporary directory
+(normally `/tmp`), truncated at startup. It refuses to follow symbolic or hard links.
 Credentials and ticket bodies are excluded from diagnostic logs.
 
-## API references
+### API references
 
 Collection uses GitHub's [repository issue listing](https://docs.github.com/en/rest/issues/issues#list-repository-issues),
 [repository comment listing](https://docs.github.com/en/rest/issues/comments#list-issue-comments-for-a-repository),
@@ -973,77 +1104,3 @@ Request coordination follows GitHub's
 [rate-limit guidance](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api).
 GitHub [recommends serial requests](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api)
 to reduce secondary rate limits; `--workers 1` selects that mode.
-
-### Ticket context for agents
-
-Use `context` after search to read bounded evidence for evaluating a ticket:
-
-```sh
-gh-mirror context --repo owner/repository --number 123 --query 'session continuation' --format text
-gh-mirror context --repo owner/repository --number 123 --purpose proofread --max-characters 20000
-```
-
-The same view is available at `GET /v1/issues/owner/repository/123/context` and
-through the MCP `get_issue_context` tool. It includes original description text,
-section byte offsets, absent or empty sections, structured label attributes,
-closure and merge metadata, selected relevant and recent comments, and bounded
-one-hop related tickets. References distinguish native relationships, mentions,
-explicit duplicate references and fix references. These are source observations;
-an agent must evaluate whether two tickets describe the same problem.
-
-`--comment-limit`, `--related-limit` and `--max-characters` bound the response.
-Coverage reports omitted comments, relationship expansion and truncated text.
-Proofreading gives the original description priority; other purposes reserve
-space for discussion. Full source records remain available through `get` and
-`comments --view full`. Section extraction preserves Markdown, code and Unicode.
-
-Labels such as `client:Acme`, `feature:continuation` and `comp:browser` expose
-roles and values without discarding their original names. Multiple labels in a
-role remain separate. Configure other conventions per repository:
-
-```json
-{
-  "label_rules": {
-    "owner/repository": [
-      {"prefix": "customer:", "role": "client"},
-      {"label": "account:example", "role": "client", "value": "Example",
-       "aliases": ["Example Ltd"], "description": "Affected customer"}
-    ]
-  }
-}
-```
-
-Run `gh-mirror index` to save rules in the snapshot locally. `sync` also saves
-rules when indexing is enabled. Exact rules override prefix rules; the longest
-matching prefix wins. Attached label catalog definitions accompany context when
-available. Changing rules does not fetch GitHub or change the embedding model.
-
-### Derived indexing and shared embeddings
-
-The local representation version is independent of GitHub collection and the
-embedding model. `index` rebuilds derived passages after representation changes
-without refetching tickets or discarding GitHub response checkpoints. Ticket body
-passages omit empty template answers and known review checklists while retaining
-exact original byte offsets. Raw bodies and the lexical source index are preserved.
-
-Identical embedding inputs share one SQLite vector, keyed by the model fingerprint,
-representation version and exact text. Concurrent indexing workers share in-flight
-inference, including duplicates within batches. Saved vectors survive cancellation;
-resuming reuses completed sources and shared inputs. New vectors store source
-attribution separately from the shared value. Schema-2 vectors remain readable
-and migrate locally; unchanged passage vectors are reused during the first rebuild.
-Exports remove incomplete source passages and unreferenced shared vectors.
-
-Classification context includes compact label names and descriptions, prioritizing
-attached labels, and the configured role rules. Label definitions use at most a
-third of the text budget, after ticket evidence and configured rules. The text view
-shows these definitions, label interpretations, custom fields and related ticket
-excerpts. Catalog entries, section lists and relationship lists have bounded counts;
-coverage reports omissions with one warning for omitted labels. Use `catalog --kind
-labels --scope owner/repository` to read complete GitHub label records and additional
-labels before assigning a new classification.
-
-Hybrid duplicate candidates retain weighted seed-vector and lexical rank fusion.
-They use a different ranking policy from information searches, preserving recall
-without promoting query-specific client matches. Whole-ticket match signals use
-`ticket` for title/body document coverage; passages identify the exact field.

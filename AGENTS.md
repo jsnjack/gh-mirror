@@ -5,9 +5,17 @@ The specification is in [docs/spec.md](docs/spec.md). Run `make build` after run
 changes and `make check` before reporting completion. Do not install missing tools,
 commit, push, or change another repository without user authorization.
 
-`cmd/` parses Cobra commands and wires dependencies. `internal/config` loads TOML and legacy JSON
+`cmd/` parses Cobra commands and wires dependencies. Help groups commands as Query
+(search, list, show, comments, context, related, catalog), Collect (sync, index,
+snapshot, acquire), Serve (serve, mcp), Inspect (status, doctor, scope, bots, model,
+config) and Advanced (evaluate). Ticket commands share REF parsing (`owner/repo#N`,
+GitHub URLs, `#N` with `default_repo` or one configured repository) and keep hidden
+`--repo/--number`. Hidden deprecated `get`, `batch`, `candidates` and `--label`
+keep scripts working. CLI query views default to summary. `status` reports `db_path`
+and `pending_sync`; `doctor` exits 1 on failed checks. Completion reads configured
+repositories and local labels without failing when either is missing. `internal/config` loads TOML and legacy JSON
 configuration and resolves XDG paths. `internal/diagnostics` manages stderr and trace
-logging. `internal/progress` renders sync activity from explicit collector/client
+logging; the trace file is per user and refuses links. `internal/progress` renders sync activity from explicit collector/client
 callbacks. `internal/github` performs bounded read-only upstream requests and pagination.
 `internal/collect` synchronizes configured resources. `internal/store` owns the SQLite
 schema, transactions, FTS5 index, and queries. `internal/snapshot` publishes and acquires
@@ -53,7 +61,14 @@ Collect project catalogs and ticket memberships, including archived memberships.
 Do not collect complete project items, draft cards, or project field definitions/values.
 Never treat failed pagination, inaccessible resources, or unsupported fields as an
 empty successful collection.
-Only successful collection transactions advance checkpoints. Record project coverage
+Only successful collection transactions advance checkpoints. List issues and comments
+by creation time so edits do not shift numbered pages. Before reconciliation removes
+an in-scope ticket a complete listing omitted, `Client.Lookup` must confirm it absent
+(404/410/301); returned tickets are kept. A null hydration node must be confirmed
+the same way, then clears that repository's reconciled_at instead of failing the sync.
+The enrichment label refresh refetches tickets carrying renamed or deleted labels,
+found through the committed mirror. Recovered comment parents outside scope record
+only their kind. Record project coverage
 as `memberships` or `disabled`; upgrading older complete project coverage preserves
 existing memberships and removes obsolete catalogs without forcing enrichment.
 Keep compatible request checkpoints when narrowing project collection. Poll comments
@@ -84,7 +99,9 @@ the identity through status or exported snapshots. Permission changes on the sam
 token still require explicit full sync or scheduled reconciliation.
 
 Workers share concurrency permits, budget reservations, retry pauses, and serialized
-progress callbacks. Parallelize independent listings, advertised numbered REST page
+progress callbacks. Retry 429/secondary 403 and GraphQL RATE_LIMITED with at least a
+one-minute backoff for five attempts, and wait for quota reset up to 61 minutes.
+Client clock and sleep are injectable for tests. GraphQL errors keep type and message. Parallelize independent listings, advertised numbered REST page
 ranges and hydration batches; follow cursor-dependent or unknown-range pagination
 sequentially. Preserve page-link query ordering for exact-URL checkpoint reuse.
 Validate origins, page-series parameters and contiguous next links, and assemble
@@ -99,7 +116,9 @@ before ending the collection transaction. One worker must support serial collect
 Save completed responses in the private `<database>.sync.sqlite` checkpoint with
 FULL synchronous durability, including delta pages. This temporary resume store is
 separate from the reusable conditional cache. Keep the original collection-start
-watermark on resume. Fingerprint scope/settings/credential identity without storing
+watermark on resume, but evaluate enrichment and reconciliation intervals against
+the current time. Failed attempts record a count and bounded error in the checkpoint;
+`checkpoint.Inspect` reads them without creating or writing the file. Fingerprint scope/settings/credential identity without storing
 credentials; worker/budget changes preserve pending work. Initialize and clean up
 sessions under the collector lock. Never discard staged work before the mirror commits
 or delete another collector's session. Snapshot exports exclude pending work.
@@ -145,7 +164,8 @@ permissions only to publication.
 
 Dependencies are justified by the accepted design: Cobra is required by standards;
 modernc.org/sqlite provides embedded SQLite/FTS5 without CGO; the official MCP SDK
-provides protocol and transport handling. The existing go-isatty dependency detects
+provides protocol and transport handling, and its jsonschema-go package builds the
+described tool input schemas. The existing go-isatty dependency detects
 terminal writers without adding a UI framework. Tests use local HTTP fixtures and temporary
 databases. No live GitHub writes or production WakeCI changes belong in validation.
 
@@ -154,8 +174,11 @@ search keeps literal OR matching by default; all-word mode requires terms across
 the whole selected ticket, and phrase mode requires consecutive terms in one document.
 Compile only generated, escaped FTS expressions. Report term limits explicitly.
 Search/list support deterministic sorting, summary/full projections and optional
-counts/facets before pagination. Preserve legacy raw fields and score meanings;
-attach bounded evidence and a ranking description. Lexical query enhancements must
+counts/facets before pagination. Preserve legacy raw fields; every engine reports
+higher-is-better scores and relevance defaults to descending. Lexical scores are
+negated BM25 and lexical cursors bind `lexicalScoreVersion`. Attach bounded
+evidence and a ranking description. Date bounds accept RFC3339, YYYY-MM-DD and
+relative h/d/w ages resolved at query time. `store.CatalogKinds` lists valid kinds. Lexical query enhancements must
 work against existing snapshots without migrations or upstream requests; semantic
 engines explicitly require a compatible local vector index when requested by name.
 An omitted search/candidate engine selects hybrid, falling back only for
@@ -172,8 +195,12 @@ Comment pages separate discussion and review kinds, preserve large numeric IDs a
 strings and namespace cursors independently from ticket pages. Compact comment
 previews limit Unicode characters and report truncation; full view retains raw
 payloads. Batch reads use one transaction, omit comments and report missing IDs.
-Legacy full ticket/catalog reads remain; clients opt into bounded pages. MCP schemas
-describe stable output envelopes with unconstrained raw upstream JSON. REST uses
+Legacy full ticket/catalog reads remain; clients opt into bounded pages. MCP tools
+keep stable names and parameters, describe every input field with enums for fixed
+choices, advertise no output schemas, and replace result `status` with generation
+and collected_at (get_sync_status keeps it whole). `mcp` lists seven core tools;
+`--tools all` adds listing, catalog and project tools. MCP `get_issue` defaults to
+summary without comments. REST uses
 400 for invalid input, 404 for absent resources, 409 for stale generation cursors
 and 500 for internal failures. Query warnings explain disabled, stale and uncollected
 resources without making network requests.
@@ -198,7 +225,7 @@ BERT format locally, with deterministic metadata and checksum validation. It add
 no conversion dependencies and does not alter the model fingerprint.
 `embedding.Provider` defaults to the bundled CPU encoder. Opt-in `lemonade-vulkan`
 starts Lemonade's installed llama.cpp Vulkan executable as a dedicated authenticated
-loopback process with `--offline`; do not contact a shared model daemon, download
+loopback process with `--offline`, a private `--api-key-file` and Linux Pdeathsig; do not contact a shared model daemon, download
 models, or inherit LLAMA/GGML inference overrides. Verify full layer offload, exact
 bundled token IDs, reference vectors and a full 256-token passage before accepting
 GPU results. Compatibility requires cosine >=0.9999 and coordinate error <=0.001;
@@ -207,7 +234,7 @@ Failures retry the same model on CPU and report the reason. Limit CPU fallback
 concurrency across calls; bound GPU batches and queues and join them on shutdown.
 Pass the encoder explicitly through `OpenWithVectorizer` for REST/MCP/CLI queries.
 CPU/Vulkan switching preserves fingerprints, collection sessions and saved vectors.
-Config `embedding` and persistent flags select backend, runtime, device and batch
+Config `embedding` and `--embedding-*` flags on text-encoding commands select backend, runtime, device and batch
 bound; `model --check` verifies the selected runtime offline without opening a mirror.
 
 Schema 2 adds semantic state/vectors; schema 3 stores shared vectors separately
@@ -248,7 +275,8 @@ and fingerprint as well as collection and query. Semantic candidates reuse weigh
 cached seed vectors.
 Bind semantic cursor generations to the actual query-vector hash so backend
 numerical changes reject continuation with the typed stale-cursor error.
-Keep lexical behavior and score direction unchanged. Research model alternatives against primary
+Semantic retrieval keeps `semanticCandidateLimit` tickets; hybrid adds every lexical
+and ticket-evidence match, so totals and facets follow that set. Research model alternatives against primary
 sources and target-hardware measurements; synthetic retrieval fixtures do not prove
 production duplicate accuracy.
 
@@ -267,7 +295,7 @@ Entity boosts require topic coverage in general search; never auto-filter other
 clients. Duplicate candidates preserve weighted seed-vector and lexical fusion,
 without whole-ticket entity reranking. Semantic-only scores remain maximum passage
 cosines, while hybrid semantic ranks combine best passage and best-per-field
-evidence. Bind cursors to the ranking version and keep lexical BM25 unchanged.
+evidence. Bind cursors to the ranking version.
 
 `cachingVectorizer` coalesces exact inputs across workers and batches, keyed by
 model fingerprint, representation version and text using compact 32-byte hashes.
@@ -282,8 +310,11 @@ with attached labels first and a one-third text-budget cap. Configured rules tak
 priority over the taxonomy. Report omitted labels in one counted warning, including
 row-limit omissions. Render label interpretations, definitions, rules, custom fields
 and related excerpts in text. Full label records remain available through catalog.
-Bound section and relationship lists independently of body length. Markdown
-fences honor delimiter type and length, retaining shorter fence examples as code.
+Bound section and relationship lists independently of body length. `internal/markdown`
+owns the one fence parser for sections, references and attribution. Fences honor
+delimiter type and length, retaining shorter fence examples as code; backtick info
+strings cannot contain backticks. Bump `representation.Version` or the registry
+version when their parsing changes.
 
 Keep large vector BLOBs in ordinary rowid tables: WITHOUT ROWID index pages
 overflow 1536-byte values at SQLite’s default page size. Migrate early dictionary

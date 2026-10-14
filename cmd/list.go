@@ -10,7 +10,7 @@ import (
 
 func addList() {
 	var options store.ListOptions
-	command := &cobra.Command{Use: "list", Short: "List local tickets with filters and pagination", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+	command := &cobra.Command{Use: "list", GroupID: groupQuery, Short: "List tickets by filters without search words", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
 		db, err := open(true)
 		if err != nil {
 			return err
@@ -24,12 +24,12 @@ func addList() {
 	}}
 	command.Flags().StringVar(&options.Repo, "repo", "", "Filter repository owner/name")
 	command.Flags().StringVar(&options.State, "state", "", "Filter open or closed")
-	command.Flags().StringVar(&options.Label, "label", "", "Filter exact label name")
 	command.Flags().StringVar(&options.Type, "type", "", "Filter native issue type name")
 	command.Flags().StringVar(&options.Kind, "kind", "", "Filter issue or pull_request")
 	command.Flags().StringVar(&options.Project, "project", "", "Filter project membership owner/number, including archived memberships")
 	command.Flags().IntVar(&options.Limit, "limit", 30, "Page size (1–100)")
 	command.Flags().StringVar(&options.Cursor, "cursor", "", "Continue next_cursor with the same filters")
 	queryFlags(command, &options.QueryFilters, &options.PageOptions)
+	registerCompletion(command, "sort", "number", "updated", "created")
 	root.AddCommand(command)
 }

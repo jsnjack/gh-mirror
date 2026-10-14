@@ -10,7 +10,7 @@ import (
 )
 
 func addConfig() {
-	command := &cobra.Command{Use: "config", Short: "Inspect or migrate local configuration"}
+	command := &cobra.Command{Use: "config", GroupID: groupInspect, Short: "Show or migrate the configuration file"}
 	var effective bool
 	show := &cobra.Command{Use: "show", Short: "Print TOML settings, with optional resolved defaults", Args: cobra.NoArgs, RunE: func(c *cobra.Command, _ []string) error {
 		if outputFormat == "json" {

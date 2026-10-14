@@ -16,7 +16,7 @@ import (
 
 func addEvaluate() {
 	var path string
-	command := &cobra.Command{Use: "evaluate", Short: "Measure local retrieval against a JSON judgment set", Args: cobra.NoArgs, RunE: func(c *cobra.Command, _ []string) error {
+	command := &cobra.Command{Use: "evaluate", GroupID: groupAdvanced, Short: "Measure retrieval quality against a JSON judgment set", Args: cobra.NoArgs, RunE: func(c *cobra.Command, _ []string) error {
 		if path == "" {
 			return fmt.Errorf("--cases is required")
 		}
@@ -51,5 +51,6 @@ func addEvaluate() {
 		return output(c, out)
 	}}
 	command.Flags().StringVar(&path, "cases", "", "Path to local JSON searches/candidates and relevance judgments")
+	addEmbeddingFlags(command)
 	root.AddCommand(command)
 }

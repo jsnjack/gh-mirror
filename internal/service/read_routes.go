@@ -7,13 +7,18 @@ import (
 	"net/http"
 	"strconv"
 
-	"context"
 	"gh-mirror/internal/store"
-
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func (s *Service) readRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /v1/issues/{owner}/{repo}/{number}/related", func(w http.ResponseWriter, r *http.Request) {
+		repo, number, err := pathTicket(r)
+		if err != nil {
+			respond(w, nil, err)
+			return
+		}
+		s.related(w, r, repo, number)
+	})
 	mux.HandleFunc("GET /v1/issues/{owner}/{repo}/{number}/context", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		number, err := strconv.Atoi(r.PathValue("number"))
@@ -79,23 +84,5 @@ func (s *Service) readRoutes(mux *http.ServeMux) {
 		}
 		out, err := s.Store.Batch(r.Context(), options)
 		respond(w, out, err)
-	})
-}
-func (s *Service) readTools(server *mcp.Server) {
-	mcp.AddTool(server, tool("get_issue_context", "Read bounded original ticket text, structured label attributes, section offsets, selected relevant/recent comments and one-hop relationships from one local generation. purpose=evaluate/classification/duplicates/proofread; missing sections are observations, references are not duplicate judgments. Explicit coverage and truncation report omitted material. Saved PR comment policies apply by default; include_excluded=true inspects retained excluded sources. Query text selects discussion evidence; no upstream requests or embeddings required.", store.ContextResult{}), func(ctx context.Context, _ *mcp.CallToolRequest, input store.ContextOptions) (*mcp.CallToolResult, store.ContextResult, error) {
-		out, err := s.Store.Context(ctx, input)
-		return nil, out, err
-	})
-	mcp.AddTool(server, tool("list_comments", "Read a bounded page of discussion or inline review comments. Summary previews are limited to 1024 characters; full view preserves raw records. Saved PR comment policies apply; include_excluded=true returns excluded sources. Follow next_cursor with the same options.", store.CommentResult{}), func(ctx context.Context, _ *mcp.CallToolRequest, input store.CommentOptions) (*mcp.CallToolResult, store.CommentResult, error) {
-		out, err := s.Store.Comments(ctx, input)
-		return nil, out, err
-	})
-	mcp.AddTool(server, tool("get_issues", "Read up to 100 selected tickets from one mirror generation, without comments. Defaults to compact summaries and explicitly reports missing identities.", store.BatchResult{}), func(ctx context.Context, _ *mcp.CallToolRequest, input store.BatchOptions) (*mcp.CallToolResult, store.BatchResult, error) {
-		out, err := s.Store.Batch(ctx, input)
-		return nil, out, err
-	})
-	mcp.AddTool(server, tool("list_catalog", "Read a bounded catalog page; follow next_cursor with the same kind and scope. Available kinds: labels, milestones, issue_types, issue_fields, projects.", store.CatalogResult{}), func(ctx context.Context, _ *mcp.CallToolRequest, input store.CatalogOptions) (*mcp.CallToolResult, store.CatalogResult, error) {
-		out, err := s.Store.CatalogPage(ctx, input)
-		return nil, out, err
 	})
 }
