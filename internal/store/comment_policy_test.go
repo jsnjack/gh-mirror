@@ -132,7 +132,7 @@ func TestAppliedCommentPolicy(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if out.Coverage.CommentsTotal != 7 || out.Coverage.CommentsExcludedByPolicy != 3 || len(out.Comments) != 4 {
+				if out.Coverage.CommentsTotal != 4 || out.Coverage.CommentsOmitted != 0 || out.Coverage.CommentsExcludedByPolicy != 3 || len(out.Comments) != 4 {
 					t.Fatal(out.Coverage, out.Comments)
 				}
 				for _, c := range out.Comments {

@@ -7,7 +7,7 @@ import (
 )
 
 // Version identifies local extraction and embedding inputs independently of collection.
-const Version = "1"
+const Version = "2"
 
 // LabelRule assigns a role to an exact label or a namespace prefix.
 type LabelRule struct {

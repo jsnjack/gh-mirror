@@ -117,23 +117,29 @@ func (f filters) sql() (string, []any, error) {
 	if f.Milestone != "" {
 		add("(json_extract(i.payload,'$.milestone.title')=? OR CAST(json_extract(i.payload,'$.milestone.number') AS TEXT)=?)", f.Milestone, f.Milestone)
 	}
+	now := time.Now()
 	for _, bounds := range []struct{ after, before, column string }{{f.CreatedAfter, f.CreatedBefore, "json_extract(i.payload,'$.created_at')"}, {f.UpdatedAfter, f.UpdatedBefore, "i.updated_at"}} {
 		var low, high time.Time
-		for _, v := range []struct{ value, op string }{{bounds.after, ">="}, {bounds.before, "<="}} {
-			if v.value != "" {
-				t, err := time.Parse(time.RFC3339, v.value)
-				if err != nil {
-					return "", nil, invalid("date bounds must be RFC3339 timestamps")
-				}
-				if v.op == ">=" {
-					low = t
-				} else {
-					high = t
-				}
-				add("julianday("+bounds.column+")"+v.op+"julianday(?)", t.UTC().Format(time.RFC3339Nano))
+		var exclusive bool
+		for _, v := range []struct {
+			value  string
+			before bool
+		}{{bounds.after, false}, {bounds.before, true}} {
+			if v.value == "" {
+				continue
 			}
+			t, op, err := dateBound(v.value, v.before, now)
+			if err != nil {
+				return "", nil, err
+			}
+			if v.before {
+				high, exclusive = t, op == "<"
+			} else {
+				low = t
+			}
+			add("julianday("+bounds.column+")"+op+"julianday(?)", t.UTC().Format(time.RFC3339Nano))
 		}
-		if !low.IsZero() && !high.IsZero() && low.After(high) {
+		if !low.IsZero() && !high.IsZero() && (low.After(high) || exclusive && low.Equal(high)) {
 			return "", nil, invalid("after must not exceed before")
 		}
 	}
@@ -147,16 +153,41 @@ func (f filters) sql() (string, []any, error) {
 		if !projectPattern.MatchString(f.Project) {
 			return "", nil, invalid("project must be owner/number")
 		}
-		parts := strings.Split(f.Project, "/")
-		n, err := strconv.Atoi(parts[1])
-		if err != nil || n < 1 {
-			return "", nil, invalid("invalid project number")
-		}
-		suffix := parts[0] + "/projects/" + strconv.Itoa(n)
+		owner, number, _ := strings.Cut(f.Project, "/")
+		suffix := owner + "/projects/" + number
 		org, user := "/orgs/"+suffix, "/users/"+suffix
 		add(`EXISTS(SELECT 1 FROM json_each(i.extra,'$.projectItems') p WHERE substr(json_extract(p.value,'$.project.url'),-length(?))=? OR substr(json_extract(p.value,'$.project.url'),-length(?))=?)`, org, org, user, user)
 	}
 	return strings.Join(clauses, " AND "), args, nil
+}
+
+var relativeDate = regexp.MustCompile(`^([1-9][0-9]{0,5})([hdw])$`)
+
+// dateBound resolves an inclusive RFC3339, calendar-day or relative bound. A before bound
+// on a plain date covers that whole UTC day, so it compares strictly with the next midnight.
+func dateBound(value string, before bool, now time.Time) (time.Time, string, error) {
+	op := ">="
+	if before {
+		op = "<="
+	}
+	if t, err := time.Parse(time.RFC3339, value); err == nil {
+		return t, op, nil
+	}
+	if t, err := time.Parse(time.DateOnly, value); err == nil {
+		if before {
+			return t.AddDate(0, 0, 1), "<", nil
+		}
+		return t, op, nil
+	}
+	if m := relativeDate.FindStringSubmatch(value); m != nil {
+		n, err := strconv.Atoi(m[1])
+		if err != nil {
+			return time.Time{}, "", invalid("invalid relative date %q", value)
+		}
+		unit := map[string]time.Duration{"h": time.Hour, "d": 24 * time.Hour, "w": 7 * 24 * time.Hour}[m[2]]
+		return now.Add(-time.Duration(n) * unit), op, nil
+	}
+	return time.Time{}, "", invalid("date bounds must be RFC3339 timestamps, YYYY-MM-DD dates or relative ages such as 12h, 7d or 2w")
 }
 
 func (p *PageOptions) normalize(search bool) error {
@@ -171,7 +202,7 @@ func (p *PageOptions) normalize(search bool) error {
 		return invalid("sort must be number, updated, created or search relevance")
 	}
 	if p.Order == "" {
-		if p.Sort == "updated" || p.Sort == "created" {
+		if p.Sort == "updated" || p.Sort == "created" || p.Sort == "relevance" {
 			p.Order = "desc"
 		} else {
 			p.Order = "asc"

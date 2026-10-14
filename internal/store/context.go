@@ -168,9 +168,13 @@ func ticketContext(ctx context.Context, q querier, o ContextOptions) (ContextRes
 	if err := q.QueryRowContext(ctx, "SELECT count(*) FROM comments WHERE repo=? AND number=?", o.Repo, o.Number).Scan(&out.Coverage.CommentsTotal); err != nil {
 		return out, fmt.Errorf("count context comments: %w", err)
 	}
-	out.Coverage.CommentsExcludedByPolicy, err = excludedCommentCount(ctx, q, o.Repo, o.Number)
+	out.Coverage.CommentsExcludedByPolicy, err = excludedCommentCount(ctx, q, o.Repo, o.Number, "all")
 	if err != nil {
 		return out, err
+	}
+	// Policy exclusions are reported separately, so the total counts only selectable comments.
+	if !o.IncludeExcluded {
+		out.Coverage.CommentsTotal -= out.Coverage.CommentsExcludedByPolicy
 	}
 	if !o.IncludeExcluded && out.Coverage.CommentsExcludedByPolicy > 0 {
 		out.Warnings = append(out.Warnings, commentFilterWarning(o.Repo, out.Coverage.CommentsExcludedByPolicy))

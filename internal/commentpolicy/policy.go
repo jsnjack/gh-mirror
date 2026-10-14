@@ -8,7 +8,7 @@ import (
 )
 
 // RegistryVersion identifies the bundled AI reviewer account registry.
-const RegistryVersion = "2"
+const RegistryVersion = "3"
 
 // Policy controls PR comment retrieval while leaving source records intact.
 type Policy struct {

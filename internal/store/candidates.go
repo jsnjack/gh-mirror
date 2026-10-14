@@ -69,9 +69,6 @@ func (s *Store) FindCandidates(ctx context.Context, o CandidateOptions) (SearchR
 	if _, err := pageLimit(o.Limit); err != nil {
 		return out, err
 	}
-	if (o.Engine == "semantic" || o.Engine == "hybrid") && o.Order == "" && (o.Sort == "" || o.Sort == "relevance") {
-		o.Order = "desc"
-	}
 	if err := o.normalize(true); err != nil {
 		return out, err
 	}
@@ -198,7 +195,7 @@ func (s *Store) FindCandidates(ctx context.Context, o CandidateOptions) (SearchR
 			selected = append(selected, term.word)
 		}
 		if len(selected) == 0 {
-			out = SearchResult{Matches: []Match{}, Warnings: []Warning{}, Ranking: Ranking{"sqlite_fts5_bm25", "ascending", "No seed terms occur in other tickets within the selected scope."}, Query: QueryInfo{Engine: "lexical", Terms: []string{}, Match: "any", In: []string{"title", "body", "labels", "comments", "reviews"}}}
+			out = SearchResult{Matches: []Match{}, Warnings: []Warning{}, Ranking: Ranking{"sqlite_fts5_bm25", "descending", "No seed terms occur in other tickets within the selected scope."}, Query: QueryInfo{Engine: "lexical", Terms: []string{}, Match: "any", In: slices.Clone(sourceScopeNames)}}
 			out.Status, err = status(ctx, tx)
 			if err != nil {
 				return err

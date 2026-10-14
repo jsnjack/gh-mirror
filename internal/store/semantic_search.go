@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"math"
 	"slices"
@@ -11,6 +12,10 @@ import (
 )
 
 const fusionConstant = 60
+
+// semanticCandidateLimit bounds the tickets retrieved by similarity alone. Cosine scores
+// rank every ticket with a selected passage, so without a cutoff totals count the corpus.
+const semanticCandidateLimit = 200
 
 type semanticHit struct {
 	signals          *RetrievalSignals
@@ -42,14 +47,11 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 		return out, invalid("match=all/phrase and prefix apply only to lexical search")
 	}
 	for _, field := range o.In {
-		if !slices.Contains([]string{"title", "body", "labels", "comments", "reviews"}, field) {
+		if !slices.Contains(sourceScopeNames, field) {
 			return out, invalid("invalid search field %q", field)
 		}
 	}
 	o.In = slices.Compact(slices.Sorted(slices.Values(o.In)))
-	if o.Order == "" && (o.Sort == "" || o.Sort == "relevance") {
-		o.Order = "desc"
-	}
 	if err := o.normalize(true); err != nil {
 		return out, err
 	}
@@ -102,16 +104,7 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 	if len(o.In) > 0 {
 		conditions := []string{}
 		for _, f := range o.In {
-			switch f {
-			case "title", "body":
-				conditions = append(conditions, "d.id LIKE 'issue:%'")
-			case "labels":
-				conditions = append(conditions, "d.id LIKE 'labels:%'")
-			case "comments":
-				conditions = append(conditions, "(d.id LIKE 'comment:%' AND d.id NOT LIKE 'comment:review:%')")
-			case "reviews":
-				conditions = append(conditions, "d.id LIKE 'comment:review:%'")
-			}
+			conditions = append(conditions, "("+sourceScopes[f].condition+")")
 		}
 		pendingSQL += " AND (" + strings.Join(conditions, " OR ") + ")"
 	}
@@ -211,14 +204,30 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 		return semanticLess(ranked[a], ranked[b], PageOptions{Sort: "relevance", Order: "desc"})
 	})
 	semanticRanks := map[TicketID]int{}
+	retrieved := map[TicketID]bool{}
 	for n, h := range ranked {
 		semanticRanks[h.id] = n + 1
+		retrieved[h.id] = n < semanticCandidateLimit
 		if o.Engine == "hybrid" {
 			h.score = 1 / float64(fusionConstant+n+1)
 		}
 	}
 	entities := []string{}
 	if o.Engine == "hybrid" {
+		lexical, err := lexicalRanks(ctx, q, o, where, args)
+		if err != nil {
+			return out, err
+		}
+		// Literal matches join the fusion even when no selected passage has a vector,
+		// for example a body whose only match sits in an unindexed checklist.
+		for _, item := range lexical {
+			if hits[item.id] == nil {
+				hit := &semanticHit{id: item.id, created: item.created, updated: item.updated, fieldScores: map[string]float64{}}
+				hits[item.id] = hit
+				ranked = append(ranked, hit)
+			}
+			retrieved[item.id] = true
+		}
 		if o.seed == nil {
 			tickets, detected, err := ticketRanks(ctx, q, o, hits, where, args)
 			if err != nil {
@@ -229,23 +238,20 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 				h.signals.TicketRank = n + 1
 				h.signals.SemanticRank = semanticRanks[h.id]
 				h.score += ticketFusionWeight / float64(fusionConstant+n+1)
+				retrieved[h.id] = true
 			}
-		}
-		lexical, err := lexicalRanks(ctx, q, o, where, args)
-		if err != nil {
-			return out, err
 		}
 		for n, item := range lexical {
-			if hit := hits[item.id]; hit != nil {
-				value := item.score
-				hit.lexical = &value
-				if hit.signals != nil {
-					hit.signals.LexicalRank = n + 1
-				}
-				hit.score += 1 / float64(fusionConstant+n+1)
+			hit := hits[item.id]
+			value := item.score
+			hit.lexical = &value
+			if hit.signals != nil {
+				hit.signals.LexicalRank = n + 1
 			}
+			hit.score += 1 / float64(fusionConstant+n+1)
 		}
 	}
+	ranked = slices.DeleteFunc(ranked, func(h *semanticHit) bool { return !retrieved[h.id] })
 	sort.Slice(ranked, func(a, b int) bool { return semanticLess(ranked[a], ranked[b], o.PageOptions) })
 	fp := o
 	fp.Limit = 0
@@ -276,8 +282,15 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 		out.Total = &total
 	}
 	if o.Facets {
-		selected := `SELECT DISTINCT d.repo,d.number FROM semantic_vectors v JOIN semantic_documents s ON s.document_id=v.document_id JOIN documents d ON d.id=v.document_id JOIN issues i ON i.repo=d.repo AND i.number=d.number WHERE s.complete=1 AND s.model=? AND (` + fieldWhere + `) AND (` + where + `)`
-		out.Facets, err = facets(ctx, q, "WITH vector_matches AS ("+selected+")", `SELECT repo,number FROM vector_matches`, append(append([]any{e.ID()}, fieldArgs...), args...))
+		identities := make([][2]any, len(ranked))
+		for n, h := range ranked {
+			identities[n] = [2]any{h.id.Repo, h.id.Number}
+		}
+		raw, err := json.Marshal(identities)
+		if err != nil {
+			return out, fmt.Errorf("encode facet candidates: %w", err)
+		}
+		out.Facets, err = facets(ctx, q, "WITH vector_matches AS (SELECT json_extract(value,'$[0]') repo,json_extract(value,'$[1]') number FROM json_each(?))", `SELECT repo,number FROM vector_matches`, []any{string(raw)})
 		if err != nil {
 			return out, err
 		}
@@ -305,8 +318,9 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 		}
 		m := Match{Repo: h.id.Repo, Number: h.id.Number, Title: ticket.Summary.Title, State: ticket.Summary.State, Kind: ticket.Kind, URL: ticket.Summary.URL, UpdatedAt: h.updated, Summary: ticket.Summary, Score: h.score, LexicalScore: h.lexical, Evidence: []Evidence{}, createdAt: h.created}
 		m.Signals = h.signals
-		score := semanticScores[h.id]
-		m.SemanticScore = &score
+		if score, ok := semanticScores[h.id]; ok {
+			m.SemanticScore = &score
+		}
 		for _, hit := range h.evidence {
 			ev, err := semanticEvidence(ctx, q, hit)
 			if err != nil {
@@ -335,17 +349,17 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 			return out, err
 		}
 	}
-	out.Ranking = Ranking{"cosine_similarity", "descending", "Higher scores rank first. Similarity is not a relevance or duplicate probability."}
+	out.Ranking = Ranking{"cosine_similarity", "descending", fmt.Sprintf("Higher scores rank first. Results are the %d most similar tickets; similarity is not a relevance or duplicate probability.", semanticCandidateLimit)}
 	if o.Engine == "hybrid" {
-		out.Ranking = Ranking{"ticket_reciprocal_rank_fusion", "descending", "1/(60+lexical rank) + 1/(60+semantic rank) + 3/(60+ticket evidence rank). Ticket evidence combines term coverage across fields and soft client/partner matches; semantic ranking combines the best passage with field evidence. Higher is better; scores are not confidence percentages."}
+		out.Ranking = Ranking{"ticket_reciprocal_rank_fusion", "descending", fmt.Sprintf("1/(60+lexical rank) + 1/(60+semantic rank) + 3/(60+ticket evidence rank). Results are every literal or ticket evidence match plus the %d most similar tickets. Ticket evidence combines term coverage across fields and soft client/partner matches; semantic ranking combines the best passage with field evidence. Higher is better; scores are not confidence percentages.", semanticCandidateLimit)}
 	}
 	if o.Engine == "hybrid" && o.seed != nil {
-		out.Ranking = Ranking{"reciprocal_rank_fusion", "descending", "1/(60+lexical rank) + 1/(60+semantic rank) from the weighted cached seed vector. Higher is better; scores are not duplicate probabilities."}
+		out.Ranking = Ranking{"reciprocal_rank_fusion", "descending", fmt.Sprintf("1/(60+lexical rank) + 1/(60+semantic rank) from the weighted cached seed vector. Results are every literal match plus the %d most similar tickets. Higher is better; scores are not duplicate probabilities.", semanticCandidateLimit)}
 	}
 	out.Query = QueryInfo{Terms: queryTerms(o.Query, true), Match: "any", In: o.In, Engine: o.Engine}
 	out.Query.Entities = entities
 	if out.Query.In == nil {
-		out.Query.In = []string{"title", "body", "labels", "comments", "reviews"}
+		out.Query.In = slices.Clone(sourceScopeNames)
 	}
 	out.Warnings = queryWarnings(out.Status, o.filters(), o.PageOptions, o.In)
 	filtered, err := searchCommentWarning(ctx, q, out.Status, o.filters(), o.In)
@@ -365,14 +379,8 @@ func semanticFields(in []string) (string, []any) {
 	holders := []string{}
 	args := []any{}
 	for _, f := range in {
-		switch f {
-		case "comments":
-			f = "comment"
-		case "reviews":
-			f = "review_comment"
-		}
 		holders = append(holders, "?")
-		args = append(args, f)
+		args = append(args, sourceScopes[f].field)
 	}
 	return "v.field IN (" + strings.Join(holders, ",") + ")", args
 }
@@ -435,14 +443,14 @@ func lexicalRanks(ctx context.Context, q querier, o SearchOptions, where string,
 		return []semanticHit{}, nil
 	}
 	docs, args := scopedDocuments(strings.Join(quoteTerms(terms, false), " OR "), o.In, true, false, "", nil)
-	rows, err := q.QueryContext(ctx, `WITH hits AS MATERIALIZED (`+docs+`) SELECT h.repo,h.number,min(h.score) score FROM hits h JOIN issues i ON i.repo=h.repo AND i.number=h.number WHERE `+where+` GROUP BY h.repo,h.number ORDER BY score,h.repo,h.number`, append(args, filterArgs...)...)
+	rows, err := q.QueryContext(ctx, `WITH hits AS MATERIALIZED (`+docs+`) SELECT h.repo,h.number,max(h.score) score,i.updated_at,COALESCE(json_extract(i.payload,'$.created_at'),'') FROM hits h JOIN issues i ON i.repo=h.repo AND i.number=h.number WHERE `+where+` GROUP BY h.repo,h.number ORDER BY score DESC,h.repo,h.number`, append(args, filterArgs...)...)
 	if err != nil {
 		return nil, fmt.Errorf("rank hybrid lexical matches: %w", err)
 	}
 	out := []semanticHit{}
 	for rows.Next() {
 		var h semanticHit
-		if err := rows.Scan(&h.id.Repo, &h.id.Number, &h.score); err != nil {
+		if err := rows.Scan(&h.id.Repo, &h.id.Number, &h.score, &h.updated, &h.created); err != nil {
 			return nil, finishRows(rows, err)
 		}
 		out = append(out, h)
@@ -512,6 +520,9 @@ func normalizeVector(v []float32) ([]float32, error) {
 	var norm float64
 	for _, x := range v {
 		norm += float64(x) * float64(x)
+	}
+	if math.IsNaN(norm) || math.IsInf(norm, 0) {
+		return nil, fmt.Errorf("query embedding contains non-finite coordinates")
 	}
 	if norm == 0 {
 		return nil, invalid("query produces an empty embedding")

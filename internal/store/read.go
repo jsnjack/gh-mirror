@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	"gh-mirror/internal/config"
@@ -85,6 +87,22 @@ type CatalogOptions struct {
 	Scope  string `json:"scope"`
 	Limit  int    `json:"limit,omitempty"`
 	Cursor string `json:"cursor,omitempty"`
+}
+
+var catalogKinds = []string{"labels", "milestones", "issue_types", "issue_fields", "projects"}
+
+// obsoleteCatalogKinds remain readable through the legacy full catalog so older mirrors
+// can be inspected until a sync removes them.
+var obsoleteCatalogKinds = []string{"project_fields", "project_items"}
+
+// CatalogKinds returns the catalog kinds accepted by Catalog and CatalogPage.
+func CatalogKinds() []string { return slices.Clone(catalogKinds) }
+
+func validCatalogKind(kind string) error {
+	if !slices.Contains(catalogKinds, kind) {
+		return invalid("catalog kind must be one of %s", strings.Join(catalogKinds, ", "))
+	}
+	return nil
 }
 
 func validTicket(repo string, number int) error {
@@ -199,8 +217,8 @@ func comments(ctx context.Context, q querier, o CommentOptions) (CommentResult, 
 	if err != nil {
 		return out, err
 	}
-	var exists int
-	if err := q.QueryRowContext(ctx, "SELECT 1 FROM issues WHERE repo=? AND number=?", o.Repo, o.Number).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+	var ticketKind string
+	if err := q.QueryRowContext(ctx, "SELECT kind FROM issues WHERE repo=? AND number=?", o.Repo, o.Number).Scan(&ticketKind); errors.Is(err, sql.ErrNoRows) {
 		return out, fmt.Errorf("comment parent: %w", ErrNotFound)
 	} else if err != nil {
 		return out, fmt.Errorf("read comment parent: %w", err)
@@ -228,12 +246,7 @@ func comments(ctx context.Context, q querier, o CommentOptions) (CommentResult, 
 		where += " AND " + visibleComment("comments")
 	}
 	args := []any{o.Repo, o.Number}
-	if o.Kind == "discussion" {
-		where += " AND id NOT LIKE 'review:%'"
-	}
-	if o.Kind == "review" {
-		where += " AND id LIKE 'review:%'"
-	}
+	where += commentKindSQL("comments", o.Kind)
 	op := ">"
 	if o.Order == "desc" {
 		op = "<"
@@ -302,15 +315,15 @@ func comments(ctx context.Context, q querier, o CommentOptions) (CommentResult, 
 			return out, err
 		}
 	}
-	in := []string{"comments", "reviews"}
-	if o.Kind == "discussion" {
-		in = []string{"comments"}
-	}
+	// Only pull requests carry inline review comments, unless the caller asks for them explicitly.
+	in := []string{"comments"}
 	if o.Kind == "review" {
 		in = []string{"reviews"}
+	} else if o.Kind == "all" && ticketKind == "pull_request" {
+		in = append(in, "reviews")
 	}
 	out.Warnings = queryWarnings(out.Status, filters{Repo: o.Repo}, PageOptions{}, in)
-	out.ExcludedByPolicy, err = excludedCommentCount(ctx, q, o.Repo, o.Number)
+	out.ExcludedByPolicy, err = excludedCommentCount(ctx, q, o.Repo, o.Number, o.Kind)
 	if err != nil {
 		return out, err
 	}
@@ -374,10 +387,8 @@ func (s *Store) CatalogPage(ctx context.Context, o CatalogOptions) (CatalogResul
 	if o.Kind == "" || o.Scope == "" {
 		return out, invalid("catalog kind and scope are required")
 	}
-	switch o.Kind {
-	case "labels", "milestones", "issue_types", "issue_fields", "projects":
-	default:
-		return out, invalid("unknown catalog kind")
+	if err := validCatalogKind(o.Kind); err != nil {
+		return out, err
 	}
 	limit, err := pageLimit(o.Limit)
 	if err != nil {
@@ -432,7 +443,8 @@ func (s *Store) CatalogPage(ctx context.Context, o CatalogOptions) (CatalogResul
 		if resource == "issue_fields" {
 			resource = "fields"
 		}
-		for repo, raw := range out.Status.RepositoryOptions {
+		for _, repo := range slices.Sorted(maps.Keys(out.Status.RepositoryOptions)) {
+			raw := out.Status.RepositoryOptions[repo]
 			applies := repo == o.Scope
 			if resource == "projects" || resource == "issue_types" || resource == "fields" {
 				applies = strings.HasPrefix(repo, o.Scope+"/")

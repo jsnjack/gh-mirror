@@ -154,9 +154,21 @@ func visibleComment(alias string) string {
 	return "EXISTS (SELECT 1 FROM documents visible WHERE visible.id='comment:'||" + alias + ".id)"
 }
 
-func excludedCommentCount(ctx context.Context, q querier, repo string, number int) (int, error) {
+// commentKindSQL restricts comments named by alias to discussion or review comments.
+func commentKindSQL(alias, kind string) string {
+	switch kind {
+	case "discussion":
+		return " AND " + alias + ".id NOT LIKE 'review:%'"
+	case "review":
+		return " AND " + alias + ".id LIKE 'review:%'"
+	default:
+		return ""
+	}
+}
+
+func excludedCommentCount(ctx context.Context, q querier, repo string, number int, kind string) (int, error) {
 	var count int
-	if err := q.QueryRowContext(ctx, "SELECT count(*) FROM comments c WHERE c.repo=? AND c.number=? AND NOT "+visibleComment("c"), repo, number).Scan(&count); err != nil {
+	if err := q.QueryRowContext(ctx, "SELECT count(*) FROM comments WHERE repo=? AND number=? AND NOT "+visibleComment("comments")+commentKindSQL("comments", kind), repo, number).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count excluded comments: %w", err)
 	}
 	return count, nil
@@ -279,8 +291,14 @@ func searchCommentWarning(ctx context.Context, q querier, s Status, f filters, i
 	if err != nil {
 		return nil, err
 	}
+	kind := "all"
+	if len(in) > 0 && !slices.Contains(in, "reviews") {
+		kind = "discussion"
+	} else if len(in) > 0 && !slices.Contains(in, "comments") {
+		kind = "review"
+	}
 	var count int
-	if err := q.QueryRowContext(ctx, "SELECT count(*) FROM comments c JOIN issues i ON i.repo=c.repo AND i.number=c.number WHERE i.kind='pull_request' AND ("+where+") AND NOT "+visibleComment("c"), args...).Scan(&count); err != nil {
+	if err := q.QueryRowContext(ctx, "SELECT count(*) FROM comments JOIN issues i ON i.repo=comments.repo AND i.number=comments.number WHERE i.kind='pull_request' AND ("+where+") AND NOT "+visibleComment("comments")+commentKindSQL("comments", kind), args...).Scan(&count); err != nil {
 		return nil, fmt.Errorf("count excluded comments in search scope: %w", err)
 	}
 	if count == 0 {

@@ -1,6 +1,7 @@
 package representation
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -93,6 +94,51 @@ func TestLongFences(t *testing.T) {
 			refs := References("o/r", body, "https://github.com/o/r/issues/1")
 			if len(refs) != 1 || refs[0].Number != 3 {
 				t.Fatal(refs)
+			}
+		})
+	}
+}
+
+func TestInlineTripleBackticks(t *testing.T) {
+	body := "### Description\n```npm ci``` fails, see #7\n### Expected behavior\nInstall works\n"
+	t.Run("sections", func(t *testing.T) {
+		sections := Sections(body)
+		if len(sections) != 2 || sections[1].Kind != "expected" {
+			t.Fatal(sections)
+		}
+	})
+	t.Run("references", func(t *testing.T) {
+		refs := References("o/r", body, "https://github.com/o/r/issues/1")
+		if len(refs) != 1 || refs[0].Number != 7 {
+			t.Fatal(refs)
+		}
+	})
+}
+
+func TestReferenceBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		want       []Reference
+	}{
+		{"documentation fragment", "See https://docs.example.com/guide#123 for details", nil},
+		{"version string", "Version 1.2/3.4#5 fails", nil},
+		{"word before shorthand", "build abc#5 and x/o/r#6", nil},
+		{"invalid owner", "-o/r#5 and o_x/r#6", nil},
+		{"comment fragment", "https://github.com/o/r/issues/5#issuecomment-99", []Reference{{Repo: "o/r", Number: 5, Start: 0, End: 31}}},
+		{"pull request subpage", "see https://github.com/o/s/pull/8/files.", []Reference{{Repo: "o/s", Number: 8, Start: 4, End: 33}}},
+		{"trailing punctuation", "(o/s#9).", []Reference{{Repo: "o/s", Number: 9, Start: 1, End: 6}}},
+		{"foreign issue URL", "https://gitlab.com/o/r/issues/5", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := []Reference{}
+			for _, r := range References("o/r", tc.body, "https://github.com/o/r/issues/1") {
+				got = append(got, Reference{Repo: r.Repo, Number: r.Number, Start: r.Start, End: r.End})
+			}
+			if tc.want == nil {
+				tc.want = []Reference{}
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("got %+v; want %+v", got, tc.want)
 			}
 		})
 	}

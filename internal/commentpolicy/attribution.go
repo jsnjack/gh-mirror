@@ -2,6 +2,8 @@ package commentpolicy
 
 import (
 	"strings"
+
+	"gh-mirror/internal/markdown"
 )
 
 // DetectedAI recognizes a known account or an explicit final-line attribution.
@@ -10,26 +12,17 @@ func DetectedAI(c Comment) string {
 		return provider
 	}
 	var footer string
-	var delimiter byte
-	var length int
+	var fence markdown.Fence
 	for _, line := range strings.Split(c.Body, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
 			continue
 		}
 		footer = ""
-		indented := strings.HasPrefix(line, "\t") || strings.HasPrefix(line, "    ")
-		if !indented && (strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~")) {
-			ch := trimmed[0]
-			count := len(trimmed) - len(strings.TrimLeft(trimmed, string(ch)))
-			if delimiter == 0 {
-				delimiter, length = ch, count
-			} else if delimiter == ch && count >= length && strings.TrimSpace(trimmed[count:]) == "" {
-				delimiter, length = 0, 0
-			}
+		if fence.Line(line) || fence.Open() {
 			continue
 		}
-		if delimiter == 0 && !indented {
+		if !strings.HasPrefix(line, "\t") && !strings.HasPrefix(line, "    ") {
 			footer = trimmed
 		}
 	}

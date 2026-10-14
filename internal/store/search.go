@@ -13,6 +13,12 @@ import (
 	"gh-mirror/internal/embedding"
 )
 
+// lexicalScoreVersion binds lexical cursors to negated BM25 scores; cursors from raw BM25
+// releases compare scores in the opposite direction.
+const lexicalScoreVersion = "negated_bm25"
+
+const lexicalRankingDescription = "Negated SQLite BM25: higher scores rank first. Scores compare text relevance within this query; they are not confidence percentages."
+
 // DefaultSearchEngine combines literal and semantic rankings for general ticket retrieval.
 const DefaultSearchEngine = "hybrid"
 
@@ -118,6 +124,30 @@ func (o SearchOptions) filters() filters {
 	return filters{o.Repo, o.State, o.Label, o.Type, o.Kind, o.Project, o.QueryFilters}
 }
 
+// sourceScope maps one selectable source to its documents, FTS column and evidence field.
+type sourceScope struct {
+	condition, column, field string
+}
+
+// sourceScopeNames lists selectable sources in their reported order.
+var sourceScopeNames = []string{"title", "body", "labels", "comments", "reviews"}
+
+var sourceScopes = map[string]sourceScope{
+	"title":    {"d.id LIKE 'issue:%'", "title", "title"},
+	"body":     {"d.id LIKE 'issue:%'", "body", "body"},
+	"labels":   {"d.id LIKE 'labels:%'", "title", "labels"},
+	"comments": {"d.id LIKE 'comment:%' AND d.id NOT LIKE 'comment:review:%'", "", "comment"},
+	"reviews":  {"d.id LIKE 'comment:review:%'", "", "review_comment"},
+}
+
+// expression restricts an FTS term to the scope's column when it has one.
+func (s sourceScope) expression(term string) string {
+	if s.column == "" {
+		return term
+	}
+	return s.column + ":(" + term + ")"
+}
+
 func scopedDocuments(term string, in []string, evidence, excerpts bool, selection string, selectionArgs []any) (string, []any) {
 	selected := []string{}
 	args := []any{}
@@ -130,37 +160,19 @@ func scopedDocuments(term string, in []string, evidence, excerpts bool, selectio
 		condition := "1=1"
 		field := `CASE WHEN highlight(documents_fts,0,'[',']')<>d.title THEN 'title' ELSE 'body' END`
 		column := "CASE WHEN highlight(documents_fts,0,'[',']')<>d.title THEN 0 ELSE 1 END"
-		switch scope {
-		case "title":
-			expression = "title:(" + term + ")"
-			condition = "d.id LIKE 'issue:%'"
-			field = "'title'"
-			column = "0"
-		case "body":
-			expression = "body:(" + term + ")"
-			condition = "d.id LIKE 'issue:%'"
-			field = "'body'"
-			column = "1"
-		case "labels":
-			expression = "title:(" + term + ")"
-			condition = "d.id LIKE 'labels:%'"
-			field = "'labels'"
-			column = "0"
-		case "comments":
-			condition = "d.id LIKE 'comment:%' AND d.id NOT LIKE 'comment:review:%'"
-			field = "'comment'"
-			column = "1"
-		case "reviews":
-			condition = "d.id LIKE 'comment:review:%'"
-			field = "'review_comment'"
-			column = "1"
+		if source, ok := sourceScopes[scope]; ok {
+			expression, condition, field, column = source.expression(term), source.condition, "'"+source.field+"'", "1"
+			if source.column == "title" {
+				column = "0"
+			}
 		}
 		if !excerpts && scope == "all" {
 			field = "'ticket'"
 		}
 		projection := "d.repo,d.number"
 		if evidence {
-			projection = "d.repo,d.number,d.id,d.source,bm25(documents_fts,5,1) score,CASE WHEN d.id LIKE 'labels:%' THEN 'labels' WHEN d.id LIKE 'comment:review:%' THEN 'review_comment' WHEN d.id LIKE 'comment:%' THEN 'comment' ELSE " + field + " END field"
+			// BM25 is negated so that higher lexical scores rank first, like every other engine.
+			projection = "d.repo,d.number,d.id,d.source,-bm25(documents_fts,5,1) score,CASE WHEN d.id LIKE 'labels:%' THEN 'labels' WHEN d.id LIKE 'comment:review:%' THEN 'review_comment' WHEN d.id LIKE 'comment:%' THEN 'comment' ELSE " + field + " END field"
 			if excerpts {
 				projection += ",snippet(documents_fts," + column + ",'[',']',' … ',32) excerpt"
 			} else {
@@ -214,7 +226,7 @@ func searchFallbackWarning(err error) Warning {
 }
 
 func lexicalSearch(ctx context.Context, q querier, o SearchOptions) (SearchResult, error) {
-	out := SearchResult{Matches: []Match{}, Warnings: []Warning{}, Ranking: Ranking{"sqlite_fts5_bm25", "ascending", "Lower scores rank first; text relevance within this query, not confidence percentages."}}
+	out := SearchResult{Matches: []Match{}, Warnings: []Warning{}, Ranking: Ranking{"sqlite_fts5_bm25", "descending", lexicalRankingDescription}}
 	if len(o.Query) > 16384 {
 		return out, invalid("query exceeds 16384 bytes")
 	}
@@ -235,7 +247,7 @@ func lexicalSearch(ctx context.Context, q querier, o SearchOptions) (SearchResul
 		return out, invalid("at most 32 excluded words allowed")
 	}
 	for _, scope := range o.In {
-		if !slices.Contains([]string{"title", "body", "labels", "comments", "reviews"}, scope) {
+		if !slices.Contains(sourceScopeNames, scope) {
 			return out, invalid("in must select title, body, labels, comments or reviews")
 		}
 	}
@@ -298,7 +310,7 @@ func lexicalSearch(ctx context.Context, q querier, o SearchOptions) (SearchResul
 		args = append(args, repo, o.Exclude)
 	}
 	baseArgs = append(baseArgs, args...)
-	ctes = append(ctes, `ranked AS (SELECT h.*,row_number() OVER(PARTITION BY h.repo,h.number ORDER BY h.score,h.source,h.id,h.field) ordinal FROM hits h JOIN issues i ON i.repo=h.repo AND i.number=h.number WHERE `+filters+`)`)
+	ctes = append(ctes, `ranked AS (SELECT h.*,row_number() OVER(PARTITION BY h.repo,h.number ORDER BY h.score DESC,h.source,h.id,h.field) ordinal FROM hits h JOIN issues i ON i.repo=h.repo AND i.number=h.number WHERE `+filters+`)`)
 	ctes = append(ctes, `tickets AS (SELECT r.repo,r.number,r.source,r.excerpt,r.score,i.title,i.state,i.kind,i.url,i.updated_at,COALESCE(json_extract(i.payload,'$.created_at'),'') created_at,i.payload,i.fields,i.extra FROM ranked r JOIN issues i ON i.repo=r.repo AND i.number=r.number WHERE r.ordinal=1)`)
 	cte := "WITH " + strings.Join(ctes, ",")
 	fingerprint := o
@@ -316,7 +328,8 @@ func lexicalSearch(ctx context.Context, q querier, o SearchOptions) (SearchResul
 	if err != nil {
 		return out, err
 	}
-	cursor, err := decodeCursor(o.Cursor, "search", sig, retrievalGeneration(out.Status))
+	generation := retrievalGeneration(out.Status) + ":" + lexicalScoreVersion
+	cursor, err := decodeCursor(o.Cursor, "search", sig, generation)
 	if err != nil {
 		return out, err
 	}
@@ -360,7 +373,7 @@ func lexicalSearch(ctx context.Context, q querier, o SearchOptions) (SearchResul
 		if o.Sort == "created" {
 			key = last.createdAt
 		}
-		out.NextCursor, err = encodeCursor(pageCursor{Generation: retrievalGeneration(out.Status), Signature: sig, Kind: "search", Repo: last.Repo, Number: last.Number, Key: key, Score: last.Score})
+		out.NextCursor, err = encodeCursor(pageCursor{Generation: generation, Signature: sig, Kind: "search", Repo: last.Repo, Number: last.Number, Key: key, Score: last.Score})
 		if err != nil {
 			return out, err
 		}
@@ -393,7 +406,7 @@ func lexicalSearch(ctx context.Context, q querier, o SearchOptions) (SearchResul
 		evidenceCTE := "WITH " + strings.Join(evidenceCTEs, ",")
 		evidenceArgs := append(boundedArgs, baseArgs[len(docArgs):]...)
 		evidenceArgs = append(evidenceArgs, o.EvidenceLimit)
-		sql := evidenceCTE + `,dedup AS (SELECT r.*,row_number() OVER(PARTITION BY r.repo,r.number,r.id ORDER BY r.score,r.field) doc_ordinal FROM ranked r), evidence AS (SELECT *,row_number() OVER(PARTITION BY repo,number ORDER BY score,source,id) evidence_ordinal FROM dedup WHERE doc_ordinal=1) SELECT e.repo,e.number,e.field,e.source,e.excerpt,COALESCE(CAST(json_extract(c.payload,'$.id') AS TEXT),''),COALESCE(json_extract(c.payload,'$.created_at'),''),COALESCE(json_extract(c.payload,'$.path'),''),COALESCE(json_extract(c.payload,'$.line'),json_extract(c.payload,'$.original_line'),0),substr(COALESCE(json_extract(c.payload,'$.diff_hunk'),''),1,1024) FROM evidence e LEFT JOIN comments c ON c.id=substr(e.id,9) WHERE e.evidence_ordinal<=? ORDER BY e.repo,e.number,e.evidence_ordinal`
+		sql := evidenceCTE + `,dedup AS (SELECT r.*,row_number() OVER(PARTITION BY r.repo,r.number,r.id ORDER BY r.score DESC,r.field) doc_ordinal FROM ranked r), evidence AS (SELECT *,row_number() OVER(PARTITION BY repo,number ORDER BY score DESC,source,id) evidence_ordinal FROM dedup WHERE doc_ordinal=1) SELECT e.repo,e.number,e.field,e.source,e.excerpt,COALESCE(CAST(json_extract(c.payload,'$.id') AS TEXT),''),COALESCE(json_extract(c.payload,'$.created_at'),''),COALESCE(json_extract(c.payload,'$.path'),''),COALESCE(json_extract(c.payload,'$.line'),json_extract(c.payload,'$.original_line'),0),substr(COALESCE(json_extract(c.payload,'$.diff_hunk'),''),1,1024) FROM evidence e LEFT JOIN comments c ON c.id=substr(e.id,9) WHERE e.evidence_ordinal<=? ORDER BY e.repo,e.number,e.evidence_ordinal`
 		rows, err := q.QueryContext(ctx, sql, evidenceArgs...)
 		if err != nil {
 			return out, fmt.Errorf("read match evidence: %w", err)
@@ -419,7 +432,7 @@ func lexicalSearch(ctx context.Context, q querier, o SearchOptions) (SearchResul
 	}
 	out.Query = QueryInfo{Terms: terms, Match: o.Match, Prefix: o.Prefix, In: o.In, Engine: "lexical"}
 	if out.Query.In == nil {
-		out.Query.In = []string{"title", "body", "labels", "comments", "reviews"}
+		out.Query.In = slices.Clone(sourceScopeNames)
 	}
 	out.Warnings = queryWarnings(out.Status, o.filters(), o.PageOptions, o.In)
 	filtered, err := searchCommentWarning(ctx, q, out.Status, o.filters(), o.In)

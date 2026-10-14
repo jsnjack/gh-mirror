@@ -262,6 +262,11 @@ type CatalogResult struct {
 // Catalog retrieves a complete named catalog for a repository, owner, or project scope.
 func (s *Store) Catalog(ctx context.Context, kind, scope string) (CatalogResult, error) {
 	out := CatalogResult{Items: []json.RawMessage{}}
+	if !slices.Contains(obsoleteCatalogKinds, kind) {
+		if err := validCatalogKind(kind); err != nil {
+			return out, err
+		}
+	}
 	err := s.view(ctx, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, "SELECT payload FROM catalog WHERE kind=? AND scope=? ORDER BY id", kind, scope)
 		if err != nil {

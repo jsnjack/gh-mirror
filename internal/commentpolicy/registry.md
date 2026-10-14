@@ -1,6 +1,6 @@
 # Known AI reviewers
 
-Registry version 2 recognizes Copilot, CodeRabbit, Gemini Code Assist and Claude using
+Registry version 3 recognizes Copilot, CodeRabbit, Gemini Code Assist and Claude using
 exact, case-insensitive account aliases and GitHub's Bot account type. Copilot
 GitHub.com account IDs 175728472 and 198982749 also recognize renamed accounts;
 numeric IDs are never applied to another GitHub host. Copilot does not require a
@@ -11,7 +11,8 @@ posted by human accounts. Supported declarations include Addressed by, Generated
 with/by, Reviewed by/with, Implemented by and Fixed by Claude Code, with optional
 robot emoji, emphasis and canonical claude.ai/code or claude.com/claude-code links.
 The exact final-line marker `<!-- gh-mirror:ai-generated:claude -->` is also supported.
-Quoted, fenced, indented and inline-code examples do not count. Mere mentions and
+Quoted, fenced, indented and inline-code examples do not count. A line that starts
+with inline triple backticks, such as `` ```npm ci``` fails ``, does not open a fence. Mere mentions and
 unmarked human comments remain unclassified. Attribution is a declaration, not
 proof of authorship; it never classifies every comment from that person.
 

@@ -12,7 +12,7 @@ import (
 	"gh-mirror/internal/representation"
 )
 
-const ticketRankingVersion = "2"
+const ticketRankingVersion = "3"
 
 const ticketFusionWeight = 3
 
@@ -60,23 +60,9 @@ func coverageDocuments(term string, in []string) (string, []any) {
 		in = []string{"title"}
 	}
 	for _, scope := range in {
-		expression, condition, field := term, "1=1", scope
-		switch scope {
-		case "title", "body":
-			expression = scope + ":(" + term + ")"
-			condition = "d.id LIKE 'issue:%'"
-		case "labels":
-			expression = "title:(" + term + ")"
-			condition = "d.id LIKE 'labels:%'"
-		case "comments":
-			condition = "d.id LIKE 'comment:%' AND d.id NOT LIKE 'comment:review:%'"
-			field = "comment"
-		case "reviews":
-			condition = "d.id LIKE 'comment:review:%'"
-			field = "review_comment"
-		}
-		clauses = append(clauses, "SELECT d.repo,d.number,'"+field+"' field FROM documents_fts JOIN documents d ON d.rowid=documents_fts.rowid WHERE documents_fts MATCH ? AND "+condition)
-		args = append(args, expression)
+		source := sourceScopes[scope]
+		clauses = append(clauses, "SELECT d.repo,d.number,'"+source.field+"' field FROM documents_fts JOIN documents d ON d.rowid=documents_fts.rowid WHERE documents_fts MATCH ? AND "+source.condition)
+		args = append(args, source.expression(term))
 	}
 	return strings.Join(clauses, " UNION ALL "), args
 }
@@ -247,7 +233,7 @@ func hybridEvidence(ctx context.Context, q querier, o SearchOptions, m *Match) e
 		return nil
 	}
 	docs, args := scopedDocuments(strings.Join(quoteTerms(terms, false), " OR "), o.In, true, true, "d.repo=? AND d.number=?", []any{m.Repo, m.Number})
-	rows, err := q.QueryContext(ctx, `SELECT id,field,source,excerpt FROM (`+docs+`) ORDER BY CASE WHEN field='labels' THEN 0 WHEN field='title' THEN 1 ELSE 2 END,score,id LIMIT ?`, append(args, o.EvidenceLimit)...)
+	rows, err := q.QueryContext(ctx, `SELECT id,field,source,excerpt FROM (`+docs+`) ORDER BY CASE WHEN field='labels' THEN 0 WHEN field='title' THEN 1 ELSE 2 END,score DESC,id LIMIT ?`, append(args, o.EvidenceLimit)...)
 	if err != nil {
 		return fmt.Errorf("read hybrid literal evidence: %w", err)
 	}
