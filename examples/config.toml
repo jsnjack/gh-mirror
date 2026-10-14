@@ -1,5 +1,7 @@
 # Default paths, GitHub endpoints and intervals can be omitted.
 workers = 8
+# Repository for short references such as #123.
+default_repo = "owner/repository"
 
 # Keep source comments while excluding known AI reviews from retrieval.
 [pr_comments]
