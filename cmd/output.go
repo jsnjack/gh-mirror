@@ -184,6 +184,8 @@ func humanOutput(value any) (string, error) {
 		}
 	case store.SemanticStatus:
 		lines = semanticLines(v)
+	case syncSkip:
+		lines = append(lines, v.text())
 	default:
 		return humanFields(value)
 	}

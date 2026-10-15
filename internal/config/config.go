@@ -49,6 +49,7 @@ type Config struct {
 	Overlap            string                                `json:"overlap"`
 	EnrichmentInterval string                                `json:"enrichment_interval"`
 	ReconcileInterval  string                                `json:"reconcile_interval"`
+	StaleAfter         string                                `json:"stale_after"`
 }
 
 // DefaultPath returns the XDG TOML configuration path.
@@ -70,7 +71,7 @@ func defaults() (Config, error) {
 		dataDir = filepath.Join(home, ".local", "share")
 	}
 	dataDir = filepath.Join(dataDir, "gh-mirror")
-	c := Config{LabelRules: map[string][]representation.LabelRule{}, Database: filepath.Join(dataDir, "state.sqlite"), SnapshotDir: filepath.Join(dataDir, "snapshots"), APIURL: "https://api.github.com", GraphQLURL: "https://api.github.com/graphql", TokenEnv: "GITHUB_TOKEN", APITokenEnv: "GH_MIRROR_API_TOKEN", Listen: "127.0.0.1:8787", Fields: true, Projects: true, MaxRequests: 3000, Workers: DefaultWorkers, Overlap: "5m", EnrichmentInterval: "1h", ReconcileInterval: "24h"}
+	c := Config{LabelRules: map[string][]representation.LabelRule{}, Database: filepath.Join(dataDir, "state.sqlite"), SnapshotDir: filepath.Join(dataDir, "snapshots"), APIURL: "https://api.github.com", GraphQLURL: "https://api.github.com/graphql", TokenEnv: "GITHUB_TOKEN", APITokenEnv: "GH_MIRROR_API_TOKEN", Listen: "127.0.0.1:8787", Fields: true, Projects: true, MaxRequests: 3000, Workers: DefaultWorkers, Overlap: "5m", EnrichmentInterval: "1h", ReconcileInterval: "24h", StaleAfter: "1h"}
 	return c, nil
 }
 
@@ -171,7 +172,7 @@ func (c Config) Validate() error {
 			return fmt.Errorf("upstream HTTP is allowed only on loopback")
 		}
 	}
-	for name, value := range map[string]string{"overlap": c.Overlap, "enrichment_interval": c.EnrichmentInterval, "reconcile_interval": c.ReconcileInterval} {
+	for name, value := range map[string]string{"overlap": c.Overlap, "enrichment_interval": c.EnrichmentInterval, "reconcile_interval": c.ReconcileInterval, "stale_after": c.StaleAfter} {
 		d, err := time.ParseDuration(value)
 		if err != nil || d <= 0 {
 			return fmt.Errorf("%s must be a positive duration", name)

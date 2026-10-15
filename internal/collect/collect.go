@@ -33,9 +33,12 @@ type Result struct {
 
 // Options controls full collection, pending work, and activity reporting.
 type Options struct {
-	Full     bool
-	Restart  bool
-	Progress progress.Reporter
+	Full    bool
+	Restart bool
+	// StaleAfter, when positive, makes Sync return ErrFresh without collecting if
+	// the committed collection is younger; the check runs under the collector lock.
+	StaleAfter time.Duration
+	Progress   progress.Reporter
 }
 
 // Sync collects complete listings initially and overlapping deltas thereafter.
@@ -81,11 +84,17 @@ func syncVersion(ctx context.Context, db *store.Store, c config.Config, options 
 	var signature string
 	token := os.Getenv(c.TokenEnv)
 	identity := credentialIdentity(c, token)
-	pendingPath := db.Path + ".sync.sqlite"
+	pendingPath := checkpointPath(db.Path)
 	err = db.Update(ctx, func(w *store.Writer) error {
 		old, err := w.Status(ctx)
 		if err != nil {
 			return fmt.Errorf("load collector checkpoints: %w", err)
+		}
+		if options.StaleAfter > 0 {
+			if age, collected, err := old.CollectionAge(now); err == nil && collected && age < options.StaleAfter {
+				result.Status = old
+				return ErrFresh
+			}
 		}
 		incompatible := old.Generation != "" && old.CollectionVersion != version
 		priorIdentity, err := w.Metadata(ctx, "credential_identity")

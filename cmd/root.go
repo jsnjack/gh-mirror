@@ -178,9 +178,24 @@ func closeStore(ctx context.Context, db *store.Store) {
 	}
 }
 func addCollection() {
-	var full, publish, quiet, restart, index bool
+	var full, publish, quiet, restart, index, ifStale bool
 	var workers, indexWorkers int
+	var staleAfterFlag time.Duration
 	command := &cobra.Command{Use: "sync", GroupID: groupCollect, Short: "Collect configured repositories from GitHub, then index and publish", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) (runErr error) {
+		staleAfter, err := syncStaleAfter(command, ifStale, staleAfterFlag)
+		if err != nil {
+			return err
+		}
+		var freshness collect.Freshness
+		if ifStale {
+			freshness, err = collect.CheckFreshness(command.Context(), settings.Database, staleAfter, time.Now())
+			if err != nil {
+				return fmt.Errorf("check mirror freshness: %w", err)
+			}
+			if freshness.Skip != "" {
+				return output(command, newSyncSkip(freshness, staleAfter))
+			}
+		}
 		if command.Flags().Changed("workers") {
 			settings.Workers = workers
 			if err := settings.Validate(); err != nil {
@@ -196,6 +211,23 @@ func addCollection() {
 		}
 		var report progress.Reporter
 		var display *progress.Display
+		// Finish cursor updates before stdout can write to the same terminal.
+		finishDisplay := func() error {
+			if display == nil {
+				return nil
+			}
+			err := display.Finish(nil)
+			display = nil
+			return err
+		}
+		// A collector that took the lock after the freshness check makes this one skip.
+		skip := func(reason string) error {
+			if err := finishDisplay(); err != nil {
+				return err
+			}
+			freshness.Skip = reason
+			return output(command, newSyncSkip(freshness, staleAfter))
+		}
 		if !quiet {
 			var err error
 			display, err = progress.New(command.ErrOrStderr(), !debug)
@@ -212,12 +244,25 @@ func addCollection() {
 			}()
 		}
 		db, err := open(false)
+		if ifStale && store.IsBusy(err) {
+			return skip(collect.SkipRunning)
+		}
 		if err != nil {
 			return err
 		}
 		defer closeStore(command.Context(), db)
-		result, err := collect.Sync(command.Context(), db, settings, collect.Options{Full: full, Restart: restart, Progress: report})
-		if err != nil {
+		result, err := collect.Sync(command.Context(), db, settings, collect.Options{Full: full, Restart: restart, StaleAfter: staleAfter, Progress: report})
+		switch {
+		case errors.Is(err, collect.ErrFresh):
+			freshness.CollectedAt = result.Status.CollectedAt
+			freshness.Age, freshness.Collected, err = result.Status.CollectionAge(time.Now())
+			if err != nil {
+				return fmt.Errorf("read collection age: %w", err)
+			}
+			return skip(collect.SkipFresh)
+		case ifStale && store.IsBusy(err):
+			return skip(collect.SkipRunning)
+		case err != nil:
 			return fmt.Errorf("collect GitHub data: %w", err)
 		}
 		if index {
@@ -240,13 +285,8 @@ func addCollection() {
 			}
 			manifest = &m
 		}
-		// Finish cursor updates before stdout can write to the same terminal.
-		if display != nil {
-			err := display.Finish(nil)
-			display = nil
-			if err != nil {
-				return err
-			}
+		if err := finishDisplay(); err != nil {
+			return err
 		}
 		return output(command, struct {
 			collect.Result
@@ -260,6 +300,8 @@ func addCollection() {
 	command.Flags().BoolVar(&full, "full", false, "Force complete inventories and enrichment")
 	command.Flags().BoolVar(&publish, "publish", true, "Publish a standalone snapshot after collection")
 	command.Flags().BoolVar(&quiet, "quiet", false, "Suppress sync progress; retain results and errors")
+	command.Flags().BoolVar(&ifStale, "if-stale", false, "Collect only when the last collection is older than stale_after and no other sync is running")
+	command.Flags().DurationVar(&staleAfterFlag, "stale-after", 0, "Override stale_after for --if-stale (default: configuration, 1h)")
 	addEmbeddingFlags(command)
 	root.AddCommand(command)
 }

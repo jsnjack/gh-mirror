@@ -126,6 +126,7 @@ Omitted settings keep their defaults:
 | `max_requests` | 3000 | Request budget per sync invocation |
 | `enrichment_interval` | `1h` | Refresh of catalogs, fields, relationships and projects |
 | `reconcile_interval` | `24h` | Full inventory that removes deleted and transferred tickets |
+| `stale_after` | `1h` | Collection age at which `sync --if-stale` collects |
 | `token_env` | `GITHUB_TOKEN` | Environment variable holding the GitHub token |
 | `api_token_env` | `GH_MIRROR_API_TOKEN` | Environment variable holding the REST/MCP HTTP token |
 | `listen` | `127.0.0.1:8787` | `serve` address |
@@ -430,6 +431,32 @@ gh-mirror doctor    # health checks; exits 1 when one fails
 
 After collecting, `sync` updates the semantic index and publishes a snapshot.
 `--index=false` and `--publish=false` skip those steps.
+
+### Sync only when stale
+
+Agents can run this before each query. It does nothing while the mirror is fresh:
+
+```sh
+gh-mirror sync --if-stale --quiet                    # uses stale_after (default 1h)
+gh-mirror sync --if-stale --stale-after 15m --quiet  # one-off threshold
+```
+
+- **A fresh mirror is left alone.** If the last collection is younger than `stale_after`,
+  sync exits 0. It sends no GitHub requests and needs no token.
+- **A running sync is not joined.** If another process is collecting, sync exits 0 at
+  once. A sync that was interrupted is not running, so it resumes as usual.
+- **A stale, uncollected or missing mirror** gets a normal sync, including index and publish.
+- **Concurrent calls collect once.** The others report `running`, or `fresh` after it commits.
+- **`--stale-after` needs `--if-stale`** and must be positive.
+
+A skipped sync prints one result instead of the sync report:
+
+```json
+{"skipped":true,"reason":"fresh","collected_at":"2026-10-15T09:37:00Z","age":"23m0s","stale_after":"1h0m0s"}
+{"skipped":true,"reason":"running","collected_at":"2026-10-15T07:02:00Z","age":"2h58m0s","stale_after":"1h0m0s"}
+```
+
+`collected_at` and `age` are absent when the mirror has never been collected.
 
 ### What each sync fetches
 

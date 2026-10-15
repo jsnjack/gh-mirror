@@ -15,7 +15,8 @@ import (
 
 	"gh-mirror/internal/diagnostics"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // SchemaVersion identifies compatible mirror databases.
@@ -144,6 +145,46 @@ func (s *Store) initialize(readOnly bool) error {
 		return fmt.Errorf("unsupported database schema %q", version)
 	}
 	return nil
+}
+
+// IsBusy reports whether err comes from SQLite refusing a lock that another connection holds.
+func IsBusy(err error) bool {
+	var e *sqlite.Error
+	return errors.As(err, &e) && e.Code()&0xff == sqlite3.SQLITE_BUSY
+}
+
+// WriterBusy reports whether another connection holds the existing mirror's write
+// lock, without waiting for it and without writing.
+func WriterBusy(ctx context.Context, path string) (bool, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return false, fmt.Errorf("resolve database: %w", err)
+	}
+	u := url.URL{Scheme: "file", Path: abs}
+	q := u.Query()
+	q.Set("mode", "rw")
+	q.Add("_pragma", "busy_timeout(0)")
+	q.Set("_txlock", "immediate")
+	u.RawQuery = q.Encode()
+	db, err := sql.Open("sqlite", u.String())
+	if err != nil {
+		return false, fmt.Errorf("open SQLite lock probe: %w", err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			slog.Log(ctx, diagnostics.TraceLevel, "close lock probe", "error", err)
+		}
+	}()
+	db.SetMaxOpenConns(1)
+	tx, err := db.BeginTx(ctx, nil)
+	if IsBusy(err) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("probe mirror write lock: %w", err)
+	}
+	rollback(tx)
+	return false, nil
 }
 
 // Close releases database connections.

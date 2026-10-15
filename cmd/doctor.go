@@ -123,16 +123,16 @@ func doctorStatus(ctx context.Context) (store.Status, error) {
 }
 
 func doctorFreshness(report *doctorReport, status store.Status, maxAge time.Duration) {
-	if status.CollectedAt == "" {
+	age, collected, err := status.CollectionAge(time.Now())
+	if err != nil {
+		report.add("collection age", checkFail, "%v", err)
+		return
+	}
+	if !collected {
 		report.add("collection age", checkFail, "the mirror has not been collected; run gh-mirror sync")
 		return
 	}
-	collected, err := time.Parse(time.RFC3339Nano, status.CollectedAt)
-	if err != nil {
-		report.add("collection age", checkFail, "unreadable collection time %q", status.CollectedAt)
-		return
-	}
-	age := time.Since(collected).Round(time.Minute)
+	age = age.Round(time.Minute)
 	if age > maxAge {
 		report.add("collection age", checkFail, "collected %s ago, older than %s", age, maxAge)
 		return

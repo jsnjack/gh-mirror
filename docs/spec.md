@@ -158,6 +158,19 @@ does not invalidate a session; incompatible settings replace pending work.
 hold the live database's collector lock; cleanup verifies session ownership after
 the mirror commit. Checkpoints are excluded from snapshots and removed after success.
 
+`sync --if-stale` collects only when the committed `collected_at` is at least
+`stale_after` old (default 1h; `--stale-after` overrides it and requires `--if-stale`;
+both must be positive). `doctor` computes collection age the same way. A fresh mirror
+exits 0 after a read-only check: no token, GitHub request, index, publish or write.
+A collector is running when the mirror write lock is held and a checkpoint session
+exists; a non-blocking lock probe detects it, and sync exits 0 without waiting. A
+session without that lock is interrupted work and resumes. Stale, uncollected and
+missing mirrors run the normal sync. The collection transaction repeats the age check
+under the lock, so a racing call that waited for it reports fresh. A call that loses
+the lock race inside SQLite's busy timeout reports running instead of failing. Skips
+print `skipped`, `reason` (`fresh` or `running`), `stale_after` and, once collected,
+`collected_at` and `age`. Plain `sync` is unchanged.
+
 The persisted `collection_version` identifies data compatibility independently of
 release and physical SQL schema versions. Missing metadata denotes legacy version 1.
 Increment `store.CollectionVersion` when collection or normalization changes make

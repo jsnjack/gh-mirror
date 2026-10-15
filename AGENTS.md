@@ -139,6 +139,9 @@ Credentials come from named environment variables and never enter the database,
 stdout, request bodies, or trace logs. HTTP listeners outside loopback require an
 API bearer token. Read tools never trigger collection or expose arbitrary SQL.
 
+`sync --if-stale` skips when `Status.CollectionAge` is below `stale_after`, or when
+`collect.CheckFreshness` finds the mirror write lock held with a checkpoint session;
+`collect.Options.StaleAfter` repeats the age check under the lock and busy errors map to running.
 Sync progress starts before opening the database and uses stderr, leaving stdout
 for command results. Animate terminal output; use plain phase updates and periodic heartbeats
 for nonterminals or debug mode. `sync --quiet` disables progress. Report actual

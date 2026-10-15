@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"time"
 )
 
 // Coverage describes independently collected resource families for a repository.
@@ -139,6 +140,19 @@ func (s *Store) view(ctx context.Context, f func(*sql.Tx) error) error {
 		return fmt.Errorf("finish mirror read: %w", err)
 	}
 	return nil
+}
+
+// CollectionAge reports how long before now the last successful collection committed;
+// collected is false for a mirror that was never collected.
+func (s Status) CollectionAge(now time.Time) (age time.Duration, collected bool, err error) {
+	if s.CollectedAt == "" {
+		return 0, false, nil
+	}
+	at, err := time.Parse(time.RFC3339Nano, s.CollectedAt)
+	if err != nil {
+		return 0, false, fmt.Errorf("unreadable collection time %q", s.CollectedAt)
+	}
+	return now.Sub(at), true, nil
 }
 
 // Status reads a consistent generation, scope, coverage, and record counts.
