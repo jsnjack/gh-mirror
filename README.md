@@ -782,13 +782,13 @@ gh-mirror --db ./mirror.sqlite evaluate --cases ./judgments.json --format text
 
 ```sh
 make check      # goimports, vet, build, race tests, golangci-lint
-make release    # Linux/macOS amd64/arm64 archives
+make release    # build archives and publish a GitHub release
 ```
 
 - **Tools:** checks need `goimports`, `golangci-lint` and `monova`. The Makefile prints
   install commands for missing ones.
-- **Releases:** pushing a `vMAJOR.MINOR.PATCH` tag matching monova's version publishes
-  archives and checksums.
+- **Releases:** `make release` needs `grm` and a clean, pushed `main`. It uploads the
+  archives and checksums to a new release tagged `v` plus monova's version.
 - **Specification:** [docs/spec.md](docs/spec.md).
 - **Synthetic retrieval tests:** `go test ./internal/store -run TestRetrievalEvaluation -v`.
 

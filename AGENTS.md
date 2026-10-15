@@ -153,12 +153,11 @@ quota and resume counters on separate rows and track physical rows when clearing
 frames. Known totals show percentage, phase throughput, and a phase ETA after
 measurable progress; unknown totals and retry waits do not show an ETA.
 
-CI runs format, vet, build, race tests and lint on pushes and pull requests. Tagged
-releases run those checks before packaging CGO-free Linux/macOS amd64/arm64 binaries,
-verifying SHA-256 checksums and publishing assets. `make release` uses monova's
-version and includes the executable, README and bundled model notices/license;
-never package collector data or user configuration. Release workflows grant write
-permissions only to publication.
+CI runs format, vet, build, race tests and lint on pushes and pull requests.
+`make release` runs locally: it requires a clean, pushed HEAD, packages CGO-free
+Linux/macOS amd64/arm64 archives with SHA-256 checksums, and uploads them with
+`grm release` under tag `v<monova>`. Archives include the executable, README and
+bundled model notices/license; never package collector data or user configuration.
 
 Dependencies are justified by the accepted design: Cobra is required by standards;
 modernc.org/sqlite provides embedded SQLite/FTS5 without CGO; the official MCP SDK

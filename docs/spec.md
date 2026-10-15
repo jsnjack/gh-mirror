@@ -354,9 +354,9 @@ resumable full rebuild with cleared conditional cache. Same-token permission cha
 still use explicit or periodic reconciliation. GraphQL observations are validated
 before checkpointing; refetch invalid legacy responses without discarding good work.
 
-GitHub Actions checks formatting, vet, build, race tests and lint. Tagged releases
-require a version matching monova and package CGO-free Linux/macOS binaries for
-amd64 and arm64 with SHA-256 checksums. Package the executable, README and bundled model notices/license.
+GitHub Actions checks formatting, vet, build, race tests and lint. `make release`
+packages CGO-free Linux/macOS binaries for amd64 and arm64 with SHA-256 checksums
+and publishes them locally with `grm release` under tag `v<monova>`. Package the executable, README and bundled model notices/license.
 
 ## Query and result expansion
 
