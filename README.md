@@ -86,8 +86,9 @@ gh-mirror completion fish > ~/.config/fish/completions/gh-mirror.fish
 
 ## Configure
 
-The settings file is `~/.config/gh-mirror/config.toml`. Start from
-[examples/config.toml](examples/config.toml):
+The settings file is `~/.config/gh-mirror/config.toml`. Only TOML is read.
+[examples/config.toml](examples/config.toml) lists every setting with its default.
+A typical file is short:
 
 ```toml
 default_repo = "owner/repository"
@@ -128,11 +129,7 @@ Omitted settings keep their defaults:
 ```sh
 gh-mirror config show               # compact TOML
 gh-mirror config show --effective   # every default and resolved switch
-gh-mirror config migrate            # convert a legacy config.json to TOML
 ```
-
-An existing `config.json` still works. TOML wins when both files exist. `migrate`
-never overwrites either file.
 
 ### Repositories and presets
 
@@ -162,8 +159,7 @@ Each `[repos."owner/name"]` table selects a preset. Switches set to `true` or
 - **Comments need their ticket kind.** Issue types, fields and relationships need issues.
 - **Raw tickets always keep** titles, bodies, state, authors, assignees, labels,
   milestone and type. Turning a catalog off does not remove them.
-- **A table without `preset`** uses the legacy defaults, with inline review comments off.
-- **Legacy keys** `repositories` and `repository_options` still work. Don't mix them with `repos`.
+- **A table without `preset`** uses the global `fields`/`projects` defaults, with inline review comments off.
 - **`gh-mirror scope`** prints the resolved switches without contacting GitHub.
 
 Some data is never collected:
@@ -539,7 +535,7 @@ gh-mirror --db ./mirror.sqlite search 'socket timeout'
 ```
 
 Copy rather than read the published file in place. Pruning can delete it during a
-long job. [examples/wakeci-consumer.yaml](examples/wakeci-consumer.yaml) shows a CI job.
+long job.
 
 ### Fetch a snapshot from another host
 

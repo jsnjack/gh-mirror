@@ -4,9 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
-	"os"
-	"path/filepath"
 	"reflect"
 	"sort"
 
@@ -49,13 +46,12 @@ func decodeTOML(r io.Reader, defaults Config) ([]byte, error) {
 	if value, ok := data["projects"].(bool); ok {
 		defaults.Projects = value
 	}
+	for _, key := range []string{"repositories", "repository_options", "pr_comment_overrides"} {
+		if _, exists := data[key]; exists {
+			return nil, fmt.Errorf("unknown key %q; configure repositories with [repos.\"owner/name\"] tables", key)
+		}
+	}
 	if raw, ok := data["repos"]; ok {
-		if _, exists := data["repositories"]; exists {
-			return nil, fmt.Errorf("use repos tables or legacy repositories, not both")
-		}
-		if _, exists := data["repository_options"]; exists {
-			return nil, fmt.Errorf("repos tables cannot be combined with repository_options")
-		}
 		repos, ok := raw.(map[string]any)
 		if !ok {
 			return nil, fmt.Errorf("repos must contain repository tables")
@@ -98,9 +94,6 @@ func decodeTOML(r io.Reader, defaults Config) ([]byte, error) {
 		sort.Strings(names)
 		data["repositories"], data["repository_options"] = names, options
 		if len(policies) > 0 {
-			if _, exists := data["pr_comment_overrides"]; exists {
-				return nil, fmt.Errorf("repository pr_comments tables cannot be combined with pr_comment_overrides")
-			}
 			data["pr_comment_overrides"] = policies
 		}
 		delete(data, "repos")
@@ -185,43 +178,4 @@ func (c Config) TOML(effective bool) ([]byte, error) {
 		return nil, fmt.Errorf("render TOML configuration: %w", err)
 	}
 	return raw, nil
-}
-
-// Migrate writes a private TOML configuration without replacing an existing file.
-func Migrate(source, destination string) error {
-	c, err := Load(source, true)
-	if err != nil {
-		return err
-	}
-	if err := c.Validate(); err != nil {
-		return fmt.Errorf("validate migration source: %w", err)
-	}
-	raw, err := c.TOML(false)
-	if err != nil {
-		return err
-	}
-	f, err := os.CreateTemp(filepath.Dir(destination), ".gh-mirror-config-*.toml")
-	if err != nil {
-		return fmt.Errorf("create TOML configuration: %w", err)
-	}
-	defer func() {
-		if err := os.Remove(f.Name()); err != nil {
-			slog.Debug("remove migration temporary file", "error", err)
-		}
-	}()
-	_, writeErr := f.Write(raw)
-	if writeErr == nil {
-		writeErr = f.Sync()
-	}
-	closeErr := f.Close()
-	if writeErr != nil {
-		return fmt.Errorf("write TOML configuration: %w", writeErr)
-	}
-	if closeErr != nil {
-		return fmt.Errorf("close TOML configuration: %w", closeErr)
-	}
-	if err := os.Link(f.Name(), destination); err != nil {
-		return fmt.Errorf("install TOML configuration without replacing existing files: %w", err)
-	}
-	return nil
 }

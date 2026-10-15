@@ -1,16 +1,99 @@
-# Default paths, GitHub endpoints and intervals can be omitted.
-workers = 8
-# Repository for short references such as #123.
+# gh-mirror configuration: every supported setting.
+#
+# Save as ~/.config/gh-mirror/config.toml, or pass another file with --config.
+# Every key is optional. Values shown are the built-in defaults unless a comment
+# says otherwise. Commented lines show settings whose default depends on the host.
+# Run `gh-mirror config show --effective` to print the settings in use.
+
+# Repository used by short ticket references such as #123. Without it, #N works
+# only when exactly one repository is configured.
 default_repo = "owner/repository"
 
-# Keep source comments while excluding known AI reviews from retrieval.
-[pr_comments]
-exclude_known_ai = true
-exclude_ai_threads = true
+# Local files. Defaults follow XDG_DATA_HOME (~/.local/share/gh-mirror).
+# database = "/home/user/.local/share/gh-mirror/state.sqlite"
+# snapshot_dir = "/home/user/.local/share/gh-mirror/snapshots"
 
+# GitHub endpoints. Change both for GitHub Enterprise Server.
+api_url = "https://api.github.com"
+graphql_url = "https://api.github.com/graphql"
+
+# Names of environment variables that hold tokens. Tokens never enter the database.
+token_env = "GITHUB_TOKEN"          # GitHub read token used by sync
+api_token_env = "GH_MIRROR_API_TOKEN" # bearer token for serve/mcp over HTTP
+
+# Address for `gh-mirror serve`. Non-loopback addresses require api_token_env.
+listen = "127.0.0.1:8787"
+
+# Collection limits.
+max_requests = 3000 # GitHub request budget per sync (minimum 1)
+workers = 4         # concurrent GitHub requests and indexing workers (1-16)
+
+# Sync timing. Values are Go durations: 30s, 5m, 1h, 24h.
+overlap = "5m"               # re-read window before the last sync watermark
+enrichment_interval = "1h"   # refresh catalogs, fields, projects and relationships
+reconcile_interval = "24h"   # full listing that removes deleted tickets and comments
+
+# Defaults for [repos] tables without a preset. Presets ignore these two keys.
+fields = true   # native issue fields and issue types
+projects = true # project catalogs and memberships
+
+# Text encoder for semantic search. CPU needs no setup.
+[embedding]
+backend = "cpu"   # "cpu" or "lemonade-vulkan"
+device = "Vulkan0" # Vulkan device, used only by lemonade-vulkan
+batch_size = 8    # passages per Vulkan request (1-32)
+# Lemonade's llama-server. Default: ~/.cache/lemonade/bin/llamacpp/vulkan/llama-server
+# runtime = "/home/user/.cache/lemonade/bin/llamacpp/vulkan/llama-server"
+
+# PR comment retrieval policy for every repository. Raw comments stay stored;
+# excluded comments drop out of search, vectors and bounded comment reads.
+[pr_comments]
+exclude_known_ai = true    # comments by known AI review accounts or with AI markers
+exclude_ai_threads = true  # whole inline threads started by an excluded comment
+exclude_all_bots = false   # every account GitHub marks as a Bot
+exclude_authors = []       # exact logins to exclude
+include_authors = []       # exact logins to keep; takes priority over exclusions
+
+# One table per mirrored repository. `preset` selects a starting set of switches:
+#   all            every switch below
+#   issues         issues, issue comments, labels, milestones, issue types,
+#                  fields, relationships, projects
+#   pull_requests  PR records, PR conversation comments, inline review comments
+# Without a preset, the table starts from the global defaults above, with inline
+# review comments off. Lines below a preset override single switches.
 [repos."owner/repository"]
 preset = "all"
-pull_request_review_comments = false
+issues = true                        # issues with raw payloads, title and body
+pull_requests = true                 # PR records, including the PR description
+issue_comments = true                # issue conversation comments
+pull_request_comments = true         # PR conversation tab comments
+pull_request_review_comments = false # inline comments on diff lines
+labels = true                        # label catalog, including unused labels
+milestones = true                    # milestone catalog, including closed ones
+issue_types = true                   # organization issue type catalog
+fields = true                        # native issue field definitions and values
+relationships = true                 # parent, sub-issue and blocking links
+projects = true                      # project catalog and ticket memberships
 
+# Per-repository PR comment policy. Set keys replace the global [pr_comments] values.
+[repos."owner/repository".pr_comments]
+exclude_all_bots = true
+include_authors = ["trusted-release-bot"]
+
+# A code repository mirrored only for its pull requests.
 [repos."owner/code"]
 preset = "pull_requests"
+
+# Label meanings used by context and ranking. Each rule names one exact `label`
+# or one `prefix`, plus a `role`. Exact labels take priority over prefixes, and
+# the longest prefix wins. Labels such as client:Acme work without rules.
+[[label_rules."owner/repository"]]
+prefix = "customer:"
+role = "client"
+
+[[label_rules."owner/repository"]]
+label = "account:example"
+role = "client"
+value = "Example"
+aliases = ["Example Ltd"]
+description = "Affected customer"

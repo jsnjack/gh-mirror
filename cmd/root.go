@@ -59,7 +59,7 @@ func init() {
 	root.Flags().Bool("version", false, "Print the version and exit")
 	root.PersistentFlags().Bool("help", false, "Show command help")
 	root.AddGroup(&cobra.Group{ID: groupQuery, Title: "Query the local mirror:"}, &cobra.Group{ID: groupCollect, Title: "Collect and publish:"}, &cobra.Group{ID: groupServe, Title: "Serve agents and clients:"}, &cobra.Group{ID: groupInspect, Title: "Inspect configuration and state:"}, &cobra.Group{ID: groupAdvanced, Title: "Advanced:"})
-	root.PersistentFlags().StringVarP(&configPath, "config", "c", "", "Configuration file (default: XDG gh-mirror/config.toml; legacy JSON accepted)")
+	root.PersistentFlags().StringVarP(&configPath, "config", "c", "", "TOML configuration file (default: XDG gh-mirror/config.toml)")
 	root.PersistentFlags().StringVar(&database, "db", "", "Override the database path")
 	root.PersistentFlags().StringVar(&outputFormat, "format", "auto", "Output format: auto (text in terminals, JSON when piped), text or json")
 	root.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Verbose diagnostics on stderr")

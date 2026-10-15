@@ -7,25 +7,23 @@ import (
 )
 
 func TestRepositoryOptions(t *testing.T) {
-	for _, name := range []string{"legacy defaults", "global defaults", "explicit all", "PR only", "unknown repo", "empty scope", "unknown option", "invalid boolean"} {
+	for _, name := range []string{"legacy defaults", "global defaults", "explicit all", "PR only", "empty scope", "unknown option", "invalid boolean"} {
 		t.Run(name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "config.json")
-			body := `{"repositories":["o/r"]}`
+			path := filepath.Join(t.TempDir(), "config.toml")
+			body := `[repos."o/r"]`
 			switch name {
 			case "global defaults":
-				body = `{"repositories":["o/r"],"fields":false,"projects":false}`
+				body = "fields = false\nprojects = false\n" + body
 			case "explicit all":
-				body = `{"repositories":["o/r"],"repository_options":{"o/r":{"issues":true,"pull_requests":true,"issue_comments":true,"pull_request_comments":true,"labels":true,"milestones":true,"issue_types":true,"fields":true,"relationships":true,"projects":true}}}`
+				body += "\npreset = 'all'\npull_request_review_comments = false"
 			case "PR only":
-				body = `{"repositories":["o/r"],"repository_options":{"o/r":{"pull_requests":true,"pull_request_comments":true}}}`
-			case "unknown repo":
-				body = `{"repositories":["o/r"],"repository_options":{"o/other":{"issues":true}}}`
+				body += "\npreset = 'pull_requests'\npull_request_review_comments = false"
 			case "empty scope":
-				body = `{"repositories":["o/r"],"repository_options":{"o/r":{}}}`
+				body += "\nissues = false\npull_requests = false"
 			case "unknown option":
-				body = `{"repositories":["o/r"],"repository_options":{"o/r":{"isssues":true}}}`
+				body += "\nisssues = true"
 			case "invalid boolean":
-				body = `{"repositories":["o/r"],"repository_options":{"o/r":{"issues":"true"}}}`
+				body += "\nissues = 'true'"
 			}
 			if err := os.WriteFile(path, []byte(body), 0600); err != nil {
 				t.Fatal(err)
@@ -41,7 +39,7 @@ func TestRepositoryOptions(t *testing.T) {
 				t.Fatal(err)
 			}
 			err = c.Validate()
-			if name == "unknown repo" || name == "empty scope" {
+			if name == "empty scope" {
 				if err == nil {
 					t.Fatal("accepted invalid repository scope")
 				}

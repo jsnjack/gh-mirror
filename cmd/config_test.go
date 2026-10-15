@@ -11,10 +11,10 @@ import (
 )
 
 func TestConfigCommands(t *testing.T) {
-	for _, name := range []string{"compact", "effective", "explicit JSON", "migrate"} {
+	for _, name := range []string{"compact", "effective", "explicit JSON"} {
 		t.Run(name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "config.json")
-			if err := os.WriteFile(path, []byte(`{"repositories":["o/code"],"repository_options":{"o/code":{"pull_requests":true,"pull_request_comments":true,"pull_request_review_comments":true}}}`), 0600); err != nil {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte("[repos.\"o/code\"]\npreset = 'pull_requests'"), 0600); err != nil {
 				t.Fatal(err)
 			}
 			oldSettings, oldPath, oldFormat := settings, configPath, outputFormat
@@ -25,29 +25,23 @@ func TestConfigCommands(t *testing.T) {
 			}
 			configPath, outputFormat = path, "auto"
 			t.Cleanup(func() { settings, configPath, outputFormat = oldSettings, oldPath, oldFormat })
-			args := []string{"config", "show"}
-			if name == "migrate" {
-				args[1] = "migrate"
-			}
-			command, _, err := root.Find(args)
+			command, _, err := root.Find([]string{"config", "show"})
 			if err != nil {
 				t.Fatal(err)
 			}
 			var out bytes.Buffer
 			command.SetOut(&out)
 			t.Cleanup(func() { command.SetOut(nil) })
-			if name != "migrate" {
-				flag := command.Flags().Lookup("effective")
-				old := flag.Value.String()
-				if err := flag.Value.Set(map[bool]string{true: "true", false: "false"}[name == "effective"]); err != nil {
+			flag := command.Flags().Lookup("effective")
+			old := flag.Value.String()
+			if err := flag.Value.Set(map[bool]string{true: "true", false: "false"}[name == "effective"]); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := flag.Value.Set(old); err != nil {
 					t.Fatal(err)
 				}
-				t.Cleanup(func() {
-					if err := flag.Value.Set(old); err != nil {
-						t.Fatal(err)
-					}
-				})
-			}
+			})
 			if name == "explicit JSON" {
 				outputFormat = "json"
 			}
@@ -66,14 +60,6 @@ func TestConfigCommands(t *testing.T) {
 			case "explicit JSON":
 				if !strings.Contains(out.String(), `"repository_options"`) {
 					t.Fatal(out.String())
-				}
-			case "migrate":
-				if !strings.Contains(out.String(), "original retained") {
-					t.Fatal(out.String())
-				}
-				c, err := config.Load(filepath.Join(filepath.Dir(path), "config.toml"), true)
-				if err != nil || c.Scope("o/code") != settings.Scope("o/code") {
-					t.Fatal(c, err)
 				}
 			}
 		})

@@ -8,12 +8,12 @@ import (
 
 func TestEmbeddingConfiguration(t *testing.T) {
 	for _, c := range []struct {
-		name, json string
+		name, body string
 		valid      bool
-	}{{"Vulkan", `{"embedding":{"backend":"lemonade-vulkan","batch_size":16,"device":"Vulkan0"}}`, true}, {"CPU", `{"embedding":{"backend":"cpu"}}`, true}, {"remote", `{"embedding":{"backend":"remote"}}`, false}, {"large batch", `{"embedding":{"batch_size":64}}`, false}} {
+	}{{"Vulkan", "[embedding]\nbackend = 'lemonade-vulkan'\nbatch_size = 16\ndevice = 'Vulkan0'", true}, {"CPU", "[embedding]\nbackend = 'cpu'", true}, {"remote", "[embedding]\nbackend = 'remote'", false}, {"large batch", "[embedding]\nbatch_size = 64", false}} {
 		t.Run(c.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "config.json")
-			if err := os.WriteFile(path, []byte(c.json), 0600); err != nil {
+			path := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(path, []byte(c.body), 0600); err != nil {
 				t.Fatal(err)
 			}
 			settings, err := Load(path, true)

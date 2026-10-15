@@ -105,7 +105,7 @@ func TestListingEditedBetweenPages(t *testing.T) {
 			server := httptest.NewServer(f)
 			defer server.Close()
 			f.url = server.URL
-			c, err := config.Load(filepath.Join(t.TempDir(), "missing.json"), false)
+			c, err := config.Load(filepath.Join(t.TempDir(), "missing.toml"), false)
 			if err != nil {
 				t.Fatal(err)
 			}

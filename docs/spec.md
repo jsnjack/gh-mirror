@@ -21,7 +21,7 @@ Help groups the CLI commands by task. Query: `search`, `list`, `show`, `comments
 `batch` and `candidates` keep earlier scripts working. Ticket commands accept REF as `owner/repo#N`, a
 GitHub issue/pull URL, or `#N`/`N` with `default_repo` or a single configured repository. Embedding
 flags appear only on commands that encode text. All commands inherit `--config`/`-c`, `--debug`/`-d`,
-`--format`, `--db` and `--trace`. The root supports `--version`. Configuration is TOML with legacy JSON support under the XDG
+`--format`, `--db` and `--trace`. The root supports `--version`. Configuration is TOML under the XDG
 configuration directory. Durable data uses the XDG data directory. Tokens are
 read from named environment variables, never configuration values or databases.
 
@@ -322,11 +322,11 @@ verifies the selected backend without opening or modifying the mirror.
 
 ## Repository resource options
 
-`repository_options` maps exact configured repository names to eleven booleans:
+`[repos."owner/name"]` tables map exact repository names to eleven booleans:
 `issues`, `pull_requests`, `issue_comments`, `pull_request_comments`,
 `pull_request_review_comments`, `labels`, `milestones`, `issue_types`, `fields`,
-`relationships`, and `projects`. Explicit entries default omitted switches to false;
-missing entries preserve legacy global defaults. Inline review comments default
+`relationships`, and `projects`. Presets set omitted switches;
+tables without a preset start from the global `fields`/`projects` defaults. Inline review comments default
 false. `scope` prints effective options; committed status records them. Ticket
 payload metadata remains intact regardless of catalog switches. At least one ticket
 kind must be enabled. Shared owner catalogs use the union of enabled resources.
@@ -507,13 +507,14 @@ Exports prune incomplete attachments and orphaned dictionary entries.
 
 ## TOML configuration
 
-Prefer XDG config.toml, retaining config.json fallback and strict legacy decoding.
-Repository tables replace duplicated inventory/options keys; all, issues and
-pull_requests presets resolve to existing scope booleans with explicit overrides.
-Absent presets preserve legacy global defaults. config show prints compact TOML;
---effective prints every resolved setting. config migrate writes a private TOML
-file atomically without replacing existing files or changing effective scope.
-Unknown keys, malformed types, mixed repository formats and invalid presets fail.
+Read only XDG config.toml or an explicit TOML file; JSON files fail with a TOML
+hint. Repository tables are the only repository form; all, issues and
+pull_requests presets resolve to scope booleans with explicit overrides.
+Absent presets use global defaults. config show prints compact TOML;
+--effective prints every resolved setting. examples/config.toml lists every key
+and a test keeps it complete. Unknown keys, including the removed
+`repositories`/`repository_options`/`pr_comment_overrides`, malformed types and
+invalid presets fail.
 
 ## PR comment retrieval policy
 

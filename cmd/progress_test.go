@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 func TestSyncStatus(t *testing.T) {
@@ -43,8 +45,8 @@ func TestSyncStatus(t *testing.T) {
 			// Unblock before server cleanup even when an assertion stops the test.
 			defer unblock()
 			dir := t.TempDir()
-			configuration, err := json.Marshal(map[string]any{
-				"repositories": []string{"owner/repo"}, "database": filepath.Join(dir, "state.sqlite"),
+			configuration, err := toml.Marshal(map[string]any{
+				"repos": map[string]any{"owner/repo": map[string]any{}}, "database": filepath.Join(dir, "state.sqlite"),
 				"snapshot_dir": filepath.Join(dir, "snapshots"), "api_url": server.URL,
 				"graphql_url": server.URL + "/graphql", "fields": false, "projects": false,
 				"token_env": "GH_MIRROR_TEST_TOKEN",
@@ -52,7 +54,7 @@ func TestSyncStatus(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			path := filepath.Join(dir, "config.json")
+			path := filepath.Join(dir, "config.toml")
 			if err := os.WriteFile(path, configuration, 0600); err != nil {
 				t.Fatal(err)
 			}

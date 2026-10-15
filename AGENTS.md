@@ -13,8 +13,8 @@ GitHub URLs, `#N` with `default_repo` or one configured repository) and keep hid
 `--repo/--number`. Hidden deprecated `get`, `batch`, `candidates` and `--label`
 keep scripts working. CLI query views default to summary. `status` reports `db_path`
 and `pending_sync`; `doctor` exits 1 on failed checks. Completion reads configured
-repositories and local labels without failing when either is missing. `internal/config` loads TOML and legacy JSON
-configuration and resolves XDG paths. `internal/diagnostics` manages stderr and trace
+repositories and local labels without failing when either is missing. `internal/config` loads TOML configuration
+and resolves XDG paths; JSON is rejected. `internal/diagnostics` manages stderr and trace
 logging; the trace file is per user and refuses links. `internal/progress` renders sync activity from explicit collector/client
 callbacks. `internal/github` performs bounded read-only upstream requests and pagination.
 `internal/collect` synchronizes configured resources. `internal/store` owns the SQLite
@@ -22,14 +22,11 @@ schema, transactions, FTS5 index, and queries. `internal/snapshot` publishes and
 immutable databases. `internal/service` shares local queries between REST and MCP.
 `internal/checkpoint` durably stages completed responses outside the mirror transaction
 so interrupted syncs resume across process boundaries.
-`repository_options` resolves eleven boolean resource switches per repository; omitted
-flags in an explicit entry are false. Repositories without entries retain legacy
-global defaults. TOML `repos` tables use all/issues/pull_requests presets with
-boolean overrides, or legacy defaults when the preset is absent. Do not mix the
-table form with legacy repository keys. Prefer config.toml, falling back to an
-existing config.json. config show emits compact/effective TOML; migrate preserves
-resolved scopes and installs a private file atomically without replacing existing
-files. The pure Go go-toml parser is justified by the requested TOML configuration.
+TOML `repos` tables resolve eleven boolean resource switches per repository using
+all/issues/pull_requests presets with boolean overrides, or global defaults when the
+preset is absent. Legacy `repositories`/`repository_options` keys are rejected.
+config show emits compact/effective TOML. Keep examples/config.toml listing every
+setting; `TestExampleConfiguration` enforces it. The pure Go go-toml parser is justified by the requested TOML configuration.
 `scope` prints effective options and committed status records them.
 Filter shared issue/comment listings locally; retain only identity/kind for excluded
 tickets in private `issue_inventory` to avoid fetching each comment parent. Exports

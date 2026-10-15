@@ -8,7 +8,7 @@ import (
 )
 
 func TestConfiguration(t *testing.T) {
-	for _, name := range []string{"XDG defaults", "explicit missing", "valid", "unknown key", "null", "two objects", "invalid repository", "duplicate repository", "unsafe API", "invalid duration", "invalid workers zero", "invalid workers high", "workers override"} {
+	for _, name := range []string{"XDG defaults", "explicit missing", "valid", "unknown key", "malformed", "JSON file", "legacy repositories", "invalid repository", "duplicate repository", "unsafe API", "invalid duration", "invalid workers zero", "invalid workers high", "workers override"} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 			t.Setenv("XDG_DATA_HOME", filepath.Join(dir, "data"))
@@ -17,18 +17,21 @@ func TestConfiguration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.HasPrefix(path, filepath.Join(dir, "config")) {
+			if path != filepath.Join(dir, "config", "gh-mirror", "config.toml") {
 				t.Fatal(path)
 			}
-			file := filepath.Join(dir, "settings.json")
-			body := `{"repositories":["o/r"]}`
+			file := filepath.Join(dir, "settings.toml")
+			body := `[repos."o/r"]`
 			switch name {
 			case "unknown key":
-				body = `{"typo":true}`
-			case "null":
-				body = `null`
-			case "two objects":
-				body = `{} {}`
+				body = `typo = true`
+			case "malformed":
+				body = `workers =`
+			case "JSON file":
+				file = filepath.Join(dir, "settings.json")
+				body = `{"repositories":["o/r"]}`
+			case "legacy repositories":
+				body = `repositories = ["o/r"]`
 			}
 			if name != "XDG defaults" && name != "explicit missing" {
 				if err := os.WriteFile(file, []byte(body), 0600); err != nil {
@@ -37,7 +40,7 @@ func TestConfiguration(t *testing.T) {
 			}
 			c, err := Load(file, name != "XDG defaults")
 			switch name {
-			case "explicit missing", "unknown key", "null", "two objects":
+			case "explicit missing", "unknown key", "malformed", "JSON file", "legacy repositories":
 				if err == nil {
 					t.Fatal("invalid configuration accepted")
 				}

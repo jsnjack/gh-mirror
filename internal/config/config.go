@@ -2,9 +2,9 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -51,26 +51,13 @@ type Config struct {
 	ReconcileInterval  string                                `json:"reconcile_interval"`
 }
 
-// DefaultPath prefers TOML and falls back to an existing legacy JSON configuration.
+// DefaultPath returns the XDG TOML configuration path.
 func DefaultPath() (string, error) {
 	dir, err := os.UserConfigDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve config directory: %w", err)
 	}
-	dir = filepath.Join(dir, "gh-mirror")
-	path := filepath.Join(dir, "config.toml")
-	if _, err := os.Stat(path); err == nil {
-		return path, nil
-	} else if !os.IsNotExist(err) {
-		return "", fmt.Errorf("inspect TOML configuration: %w", err)
-	}
-	legacy := filepath.Join(dir, "config.json")
-	if _, err := os.Stat(legacy); err == nil {
-		return legacy, nil
-	} else if !os.IsNotExist(err) {
-		return "", fmt.Errorf("inspect legacy configuration: %w", err)
-	}
-	return path, nil
+	return filepath.Join(dir, "gh-mirror", "config.toml"), nil
 }
 
 func defaults() (Config, error) {
@@ -87,11 +74,14 @@ func defaults() (Config, error) {
 	return c, nil
 }
 
-// Load reads TOML or legacy JSON; an absent default file uses built-in settings.
+// Load reads a TOML configuration; an absent default file uses built-in settings.
 func Load(path string, explicit bool) (Config, error) {
 	c, err := defaults()
 	if err != nil {
 		return c, err
+	}
+	if strings.EqualFold(filepath.Ext(path), ".json") {
+		return c, fmt.Errorf("JSON configuration is no longer supported; use TOML (see examples/config.toml)")
 	}
 	f, err := os.Open(path)
 	if err != nil {
@@ -100,42 +90,19 @@ func Load(path string, explicit bool) (Config, error) {
 		}
 		return c, fmt.Errorf("open config: %w", err)
 	}
-	var reader io.Reader = f
-	if strings.EqualFold(filepath.Ext(path), ".toml") {
-		raw, err := decodeTOML(f, c)
-		if err != nil {
-			if closeErr := f.Close(); closeErr != nil {
-				return c, fmt.Errorf("decode TOML: %w; close config: %w", err, closeErr)
-			}
-			return c, fmt.Errorf("decode TOML: %w", err)
-		}
-		reader = strings.NewReader(string(raw))
-	}
-	decoder := json.NewDecoder(reader)
-	decoder.DisallowUnknownFields()
-	var raw json.RawMessage
-	decodeErr := decoder.Decode(&raw)
-	if decodeErr == nil {
-		if len(raw) == 0 || raw[0] != '{' {
-			decodeErr = fmt.Errorf("expected JSON configuration object")
-		} else {
-			objectDecoder := json.NewDecoder(strings.NewReader(string(raw)))
-			objectDecoder.DisallowUnknownFields()
-			decodeErr = objectDecoder.Decode(&c)
-		}
-	}
-	if decodeErr == nil {
-		var extra any
-		if err := decoder.Decode(&extra); err != io.EOF {
-			decodeErr = fmt.Errorf("expected one JSON object")
-		}
-	}
+	raw, decodeErr := decodeTOML(f, c)
 	closeErr := f.Close()
 	if decodeErr != nil {
-		return c, fmt.Errorf("decode config: %w", decodeErr)
+		return c, fmt.Errorf("decode TOML: %w", decodeErr)
 	}
 	if closeErr != nil {
 		return c, fmt.Errorf("close config: %w", closeErr)
+	}
+	// The JSON tags map normalized TOML keys onto settings; unknown keys fail.
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&c); err != nil {
+		return c, fmt.Errorf("decode config: %w", err)
 	}
 	return c, nil
 }
@@ -185,7 +152,7 @@ func (c Config) Validate() error {
 			}
 		}
 		if !found {
-			return fmt.Errorf("repository_options key %q must match a configured repository", repo)
+			return fmt.Errorf("repos table %q must match a configured repository", repo)
 		}
 		scope := c.Scope(repo)
 		if !scope.Issues && !scope.PullRequests {

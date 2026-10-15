@@ -4,8 +4,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
+	"regexp"
 	"testing"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 func TestTOMLConfiguration(t *testing.T) {
@@ -22,6 +24,8 @@ func TestTOMLConfiguration(t *testing.T) {
 		{"unknown preset", "[repos.\"o/r\"]\npreset = 'fast'", true},
 		{"invalid boolean", "[repos.\"o/r\"]\nissues = 'true'", true},
 		{"mixed repositories", "repositories = ['o/r']\n[repos.\"o/r\"]", true},
+		{"legacy repository options", "[repository_options.\"o/r\"]\nissues = true", true},
+		{"legacy PR overrides", "[pr_comment_overrides.\"o/r\"]\nexclude_known_ai = false", true},
 		{"duplicate key", "workers = 8\nworkers = 4", true},
 		{"PR policy", "[pr_comments]\nexclude_known_ai = true\nexclude_ai_threads = true\nexclude_authors = ['custom-reviewer']\n[repos.\"o/r\"]\npreset = 'pull_requests'\n[repos.\"o/r\".pr_comments]\nexclude_known_ai = false\nexclude_authors = []", false},
 		{"unknown PR policy", "[pr_comments]\nexclude_robots = true", true},
@@ -98,68 +102,43 @@ func TestTOMLConfiguration(t *testing.T) {
 	}
 }
 
-func TestConfigMigration(t *testing.T) {
-	for _, name := range []string{"scope preserved", "existing destination", "default fallback", "TOML preferred"} {
-		t.Run(name, func(t *testing.T) {
-			dir := t.TempDir()
-			t.Setenv("XDG_CONFIG_HOME", dir)
-			dir = filepath.Join(dir, "gh-mirror")
-			if err := os.Mkdir(dir, 0700); err != nil {
-				t.Fatal(err)
-			}
-			source, target := filepath.Join(dir, "config.json"), filepath.Join(dir, "config.toml")
-			body := `{"repositories":["o/r","o/code"],"repository_options":{"o/r":{"issues":true,"issue_comments":true},"o/code":{"pull_requests":true,"pull_request_comments":true,"pull_request_review_comments":true}}}`
-			if err := os.WriteFile(source, []byte(body), 0600); err != nil {
-				t.Fatal(err)
-			}
-			if name == "existing destination" {
-				if err := os.WriteFile(target, []byte("workers = 8"), 0600); err != nil {
-					t.Fatal(err)
+func TestExampleConfiguration(t *testing.T) {
+	t.Run("full example loads and lists every setting", func(t *testing.T) {
+		path := filepath.Join("..", "..", "examples", "config.toml")
+		c, err := Load(path, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		effective, err := c.TOML(true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var all map[string]any
+		if err := toml.Unmarshal(effective, &all); err != nil {
+			t.Fatal(err)
+		}
+		keys := []string{"preset", "runtime", "device", "batch_size", "role", "label", "prefix", "value", "aliases", "description"}
+		for _, table := range []map[string]any{all, all["pr_comments"].(map[string]any), all["repos"].(map[string]any)["owner/repository"].(map[string]any)} {
+			for key, value := range table {
+				if _, nested := value.(map[string]any); !nested {
+					keys = append(keys, key)
 				}
-				if err := Migrate(source, target); err == nil {
-					t.Fatal("overwrote destination")
-				}
-				raw, err := os.ReadFile(target)
-				if err != nil || string(raw) != "workers = 8" {
-					t.Fatal(string(raw), err)
-				}
-				return
 			}
-			if name == "default fallback" {
-				path, err := DefaultPath()
-				if err != nil || path != source {
-					t.Fatal(path, err)
-				}
-				return
+		}
+		// Commented keys count: their defaults depend on the host.
+		for _, key := range keys {
+			if !regexp.MustCompile(`(?m)^#? ?` + key + ` = `).Match(raw) {
+				t.Errorf("example omits %q", key)
 			}
-			if err := Migrate(source, target); err != nil {
-				t.Fatal(err)
-			}
-			before, err := Load(source, true)
-			if err != nil {
-				t.Fatal(err)
-			}
-			after, err := Load(target, true)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(before.Scopes(), after.Scopes()) {
-				t.Fatal(before.Scopes(), after.Scopes())
-			}
-			info, err := os.Stat(target)
-			if err != nil || info.Mode().Perm() != 0600 {
-				t.Fatal(info, err)
-			}
-			path, err := DefaultPath()
-			if err != nil || path != target {
-				t.Fatal(path, err)
-			}
-			raw, err := os.ReadFile(source)
-			if err != nil || !strings.Contains(string(raw), "repository_options") {
-				t.Fatal("source changed", err)
-			}
-		})
-	}
+		}
+	})
 }
 
 func TestUnconfiguredCommentPolicy(t *testing.T) {

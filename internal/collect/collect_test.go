@@ -214,7 +214,7 @@ func setup(t *testing.T, count int) (*store.Store, config.Config, *fixture, time
 	server := httptest.NewServer(f)
 	f.url = server.URL
 	t.Cleanup(server.Close)
-	c, err := config.Load(filepath.Join(t.TempDir(), "missing.json"), false)
+	c, err := config.Load(filepath.Join(t.TempDir(), "missing.toml"), false)
 	if err != nil {
 		t.Fatal(err)
 	}
