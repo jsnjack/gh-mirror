@@ -49,16 +49,25 @@ gh-mirror doctor
 
 ## Install
 
-Download an archive from [GitHub releases](https://github.com/jsnjack/gh-mirror/releases).
+Install and update with [grm](https://github.com/jsnjack/grm):
+
+```sh
+grm install jsnjack/gh-mirror   # installs /usr/local/bin/gh-mirror
+grm update                      # picks up new releases
+```
+
+Archives are also on [GitHub releases](https://github.com/jsnjack/gh-mirror/releases).
 Builds exist for Linux and macOS on amd64 and arm64. Each archive holds the executable
 and this README; `checksums.txt` lists SHA-256 sums. Go is not needed at runtime.
 
 To build from source, install Go 1.26.4 or newer and `monova`:
 
 ```sh
-make build                                  # writes bin/gh-mirror, CGO disabled
-install -m 755 bin/gh-mirror ~/.local/bin/gh-mirror
+make build   # writes bin/gh-mirror, CGO disabled; run it as ./bin/gh-mirror
 ```
+
+Don't copy a source build into a directory that comes earlier in `PATH` than grm's
+install. It hides the grm version.
 
 Install shell completion. It suggests repositories, local label names, catalog kinds
 and fixed flag values:
