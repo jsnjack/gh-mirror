@@ -72,7 +72,7 @@ func TestResponsiveProgress(t *testing.T) {
 
 func TestSyncSeparatesCPUWorkerProgress(t *testing.T) {
 	var output bytes.Buffer
-	display, err := New(&output, false)
+	display, err := New(&output, false, ColorAuto)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func TestDisplay(t *testing.T) {
 			if name == "terminal" {
 				display, err = newDisplay(writer, true)
 			} else {
-				display, err = New(writer, true)
+				display, err = New(writer, true, ColorAuto)
 			}
 			if name == "output failure" {
 				if !errors.Is(err, io.ErrClosedPipe) {
@@ -181,7 +181,7 @@ func TestDisplay(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				nullDisplay, err := New(f, true)
+				nullDisplay, err := New(f, true, ColorAuto)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -304,7 +304,7 @@ func (b *lockedBuffer) String() string {
 
 func TestIndexProgress(t *testing.T) {
 	var output bytes.Buffer
-	display, err := NewOperation(&output, false, "index")
+	display, err := NewOperation(&output, false, "index", ColorAuto)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -155,6 +155,9 @@ Wrap terminal rows to the detected width without truncating metrics. Keep GitHub
 quota and resume counters on separate rows and track physical rows when clearing
 frames. Known totals show percentage, phase throughput, and a phase ETA after
 measurable progress; unknown totals and retry waits do not show an ETA.
+Writers tally committed ticket/comment additions, updates and removals per repository
+(transfers count as removal plus addition); sync reports them in `changes` and the
+final frame. `--color` styles rows after wrapping and honours NO_COLOR.
 
 CI runs format, vet, build, race tests and lint on pushes and pull requests.
 `make release` runs locally: it requires a clean, pushed HEAD, packages CGO-free

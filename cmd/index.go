@@ -16,6 +16,7 @@ import (
 func addIndex() {
 	var workers int
 	var quiet bool
+	var colorFlag string
 	command := &cobra.Command{Use: "index", GroupID: groupCollect, Short: "Build or resume the offline semantic index without GitHub requests", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) (runErr error) {
 		cpuWorkers, err := inferenceWorkers(command, "workers", workers)
 		if err != nil {
@@ -28,7 +29,11 @@ func addIndex() {
 		var report progress.Reporter
 		if !quiet {
 			var err error
-			display, err = progress.NewOperation(command.ErrOrStderr(), !debug, "index")
+			color, err := progress.ParseColor(colorFlag)
+			if err != nil {
+				return err
+			}
+			display, err = progress.NewOperation(command.ErrOrStderr(), !debug, "index", color)
 			if err != nil {
 				return err
 			}
@@ -61,6 +66,7 @@ func addIndex() {
 	}}
 	command.Flags().IntVar(&workers, "workers", 0, "Parallel CPU inference workers (1–16; defaults to configuration)")
 	command.Flags().BoolVar(&quiet, "quiet", false, "Suppress indexing progress")
+	addColorFlag(command, &colorFlag)
 	addEmbeddingFlags(command)
 	root.AddCommand(command)
 	var check bool

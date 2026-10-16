@@ -196,7 +196,10 @@ func (s *Store) Close() error {
 }
 
 // Writer performs collection changes within one immediate transaction.
-type Writer struct{ tx *sql.Tx }
+type Writer struct {
+	tx      *sql.Tx
+	changes map[string]*Changes
+}
 
 // Metadata reads an optional collector setting within the current transaction.
 func (w *Writer) Metadata(ctx context.Context, key string) (string, error) {
@@ -297,23 +300,41 @@ func (w *Writer) PutIssue(ctx context.Context, repo string, raw json.RawMessage)
 	if err != nil || number < 1 || ref.NodeID == "" || Text(o, "updated_at") == "" || Text(o, "html_url") == "" {
 		return ref, fmt.Errorf("incomplete upstream issue in %s", repo)
 	}
-	rows, err := w.tx.QueryContext(ctx, `SELECT c.payload FROM comments c JOIN issues i ON i.repo=c.repo AND i.number=c.number WHERE i.node_id=? AND (i.repo<>? OR i.number<>?)`, ref.NodeID, repo, number)
+	rows, err := w.tx.QueryContext(ctx, `SELECT c.repo,c.payload FROM comments c JOIN issues i ON i.repo=c.repo AND i.number=c.number WHERE i.node_id=? AND (i.repo<>? OR i.number<>?)`, ref.NodeID, repo, number)
 	if err != nil {
 		return ref, fmt.Errorf("read transferred comments: %w", err)
 	}
 	transferred := []json.RawMessage{}
 	for rows.Next() {
+		var source string
 		var raw json.RawMessage
-		if err := rows.Scan((*[]byte)(&raw)); err != nil {
+		if err := rows.Scan(&source, (*[]byte)(&raw)); err != nil {
 			return ref, finishRows(rows, err)
 		}
 		transferred = append(transferred, raw)
+		w.changed(source).Comments.Removed++
 	}
 	if err := finishRows(rows, rows.Err()); err != nil {
 		return ref, fmt.Errorf("read transferred comment inventory: %w", err)
 	}
-	if _, err := w.tx.ExecContext(ctx, "DELETE FROM issues WHERE node_id=? AND (repo<>? OR number<>?)", ref.NodeID, repo, number); err != nil {
+	// RETURNING counts relocated tickets without another scan; node_id has no index.
+	rows, err = w.tx.QueryContext(ctx, "DELETE FROM issues WHERE node_id=? AND (repo<>? OR number<>?) RETURNING repo,kind", ref.NodeID, repo, number)
+	if err != nil {
 		return ref, fmt.Errorf("relocate transferred issue: %w", err)
+	}
+	for rows.Next() {
+		var source, kind string
+		if err := rows.Scan(&source, &kind); err != nil {
+			return ref, finishRows(rows, err)
+		}
+		w.changed(source).ticket(kind).Removed++
+	}
+	if err := finishRows(rows, rows.Err()); err != nil {
+		return ref, fmt.Errorf("relocate transferred issue: %w", err)
+	}
+	existed, err := w.exists(ctx, "SELECT 1 FROM issues WHERE repo=? AND number=?", repo, number)
+	if err != nil {
+		return ref, err
 	}
 	result, err := w.tx.ExecContext(ctx, `INSERT INTO issues(repo,number,node_id,kind,title,body,state,updated_at,url,payload) VALUES(?,?,?,?,?,?,?,?,?,?)
  ON CONFLICT(repo,number) DO UPDATE SET node_id=excluded.node_id,kind=excluded.kind,title=excluded.title,body=excluded.body,state=excluded.state,updated_at=excluded.updated_at,url=excluded.url,payload=excluded.payload
@@ -327,6 +348,11 @@ func (w *Writer) PutIssue(ctx context.Context, repo string, raw json.RawMessage)
 	}
 	ref.Changed = n > 0
 	if n > 0 {
+		if existed {
+			w.changed(repo).ticket(ref.Kind).Updated++
+		} else {
+			w.changed(repo).ticket(ref.Kind).Added++
+		}
 		if err := w.document(ctx, "issue:"+repo+":"+strconv.Itoa(number), repo, number, Text(o, "html_url"), Text(o, "title"), Text(o, "body")); err != nil {
 			return ref, err
 		}
@@ -362,6 +388,10 @@ func (w *Writer) PutComment(ctx context.Context, repo string, number int, raw js
 	if Text(o, "pull_request_url") != "" {
 		id = "review:" + id
 	}
+	existed, err := w.exists(ctx, "SELECT 1 FROM comments WHERE id=?", id)
+	if err != nil {
+		return err
+	}
 	result, err := w.tx.ExecContext(ctx, `INSERT INTO comments(id,repo,number,body,updated_at,url,payload) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET repo=excluded.repo,number=excluded.number,body=excluded.body,updated_at=excluded.updated_at,url=excluded.url,payload=excluded.payload WHERE excluded.updated_at>comments.updated_at OR (excluded.updated_at=comments.updated_at AND (excluded.payload<>comments.payload OR excluded.repo<>comments.repo OR excluded.number<>comments.number))`, id, repo, number, Text(o, "body"), Text(o, "updated_at"), Text(o, "html_url"), string(raw))
 	if err != nil {
 		return fmt.Errorf("upsert comment %s: %w", id, err)
@@ -371,6 +401,11 @@ func (w *Writer) PutComment(ctx context.Context, repo string, number int, raw js
 		return fmt.Errorf("read comment update count: %w", err)
 	}
 	if n > 0 {
+		if existed {
+			w.changed(repo).Comments.Updated++
+		} else {
+			w.changed(repo).Comments.Added++
+		}
 		return w.document(ctx, "comment:"+id, repo, number, Text(o, "html_url"), "", Text(o, "body"))
 	}
 	return nil
@@ -428,6 +463,9 @@ func (w *Writer) Reconcile(ctx context.Context, repo string, issues map[int]bool
 		return err
 	}
 	for _, n := range removed {
+		if err := w.countRemoval(ctx, "repo=? AND number=?", repo, n); err != nil {
+			return err
+		}
 		if _, err := w.tx.ExecContext(ctx, "DELETE FROM issues WHERE repo=? AND number=?", repo, n); err != nil {
 			return fmt.Errorf("remove absent issue: %w", err)
 		}
@@ -453,6 +491,7 @@ func (w *Writer) Reconcile(ctx context.Context, repo string, issues map[int]bool
 		if _, err := w.tx.ExecContext(ctx, "DELETE FROM comments WHERE id=?", id); err != nil {
 			return fmt.Errorf("remove absent comment: %w", err)
 		}
+		w.changed(repo).Comments.Removed++
 	}
 	return nil
 }

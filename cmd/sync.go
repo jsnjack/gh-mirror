@@ -59,3 +59,9 @@ func syncStaleAfter(command *cobra.Command, ifStale bool, flag time.Duration) (t
 	}
 	return configured, nil
 }
+
+// addColorFlag registers --color for commands that render progress on stderr.
+func addColorFlag(command *cobra.Command, value *string) {
+	command.Flags().StringVar(value, "color", "auto", "Colour progress: auto (terminal without NO_COLOR), always or never")
+	registerCompletion(command, "color", "auto", "always", "never")
+}

@@ -196,7 +196,7 @@ func (c *Client) attempt(ctx context.Context, method, target string, payload []b
 		return response{}, fmt.Errorf("GitHub response exceeds %d bytes", maxBody)
 	}
 	slog.DebugContext(ctx, "GitHub response", "method", method, "status", resp.StatusCode, "request", number, "elapsed", time.Since(started))
-	c.Report(progress.Event{Remaining: resp.Header.Get("X-RateLimit-Remaining"), Cached: resp.StatusCode == http.StatusNotModified})
+	c.Report(progress.Event{Remaining: resp.Header.Get("X-RateLimit-Remaining"), QuotaLimit: resp.Header.Get("X-RateLimit-Limit"), Cached: resp.StatusCode == http.StatusNotModified})
 	slog.Log(ctx, diagnostics.TraceLevel, "GitHub request metadata", "path", req.URL.Path, "bytes", len(body), "remaining", resp.Header.Get("X-RateLimit-Remaining"))
 	if (resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNotModified) && resp.Header.Get("X-RateLimit-Remaining") == "0" {
 		wait, err := c.retryDelay(resp.Header, 0)

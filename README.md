@@ -514,14 +514,28 @@ phase, pages, records, request budget, cache hits and remaining quota:
 ```text
 gh-mirror sync | elapsed 12s
 ⠹ Hydrating issue metadata
-[======--------------] 100/300 (33%) | 25.0/s | phase ETA 8s
-Received: 300 issues, 840 comments | repository 1/1
-workers 4/4 active | API: 19/3000 requests | 0 cached
-GitHub remaining: 4981
-Resume: 8 resumed responses | 10 saved before this run
+  ━━━━━━────────────── 100/300 (33%) | 25.0/s | phase ETA 8s
+  Received: 300 issues, 840 comments | repository 1/1
+  API: 19/3000 requests | 0 cached | GitHub workers 4/4 active
+  GitHub remaining: 4981/5000
+  Resume: 8 resumed responses | 10 saved before this run
 ```
 
-Redirected stderr and `--debug` print plain status lines instead. `--quiet` hides progress.
+`cached` counts 304 Not Modified answers. GitHub does not charge quota for them. A
+finished sync lists committed changes per repository, which the JSON result also
+reports under `changes`:
+
+```text
+✓ Sync complete | elapsed 2m41s
+  surfly/it: issues +3 ~41 -1 | comments +88 -2
+  surfly/cobro: pull requests +12 ~30 | comments +240
+  + added, ~ updated, - removed
+```
+
+Colours mark the phase, bar, retry waits, quota below 25% and 10%, and the outcome.
+`--color auto` (default) colours terminals unless `NO_COLOR` is set; `always` and
+`never` override it. Redirected stderr and `--debug` print plain status lines
+instead. `--quiet` hides progress.
 
 ### Scheduling
 

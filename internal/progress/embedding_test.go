@@ -10,7 +10,7 @@ func TestEmbeddingRuntimeProgress(t *testing.T) {
 	for _, interactive := range []bool{false, true} {
 		t.Run(map[bool]string{false: "plain", true: "terminal"}[interactive], func(t *testing.T) {
 			var output bytes.Buffer
-			d, err := startDisplay(&output, interactive, "index")
+			d, err := startDisplay(&output, interactive, "index", false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -28,7 +28,7 @@ func TestEmbeddingRuntimeProgress(t *testing.T) {
 		})
 	}
 	var output bytes.Buffer
-	d, err := startDisplay(&output, false, "index")
+	d, err := startDisplay(&output, false, "index", false)
 	if err != nil {
 		t.Fatal(err)
 	}

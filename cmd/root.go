@@ -179,6 +179,7 @@ func closeStore(ctx context.Context, db *store.Store) {
 }
 func addCollection() {
 	var full, publish, quiet, restart, index, ifStale bool
+	var colorFlag string
 	var workers, indexWorkers int
 	var staleAfterFlag time.Duration
 	command := &cobra.Command{Use: "sync", GroupID: groupCollect, Short: "Collect configured repositories from GitHub, then index and publish", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) (runErr error) {
@@ -230,7 +231,11 @@ func addCollection() {
 		}
 		if !quiet {
 			var err error
-			display, err = progress.New(command.ErrOrStderr(), !debug)
+			color, err := progress.ParseColor(colorFlag)
+			if err != nil {
+				return err
+			}
+			display, err = progress.New(command.ErrOrStderr(), !debug, color)
 			if err != nil {
 				return fmt.Errorf("start sync progress: %w", err)
 			}
@@ -300,6 +305,7 @@ func addCollection() {
 	command.Flags().BoolVar(&full, "full", false, "Force complete inventories and enrichment")
 	command.Flags().BoolVar(&publish, "publish", true, "Publish a standalone snapshot after collection")
 	command.Flags().BoolVar(&quiet, "quiet", false, "Suppress sync progress; retain results and errors")
+	addColorFlag(command, &colorFlag)
 	command.Flags().BoolVar(&ifStale, "if-stale", false, "Collect only when the last collection is older than stale_after and no other sync is running")
 	command.Flags().DurationVar(&staleAfterFlag, "stale-after", 0, "Override stale_after for --if-stale (default: configuration, 1h)")
 	addEmbeddingFlags(command)

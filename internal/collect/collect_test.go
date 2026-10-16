@@ -509,5 +509,27 @@ func TestSyncProgress(t *testing.T) {
 		if phase != "Committing mirror" || result.Status.Generation == "" {
 			t.Fatal("collection did not reach the commit phase", phase, result)
 		}
+		var reported []progress.RepositoryChanges
+		for _, event := range events {
+			if event.Changes != nil {
+				reported = event.Changes
+			}
+		}
+		added := 0
+		for _, changes := range result.Changes {
+			added += changes.Issues.Added + changes.PullRequests.Added
+		}
+		if len(reported) != len(c.Repositories) || len(result.Changes) != len(c.Repositories) || added != 251 {
+			t.Fatal("committed changes were not reported per repository", reported, result.Changes)
+		}
+		again, err := Sync(context.Background(), db, c, Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for repo, changes := range again.Changes {
+			if changes != (store.Changes{}) {
+				t.Fatal("an unchanged delta reported changes", repo, changes)
+			}
+		}
 	})
 }

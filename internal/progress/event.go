@@ -35,6 +35,7 @@ type Event struct {
 	Requests         int
 	Limit            int
 	Remaining        string
+	QuotaLimit       string
 	Cached           bool
 	Wait             time.Duration
 	WaitUntil        time.Time
@@ -48,6 +49,17 @@ type Event struct {
 	EmbeddingRate    float64
 	BatchSize        int
 	Listener         string
+	// Changes arrives once, after the collection transaction commits.
+	Changes []RepositoryChanges
+}
+
+// Tally counts records one committed sync inserted, changed or removed.
+type Tally struct{ Added, Updated, Removed int }
+
+// RepositoryChanges reports one repository's committed ticket and comment writes.
+type RepositoryChanges struct {
+	Repo                           string
+	Issues, PullRequests, Comments Tally
 }
 
 // Reporter receives activity synchronously; a nil reporter disables reporting.

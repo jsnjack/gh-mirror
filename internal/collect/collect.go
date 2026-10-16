@@ -29,6 +29,8 @@ type Result struct {
 	Status   store.Status `json:"status"`
 	Requests int          `json:"requests"`
 	Resumed  int          `json:"resumed_responses"`
+	// Changes lists every configured repository, including those with nothing changed.
+	Changes map[string]store.Changes `json:"changes"`
 }
 
 // Options controls full collection, pending work, and activity reporting.
@@ -464,6 +466,11 @@ func syncVersion(ctx context.Context, db *store.Store, c config.Config, options 
 			}
 		}
 		result.Requests, result.Resumed = client.Requests(), client.Resumed()
+		changed := w.Changes()
+		result.Changes = make(map[string]store.Changes, len(repos))
+		for _, repo := range repos {
+			result.Changes[repo] = changed[repo]
+		}
 		result.Status, err = w.Status(ctx)
 		if err != nil {
 			return fmt.Errorf("read collected mirror status: %w", err)
@@ -483,6 +490,7 @@ func syncVersion(ctx context.Context, db *store.Store, c config.Config, options 
 	if err != nil {
 		return result, fmt.Errorf("synchronize GitHub mirror: %w", err)
 	}
+	report.Send(progress.Event{Changes: committedChanges(repos, result.Changes)})
 	// Cleanup takes the collector lock again: another process may already own a newer session.
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 	defer cancel()
@@ -663,4 +671,17 @@ func projects(ctx context.Context, c *github.Client, w *store.Writer, owner stri
 		return fmt.Errorf("store project catalog: %w", err)
 	}
 	return nil
+}
+
+// committedChanges orders tallies by repository for the completion summary.
+func committedChanges(repos []string, changes map[string]store.Changes) []progress.RepositoryChanges {
+	tally := func(c store.ChangeCount) progress.Tally {
+		return progress.Tally{Added: c.Added, Updated: c.Updated, Removed: c.Removed}
+	}
+	out := make([]progress.RepositoryChanges, 0, len(repos))
+	for _, repo := range repos {
+		c := changes[repo]
+		out = append(out, progress.RepositoryChanges{Repo: repo, Issues: tally(c.Issues), PullRequests: tally(c.PullRequests), Comments: tally(c.Comments)})
+	}
+	return out
 }

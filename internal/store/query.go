@@ -180,6 +180,9 @@ func (w *Writer) ResetScope(ctx context.Context, repos []string, resetCatalog, r
 		return fmt.Errorf("read old scope: %w", err)
 	}
 	if resetData {
+		if err := w.countRemoval(ctx, "1"); err != nil {
+			return err
+		}
 		for _, query := range []string{"DELETE FROM issues", "DELETE FROM sync_status", "DELETE FROM issue_inventory"} {
 			if _, err := w.tx.ExecContext(ctx, query); err != nil {
 				return fmt.Errorf("reset upstream records: %w", err)
@@ -199,6 +202,9 @@ func (w *Writer) ResetScope(ctx context.Context, repos []string, resetCatalog, r
 			}
 		}
 		if !found {
+			if err := w.countRemoval(ctx, "repo=?", r); err != nil {
+				return err
+			}
 			for _, query := range []string{"DELETE FROM issues WHERE repo=?", "DELETE FROM sync_status WHERE repo=?", "DELETE FROM issue_inventory WHERE repo=?"} {
 				if _, err := w.tx.ExecContext(ctx, query, r); err != nil {
 					return fmt.Errorf("remove old scope: %w", err)

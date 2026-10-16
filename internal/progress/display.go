@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,10 @@ const (
 	plainInterval   = 5 * time.Second
 	barWidth        = 20
 	lineWidth       = 78
+	indent          = "  "
+	barFilled       = '━'
+	barEmpty        = '─'
+	noChanges       = "no changes"
 )
 
 var frames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -50,29 +55,32 @@ type Display struct {
 	backend, device, fallback, listener string
 	embeddingVectors, batchSize         int
 	embeddingRate                       float64
+	color                               bool
+	quotaLimit                          string
+	changes                             []RepositoryChanges
 }
 
 // New starts immediate status reporting and animates only a terminal writer.
-func New(writer io.Writer, animate bool) (*Display, error) {
-	return NewOperation(writer, animate, "sync")
+func New(writer io.Writer, animate bool, color ColorMode) (*Display, error) {
+	return NewOperation(writer, animate, "sync", color)
 }
 
 // NewOperation reports collection or standalone offline indexing activity.
-func NewOperation(writer io.Writer, animate bool, operation string) (*Display, error) {
+func NewOperation(writer io.Writer, animate bool, operation string, color ColorMode) (*Display, error) {
 	interactive := false
 	if fd, ok := writer.(interface{ Fd() uintptr }); ok && animate && os.Getenv("TERM") != "dumb" {
 		interactive = isatty.IsTerminal(fd.Fd()) || isatty.IsCygwinTerminal(fd.Fd())
 	}
-	return startDisplay(writer, interactive, operation)
+	return startDisplay(writer, interactive, operation, color.enabled(interactive))
 }
 
 func newDisplay(writer io.Writer, interactive bool) (*Display, error) {
-	return startDisplay(writer, interactive, "sync")
+	return startDisplay(writer, interactive, "sync", false)
 }
-func startDisplay(writer io.Writer, interactive bool, operation string) (*Display, error) {
+func startDisplay(writer io.Writer, interactive bool, operation string, color bool) (*Display, error) {
 	now := time.Now()
 	d := &Display{writer: writer, interactive: interactive, started: now, phaseStarted: now, columns: func() int { return terminalWidth(writer) }, phase: "Opening database", received: map[string]int{}, stop: make(chan struct{}), stopped: make(chan struct{})}
-	d.operation = operation
+	d.operation, d.color = operation, color
 	d.render(time.Now(), "")
 	if d.err != nil {
 		return nil, d.err
@@ -164,7 +172,10 @@ func (d *Display) Report(event Event) {
 		d.limit = event.Limit
 	}
 	if event.Remaining != "" {
-		d.remaining = clean(event.Remaining)
+		d.remaining, d.quotaLimit = clean(event.Remaining), clean(event.QuotaLimit)
+	}
+	if event.Changes != nil {
+		d.changes = event.Changes
 	}
 	if event.Cached {
 		d.cached++
@@ -231,7 +242,11 @@ func (d *Display) render(now time.Time, status string) {
 	if d.total > 0 {
 		done := min(d.done, d.total)
 		filled := done * barWidth / d.total
-		bounded = fmt.Sprintf("[%s%s] %d/%d (%d%%)", strings.Repeat("=", filled), strings.Repeat("-", barWidth-filled), done, d.total, done*100/d.total)
+		bar := "[" + strings.Repeat("=", filled) + strings.Repeat("-", barWidth-filled) + "]"
+		if d.interactive {
+			bar = strings.Repeat(string(barFilled), filled) + strings.Repeat(string(barEmpty), barWidth-filled)
+		}
+		bounded = fmt.Sprintf("%s %d/%d (%d%%)", bar, done, d.total, done*100/d.total)
 		if seconds := now.Sub(d.phaseStarted).Seconds(); seconds >= 1 && done > 0 {
 			rate := float64(done) / seconds
 			bounded += fmt.Sprintf(" | %.1f/s", rate)
@@ -259,7 +274,7 @@ func (d *Display) render(now time.Time, status string) {
 		if kind == "" {
 			kind = GitHubWorkers
 		}
-		requests = fmt.Sprintf("%s workers %d/%d active | ", kind, d.active, d.workers) + requests
+		requests += fmt.Sprintf(" | %s workers %d/%d active", kind, d.active, d.workers)
 	}
 	resume := ""
 	if d.saved > 0 || d.resumed > 0 {
@@ -271,6 +286,9 @@ func (d *Display) render(now time.Time, status string) {
 	quota := "GitHub remaining: not reported yet"
 	if d.remaining != "" {
 		quota = "GitHub remaining: " + d.remaining
+		if d.quotaLimit != "" {
+			quota += "/" + d.quotaLimit
+		}
 	}
 	if d.operation == "index" {
 		counters = ""
@@ -295,27 +313,43 @@ func (d *Display) render(now time.Time, status string) {
 			listener = "Listening on " + d.listener + " (local embedding runtime)"
 		}
 	}
+	changes := d.changeRows(status)
 	var text string
 	if d.interactive {
 		var b strings.Builder
 		if d.lines > 0 {
 			fmt.Fprintf(&b, "\x1b[%dA", d.lines)
 		}
-		header := fmt.Sprintf("gh-mirror %s | elapsed %s", d.operation, elapsed)
+		header := row{fmt.Sprintf("gh-mirror %s | elapsed %s", d.operation, elapsed), toneHeader}
+		current := row{activity, toneActivity}
 		if status != "" {
-			header = status + " | elapsed " + elapsed.String()
-			activity = "Last phase: " + activity
+			icons := map[tone]string{toneSuccess: "✓ ", toneFailure: "✗ ", toneCancelled: "■ "}
+			t := statusTone(status)
+			header = row{icons[t] + status + " | elapsed " + elapsed.String(), t}
+			current = row{"Last phase: " + activity, toneLabel}
 		} else {
-			activity = frames[d.frame%len(frames)] + " " + activity
+			current.text = frames[d.frame%len(frames)] + " " + current.text
 			d.frame++
 		}
-		rows := []string{header, activity, bounded, wait, counters, requests, quota, resume, embeddings, fallback, listener}
+		rows := append([]row{header}, changes...)
+		rows = append(rows, current, row{bounded, toneBar}, row{wait, toneWarn}, row{counters, toneLabel}, row{requests, toneLabel}, row{quota, quotaTone(d.remaining, d.quotaLimit)}, row{resume, toneLabel}, row{embeddings, toneLabel}, row{fallback, toneWarn}, row{listener, toneMuted})
 		var lines []string
 		// Leave the final column unused to avoid an untracked terminal wrap.
 		width := max(1, d.columns()-1)
-		for _, row := range rows {
-			if row != "" {
-				lines = append(lines, wrap(row, width)...)
+		for index, r := range rows {
+			if r.text == "" {
+				continue
+			}
+			// Detail rows sit indented under the header and the current phase.
+			prefix := ""
+			if index > 0 && r.tone != toneActivity {
+				prefix = indent
+			}
+			for at, line := range wrap(r.text, max(1, width-len(prefix))) {
+				if d.color {
+					line = styleLine(r.tone, line, at == 0)
+				}
+				lines = append(lines, prefix+line)
 			}
 		}
 		for index := range max(d.lines, len(lines)) {
@@ -350,12 +384,70 @@ func (d *Display) render(now time.Time, status string) {
 				text += " | " + detail
 			}
 		}
+		for _, r := range changes {
+			if r.tone == toneChanges {
+				text += " | changed " + r.text
+			}
+		}
+		if d.color && status != "" {
+			text = styleLine(statusTone(status), text, true)
+		}
 		text += "\n"
 	}
 	if _, err := io.WriteString(d.writer, text); err != nil {
 		d.err = fmt.Errorf("write sync progress: %w", err)
 	}
 	d.printed = now
+}
+
+// statusTone colours a completion status by its outcome.
+func statusTone(status string) tone {
+	switch {
+	case strings.Contains(status, "cancelled"):
+		return toneCancelled
+	case strings.Contains(status, "failed"):
+		return toneFailure
+	}
+	return toneSuccess
+}
+
+// changeRows summarises committed changes per repository once the sync finishes.
+func (d *Display) changeRows(status string) []row {
+	if status == "" || d.changes == nil {
+		return nil
+	}
+	rows := make([]row, 0, len(d.changes)+1)
+	for _, c := range d.changes {
+		var parts []string
+		for _, kind := range []struct {
+			name  string
+			tally Tally
+		}{{"issues", c.Issues}, {"pull requests", c.PullRequests}, {"comments", c.Comments}} {
+			if part := tallyText(kind.tally); part != "" {
+				parts = append(parts, kind.name+" "+part)
+			}
+		}
+		summary := noChanges
+		if len(parts) > 0 {
+			summary = strings.Join(parts, " | ")
+		}
+		rows = append(rows, row{clean(c.Repo) + ": " + summary, toneChanges})
+	}
+	return append(rows, row{"+ added, ~ updated, - removed", toneMuted})
+}
+
+// tallyText renders non-zero counts as +added ~updated -removed.
+func tallyText(t Tally) string {
+	var parts []string
+	for _, count := range []struct {
+		sign string
+		n    int
+	}{{"+", t.Added}, {"~", t.Updated}, {"-", t.Removed}} {
+		if count.n > 0 {
+			parts = append(parts, count.sign+strconv.Itoa(count.n))
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 func clean(value string) string {

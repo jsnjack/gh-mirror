@@ -196,7 +196,11 @@ and a phase ETA after measurable progress. Unknown totals and retry waits have n
 ETA; listings with unknown totals have a spinner. Explicit callbacks carry activity from the collector and client
 without additional upstream calls. Status refreshes during slow requests, retries,
 and snapshot publication. Nonterminal/debug output uses plain phase updates and
-periodic heartbeats. `sync --quiet` disables progress. CLI --format auto chooses
+periodic heartbeats. `sync --quiet` disables progress. A finished sync lists
+committed ticket and comment additions, updates and removals per configured
+repository; the JSON result reports the same tallies under `changes`. `--color`
+auto styles terminal frames unless NO_COLOR is set; always/never override it.
+Styling is applied after wrapping, so escape codes never change row widths. CLI --format auto chooses
 readable text for terminal stdout and JSON for pipes/files, with explicit json/text
 overrides. Text queries show ranked tickets, labels, bounded evidence, warnings and
 continuation; evaluations show a metrics table. Preserve complete JSON contracts,
