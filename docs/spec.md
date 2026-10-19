@@ -21,7 +21,7 @@ Help groups the CLI commands by task. Query: `search`, `list`, `show`, `comments
 `batch` and `candidates` keep earlier scripts working. Ticket commands accept REF as `owner/repo#N`, a
 GitHub issue/pull URL, or `#N`/`N` with `default_repo` or a single configured repository. Embedding
 flags appear only on commands that encode text. All commands inherit `--config`/`-c`, `--debug`/`-d`,
-`--format`, `--db` and `--trace`. The root supports `--version`. Configuration is TOML under the XDG
+`--format`, `--db`, `--trace`, `--ensure-fresh` and `--stale-after`. The root supports `--version`. Configuration is TOML under the XDG
 configuration directory. Durable data uses the XDG data directory. Tokens are
 read from named environment variables, never configuration values or databases.
 
@@ -158,18 +158,26 @@ does not invalidate a session; incompatible settings replace pending work.
 hold the live database's collector lock; cleanup verifies session ownership after
 the mirror commit. Checkpoints are excluded from snapshots and removed after success.
 
-`sync --if-stale` collects only when the committed `collected_at` is at least
-`stale_after` old (default 1h; `--stale-after` overrides it and requires `--if-stale`;
-both must be positive). `doctor` computes collection age the same way. A fresh mirror
-exits 0 after a read-only check: no token, GitHub request, index, publish or write.
+`--ensure-fresh` syncs before a command when the committed `collected_at` is at
+least `stale_after` old (default 1h; `--stale-after` overrides it, requires an enabled
+check and must be positive). `ensure_fresh = true` enables it for queries, `status`
+and hidden query aliases; `--ensure-fresh=false` disables it per call. `serve` and
+`mcp` sync once at startup only with the explicit flag. `sync --ensure-fresh` skips
+instead of syncing first; `ensure_fresh` never affects `sync`. Other commands reject
+the flag. `doctor` computes collection age the same way. A fresh mirror continues
+after a read-only check: no token, GitHub request, index, publish or write.
 A collector is running when the mirror write lock is held and a checkpoint session
-exists; a non-blocking lock probe detects it, and sync exits 0 without waiting. A
-session without that lock is interrupted work and resumes. Stale, uncollected and
-missing mirrors run the normal sync. The collection transaction repeats the age check
-under the lock, so a racing call that waited for it reports fresh. A call that loses
-the lock race inside SQLite's busy timeout reports running instead of failing. Skips
+exists; a non-blocking lock probe detects it, and the command continues without
+waiting. A session without that lock is interrupted work and resumes. Stale,
+uncollected and missing mirrors run the normal sync with index and publish. The
+collection transaction repeats the age check under the lock, so a racing call that
+waited for it reports fresh. A call that loses the lock race inside SQLite's busy
+timeout reports running instead of failing. Skipped `sync --ensure-fresh` calls
 print `skipped`, `reason` (`fresh` or `running`), `stale_after` and, once collected,
-`collected_at` and `age`. Plain `sync` is unchanged.
+`collected_at` and `age`. Before other commands the sync writes nothing to stdout
+and shows progress only on a terminal stderr. A failed sync before a read prints a
+stderr warning and reads the previous collection; it fails when the mirror was never
+collected or the command was cancelled. Plain `sync` always collects.
 
 The persisted `collection_version` identifies data compatibility independently of
 release and physical SQL schema versions. Missing metadata denotes legacy version 1.

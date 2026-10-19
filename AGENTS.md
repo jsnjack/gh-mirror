@@ -137,11 +137,14 @@ the embedded version. Optional `acquire --max-enrichment-age` constrains metadat
 freshness independently of comment/issue collection age.
 Credentials come from named environment variables and never enter the database,
 stdout, request bodies, or trace logs. HTTP listeners outside loopback require an
-API bearer token. Read tools never trigger collection or expose arbitrary SQL.
+API bearer token. Read tools never trigger collection or expose arbitrary SQL; servers
+sync only once at startup with explicit --ensure-fresh.
 
-`sync --if-stale` skips when `Status.CollectionAge` is below `stale_after`, or when
-`collect.CheckFreshness` finds the mirror write lock held with a checkpoint session;
-`collect.Options.StaleAfter` repeats the age check under the lock and busy errors map to running.
+Root `--ensure-fresh` (or config `ensure_fresh` for queries/status, never serve/mcp/sync)
+runs the shared `runSync` before reading when `Status.CollectionAge` reaches `stale_after`;
+`sync --ensure-fresh` skips instead. `collect.CheckFreshness` treats a held write lock with
+a checkpoint session as running; `collect.Options.StaleAfter` repeats the age check under
+the lock and busy errors map to running. Failed pre-read syncs warn and read old data.
 Sync progress starts before opening the database and uses stderr, leaving stdout
 for command results. Animate terminal output; use plain phase updates and periodic heartbeats
 for nonterminals or debug mode. `sync --quiet` disables progress. Report actual

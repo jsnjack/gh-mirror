@@ -8,7 +8,7 @@ import (
 )
 
 func TestConfiguration(t *testing.T) {
-	for _, name := range []string{"XDG defaults", "explicit missing", "valid", "unknown key", "malformed", "JSON file", "legacy repositories", "invalid repository", "duplicate repository", "unsafe API", "invalid duration", "invalid workers zero", "invalid workers high", "workers override", "stale_after override", "invalid stale_after zero", "invalid stale_after text"} {
+	for _, name := range []string{"XDG defaults", "explicit missing", "valid", "unknown key", "malformed", "JSON file", "legacy repositories", "invalid repository", "duplicate repository", "unsafe API", "invalid duration", "invalid workers zero", "invalid workers high", "workers override", "stale_after override", "ensure_fresh override", "invalid stale_after zero", "invalid stale_after text"} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 			t.Setenv("XDG_DATA_HOME", filepath.Join(dir, "data"))
@@ -34,6 +34,8 @@ func TestConfiguration(t *testing.T) {
 				body = `repositories = ["o/r"]`
 			case "stale_after override":
 				body = "stale_after = \"15m\"\n" + body
+			case "ensure_fresh override":
+				body = "ensure_fresh = true\n" + body
 			case "invalid stale_after zero":
 				body = "stale_after = \"0s\"\n" + body
 			case "invalid stale_after text":
@@ -75,6 +77,9 @@ func TestConfiguration(t *testing.T) {
 			invalid := strings.HasPrefix(name, "invalid") || name == "duplicate repository" || name == "unsafe API"
 			if (err != nil) != invalid {
 				t.Fatal("validation", err)
+			}
+			if c.EnsureFresh != (name == "ensure_fresh override") {
+				t.Fatal("ensure_fresh", c.EnsureFresh)
 			}
 			if want := map[string]string{"XDG defaults": "1h", "valid": "1h", "stale_after override": "15m"}[name]; want != "" && c.StaleAfter != want {
 				t.Fatal("stale_after", c.StaleAfter, "want", want)

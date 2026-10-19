@@ -50,6 +50,7 @@ type Config struct {
 	EnrichmentInterval string                                `json:"enrichment_interval"`
 	ReconcileInterval  string                                `json:"reconcile_interval"`
 	StaleAfter         string                                `json:"stale_after"`
+	EnsureFresh        bool                                  `json:"ensure_fresh"`
 }
 
 // DefaultPath returns the XDG TOML configuration path.

@@ -14,7 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"gh-mirror/internal/collect"
 	"gh-mirror/internal/config"
 	"gh-mirror/internal/diagnostics"
 	"gh-mirror/internal/embedding"
@@ -30,7 +29,8 @@ import (
 var Version = "dev"
 var settings config.Config
 var configPath, database string
-var debug, trace bool
+var debug, trace, ensureFresh bool
+var staleAfterFlag time.Duration
 var outputFormat = "auto"
 var logCloser io.Closer
 var embeddingProvider *embedding.Provider
@@ -64,6 +64,8 @@ func init() {
 	root.PersistentFlags().StringVar(&outputFormat, "format", "auto", "Output format: auto (text in terminals, JSON when piped), text or json")
 	root.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Verbose diagnostics on stderr")
 	root.PersistentFlags().BoolVar(&trace, "trace", false, "Detailed diagnostics in the temporary gh-mirror-<uid>.log")
+	root.PersistentFlags().BoolVar(&ensureFresh, "ensure-fresh", false, "Sync first when the mirror is older than stale_after (default: ensure_fresh for queries and status; false skips)")
+	root.PersistentFlags().DurationVar(&staleAfterFlag, "stale-after", 0, "Override stale_after for --ensure-fresh (default: configuration, 1h)")
 	root.PersistentPreRunE = func(command *cobra.Command, _ []string) error {
 		if completionCommand(command) {
 			return nil
@@ -81,7 +83,14 @@ func init() {
 		if setupErr != nil && command.Annotations[configOptional] == "" {
 			return setupErr
 		}
-		return nil
+		if setupErr != nil || command.Annotations[ensureFreshMode] == freshSelf {
+			return nil
+		}
+		staleAfter, err := staleThreshold(command)
+		if err != nil || staleAfter == 0 {
+			return err
+		}
+		return ensureFreshMirror(command, staleAfter)
 	}
 	addConfig()
 	addBots()
@@ -92,6 +101,7 @@ func init() {
 	addServers()
 	addDoctor()
 	addCompletions()
+	markEnsureFresh()
 }
 
 func setup(command *cobra.Command) error {
@@ -178,24 +188,16 @@ func closeStore(ctx context.Context, db *store.Store) {
 	}
 }
 func addCollection() {
-	var full, publish, quiet, restart, index, ifStale bool
+	var run syncRun
 	var colorFlag string
 	var workers, indexWorkers int
-	var staleAfterFlag time.Duration
-	command := &cobra.Command{Use: "sync", GroupID: groupCollect, Short: "Collect configured repositories from GitHub, then index and publish", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) (runErr error) {
-		staleAfter, err := syncStaleAfter(command, ifStale, staleAfterFlag)
-		if err != nil {
+	command := &cobra.Command{Use: "sync", GroupID: groupCollect, Short: "Collect configured repositories from GitHub, then index and publish", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+		var err error
+		if run.staleAfter, err = staleThreshold(command); err != nil {
 			return err
 		}
-		var freshness collect.Freshness
-		if ifStale {
-			freshness, err = collect.CheckFreshness(command.Context(), settings.Database, staleAfter, time.Now())
-			if err != nil {
-				return fmt.Errorf("check mirror freshness: %w", err)
-			}
-			if freshness.Skip != "" {
-				return output(command, newSyncSkip(freshness, staleAfter))
-			}
+		if run.color, err = progress.ParseColor(colorFlag); err != nil {
+			return err
 		}
 		if command.Flags().Changed("workers") {
 			settings.Workers = workers
@@ -203,111 +205,26 @@ func addCollection() {
 				return fmt.Errorf("validate sync settings: %w", err)
 			}
 		}
-		cpuWorkers, err := inferenceWorkers(command, "index-workers", indexWorkers)
+		if run.cpuWorkers, err = inferenceWorkers(command, "index-workers", indexWorkers); err != nil {
+			return err
+		}
+		if err := configureIndexEncoder(command.Context(), run.cpuWorkers); err != nil {
+			return err
+		}
+		out, _, err := runSync(command, run)
 		if err != nil {
 			return err
 		}
-		if err := configureIndexEncoder(command.Context(), cpuWorkers); err != nil {
-			return err
-		}
-		var report progress.Reporter
-		var display *progress.Display
-		// Finish cursor updates before stdout can write to the same terminal.
-		finishDisplay := func() error {
-			if display == nil {
-				return nil
-			}
-			err := display.Finish(nil)
-			display = nil
-			return err
-		}
-		// A collector that took the lock after the freshness check makes this one skip.
-		skip := func(reason string) error {
-			if err := finishDisplay(); err != nil {
-				return err
-			}
-			freshness.Skip = reason
-			return output(command, newSyncSkip(freshness, staleAfter))
-		}
-		if !quiet {
-			var err error
-			color, err := progress.ParseColor(colorFlag)
-			if err != nil {
-				return err
-			}
-			display, err = progress.New(command.ErrOrStderr(), !debug, color)
-			if err != nil {
-				return fmt.Errorf("start sync progress: %w", err)
-			}
-			report = display.Report
-			defer func() {
-				if display != nil {
-					if err := display.Finish(runErr); err != nil {
-						runErr = errors.Join(runErr, err)
-					}
-				}
-			}()
-		}
-		db, err := open(false)
-		if ifStale && store.IsBusy(err) {
-			return skip(collect.SkipRunning)
-		}
-		if err != nil {
-			return err
-		}
-		defer closeStore(command.Context(), db)
-		result, err := collect.Sync(command.Context(), db, settings, collect.Options{Full: full, Restart: restart, StaleAfter: staleAfter, Progress: report})
-		switch {
-		case errors.Is(err, collect.ErrFresh):
-			freshness.CollectedAt = result.Status.CollectedAt
-			freshness.Age, freshness.Collected, err = result.Status.CollectionAge(time.Now())
-			if err != nil {
-				return fmt.Errorf("read collection age: %w", err)
-			}
-			return skip(collect.SkipFresh)
-		case ifStale && store.IsBusy(err):
-			return skip(collect.SkipRunning)
-		case err != nil:
-			return fmt.Errorf("collect GitHub data: %w", err)
-		}
-		if index {
-			setEmbeddingProgress(report)
-			defer setEmbeddingProgress(nil)
-			if _, err := db.Index(command.Context(), commandEncoder(), store.IndexOptions{Workers: cpuWorkers, Progress: report, LabelRules: settings.LabelRules, CommentPolicies: settings.CommentPolicies()}); err != nil {
-				return fmt.Errorf("index collected mirror: %w", err)
-			}
-			result.Status, err = db.Status(command.Context())
-			if err != nil {
-				return err
-			}
-		}
-		var manifest *snapshot.Manifest
-		if publish {
-			report.Send(progress.Event{Phase: "Publishing snapshot"})
-			m, err := snapshot.Publish(command.Context(), db, settings.SnapshotDir)
-			if err != nil {
-				return fmt.Errorf("publish collected mirror: %w", err)
-			}
-			manifest = &m
-		}
-		if err := finishDisplay(); err != nil {
-			return err
-		}
-		return output(command, struct {
-			collect.Result
-			Snapshot *snapshot.Manifest `json:"snapshot,omitempty"`
-		}{Result: result, Snapshot: manifest})
+		return output(command, out)
 	}}
 	command.Flags().IntVar(&workers, "workers", config.DefaultWorkers, "Maximum parallel GitHub requests (1–16; overrides configuration)")
-	command.Flags().BoolVar(&index, "index", true, "Incrementally index bundled MiniLM vectors after collection")
+	command.Flags().BoolVar(&run.index, "index", true, "Incrementally index bundled MiniLM vectors after collection")
 	command.Flags().IntVar(&indexWorkers, "index-workers", 0, "Parallel CPU workers (1–16; defaults to --workers/configuration)")
-	command.Flags().BoolVar(&restart, "restart", false, "Discard pending fetches and start a new sync")
-	command.Flags().BoolVar(&full, "full", false, "Force complete inventories and enrichment")
-	command.Flags().BoolVar(&publish, "publish", true, "Publish a standalone snapshot after collection")
-	command.Flags().BoolVar(&quiet, "quiet", false, "Suppress sync progress; retain results and errors")
+	command.Flags().BoolVar(&run.restart, "restart", false, "Discard pending fetches and start a new sync")
+	command.Flags().BoolVar(&run.full, "full", false, "Force complete inventories and enrichment")
+	command.Flags().BoolVar(&run.publish, "publish", true, "Publish a standalone snapshot after collection")
+	command.Flags().BoolVar(&run.quiet, "quiet", false, "Suppress sync progress; retain results and errors")
 	addColorFlag(command, &colorFlag)
-	command.Flags().BoolVar(&ifStale, "if-stale", false, "Collect only when the last collection is older than stale_after and no other sync is running")
-	command.Flags().DurationVar(&staleAfterFlag, "stale-after", 0, "Override stale_after for --if-stale (default: configuration, 1h)")
 	addEmbeddingFlags(command)
 	root.AddCommand(command)
 }

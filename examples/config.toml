@@ -32,7 +32,8 @@ workers = 4         # concurrent GitHub requests and indexing workers (1-16)
 overlap = "5m"               # re-read window before the last sync watermark
 enrichment_interval = "1h"   # refresh catalogs, fields, projects and relationships
 reconcile_interval = "24h"   # full listing that removes deleted tickets and comments
-stale_after = "1h"           # `sync --if-stale` skips collection younger than this
+stale_after = "1h"           # `--ensure-fresh` syncs a mirror older than this
+ensure_fresh = false         # queries and status sync a stale mirror first (--ensure-fresh=false skips)
 
 # Defaults for [repos] tables without a preset. Presets ignore these two keys.
 fields = true   # native issue fields and issue types

@@ -126,7 +126,8 @@ Omitted settings keep their defaults:
 | `max_requests` | 3000 | Request budget per sync invocation |
 | `enrichment_interval` | `1h` | Refresh of catalogs, fields, relationships and projects |
 | `reconcile_interval` | `24h` | Full inventory that removes deleted and transferred tickets |
-| `stale_after` | `1h` | Collection age at which `sync --if-stale` collects |
+| `stale_after` | `1h` | Collection age at which `--ensure-fresh` syncs |
+| `ensure_fresh` | `false` | Queries and `status` sync a stale mirror first |
 | `token_env` | `GITHUB_TOKEN` | Environment variable holding the GitHub token |
 | `api_token_env` | `GH_MIRROR_API_TOKEN` | Environment variable holding the REST/MCP HTTP token |
 | `listen` | `127.0.0.1:8787` | `serve` address |
@@ -434,22 +435,41 @@ After collecting, `sync` updates the semantic index and publishes a snapshot.
 
 ### Sync only when stale
 
-Agents can run this before each query. It does nothing while the mirror is fresh:
+`--ensure-fresh` is a global flag. It syncs first when the mirror is older than
+`stale_after`, then runs the command:
 
 ```sh
-gh-mirror sync --if-stale --quiet                    # uses stale_after (default 1h)
-gh-mirror sync --if-stale --stale-after 15m --quiet  # one-off threshold
+gh-mirror --ensure-fresh search 'login loop'        # sync if stale, then search
+gh-mirror --ensure-fresh --stale-after 15m status   # one-off threshold
+gh-mirror sync --ensure-fresh --quiet               # sync only; skip a fresh mirror
 ```
 
-- **A fresh mirror is left alone.** If the last collection is younger than `stale_after`,
-  sync exits 0. It sends no GitHub requests and needs no token.
-- **A running sync is not joined.** If another process is collecting, sync exits 0 at
-  once. A sync that was interrupted is not running, so it resumes as usual.
+To make it the default for every query, set it in the configuration:
+
+```toml
+stale_after = "30m"
+ensure_fresh = true
+```
+
+- **`ensure_fresh = true` covers queries and `status`.** These are `search`, `list`, `show`,
+  `comments`, `context`, `related` and `catalog`. `--ensure-fresh=false` turns it off for one call.
+- **`serve` and `mcp` sync only with an explicit `--ensure-fresh`.** They sync once at startup.
+  The configuration key never makes a server write.
+- **`sync` ignores `ensure_fresh`.** `sync --ensure-fresh` skips a fresh mirror; plain `sync`
+  always collects.
+- **Other commands reject `--ensure-fresh`.**
+- **A fresh mirror is left alone.** The check sends no GitHub requests and needs no token.
+- **A running sync is not joined.** If another process is collecting, the command uses the
+  current data at once. An interrupted sync is not running, so it resumes.
 - **A stale, uncollected or missing mirror** gets a normal sync, including index and publish.
 - **Concurrent calls collect once.** The others report `running`, or `fresh` after it commits.
-- **`--stale-after` needs `--if-stale`** and must be positive.
+- **A failed sync keeps the old data.** The command prints a warning on stderr and reads the
+  previous collection. It fails only when the mirror has never been collected.
+- **stdout carries only the command result.** Sync progress shows on stderr only when stderr is
+  a terminal.
+- **`--stale-after` needs `--ensure-fresh`** (flag or configuration) and must be positive.
 
-A skipped sync prints one result instead of the sync report:
+A skipped `sync --ensure-fresh` prints one result instead of the sync report:
 
 ```json
 {"skipped":true,"reason":"fresh","collected_at":"2026-10-15T09:37:00Z","age":"23m0s","stale_after":"1h0m0s"}
@@ -545,7 +565,7 @@ Run one collector at a time, with `GITHUB_TOKEN` in its environment:
 */15 * * * * /usr/local/bin/gh-mirror --config /etc/gh-mirror/config.toml sync --quiet
 ```
 
-`serve` and `mcp` only read. They never start a sync.
+`serve` and `mcp` only read. They sync once at startup only with an explicit `--ensure-fresh`.
 
 ### Upgrading
 

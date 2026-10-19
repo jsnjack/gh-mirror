@@ -31,11 +31,13 @@ func resolveOutputFormat(format string, terminal bool) (string, error) {
 }
 
 func commandFormat(command *cobra.Command) (string, error) {
-	terminal := false
-	if file, ok := command.OutOrStdout().(interface{ Fd() uintptr }); ok {
-		terminal = isatty.IsTerminal(file.Fd()) || isatty.IsCygwinTerminal(file.Fd())
-	}
-	return resolveOutputFormat(outputFormat, terminal)
+	return resolveOutputFormat(outputFormat, terminalWriter(command.OutOrStdout()))
+}
+
+// terminalWriter reports whether w is a terminal file.
+func terminalWriter(w io.Writer) bool {
+	file, ok := w.(interface{ Fd() uintptr })
+	return ok && (isatty.IsTerminal(file.Fd()) || isatty.IsCygwinTerminal(file.Fd()))
 }
 
 // textOutput reports whether a command renders readable text rather than JSON.
