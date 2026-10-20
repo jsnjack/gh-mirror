@@ -153,23 +153,13 @@ func TestCollectionCompatibility(t *testing.T) {
 }
 
 func TestSessionCollectionVersion(t *testing.T) {
-	for _, name := range []string{"legacy fingerprint", "incompatible version"} {
-		t.Run(name, func(t *testing.T) {
-			c := config.Config{APIURL: "https://api.github.com", GraphQLURL: "https://api.github.com/graphql", Fields: true, Projects: true, Overlap: "5m", EnrichmentInterval: "1h", ReconcileInterval: "24h"}
-			signature, err := sessionSignature(c, []string{"o/r"}, "generation", false, "test-token", store.LegacyCollectionVersion)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if name == "legacy fingerprint" {
-				if signature != "60805497f84adf9da02f302ec837ab7c33d4d1b76774cca597f176a15ecfc0ee" {
-					t.Fatal("compatible checkpoints were invalidated", signature)
-				}
-			} else {
-				upgraded, err := sessionSignature(c, []string{"o/r"}, "generation", false, "test-token", store.LegacyCollectionVersion+1)
-				if err != nil || upgraded == signature {
-					t.Fatal("incompatible checkpoint stayed reusable", upgraded, err)
-				}
-			}
-		})
+	c := config.Config{APIURL: "https://api.github.com", GraphQLURL: "https://api.github.com/graphql", Fields: true, Projects: true, Overlap: "5m", EnrichmentInterval: "1h", ReconcileInterval: "24h"}
+	signature, err := sessionSignature(c, []string{"o/r"}, "generation", false, "test-token", store.CollectionVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	upgraded, err := sessionSignature(c, []string{"o/r"}, "generation", false, "test-token", store.CollectionVersion+1)
+	if err != nil || upgraded == signature {
+		t.Fatal("incompatible checkpoint stayed reusable", upgraded, err)
 	}
 }

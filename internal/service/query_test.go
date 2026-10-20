@@ -266,17 +266,10 @@ func TestMCPCompactResults(t *testing.T) {
 
 func TestRelatedRoute(t *testing.T) {
 	svc := fixture(t)
-	bodies := []string{}
-	for _, path := range []string{"/v1/issues/o/r/1/related?limit=5", "/v1/candidates?repo=o/r&number=1&limit=5"} {
-		w := httptest.NewRecorder()
-		svc.Handler().ServeHTTP(w, httptest.NewRequest("GET", path, nil))
-		if w.Code != 200 {
-			t.Fatal(path, w.Code, w.Body.String())
-		}
-		bodies = append(bodies, w.Body.String())
-	}
-	if bodies[0] != bodies[1] {
-		t.Fatal("related and candidates differ", bodies)
+	w := httptest.NewRecorder()
+	svc.Handler().ServeHTTP(w, httptest.NewRequest("GET", "/v1/issues/o/r/1/related?limit=5", nil))
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
 	}
 	for _, path := range []string{"/v1/issues/o/r/0/related", "/v1/issues/o/r/1/related?limit=500", "/v1/issues/o/r/1/related?include_labels=maybe"} {
 		w := httptest.NewRecorder()

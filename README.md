@@ -28,9 +28,9 @@ EOF
 export GITHUB_TOKEN=...          # read access to the repository
 gh-mirror sync                   # first run collects everything; later runs update
 gh-mirror search 'socket timeout'
-gh-mirror show '#123'
+gh-mirror context '#123'
 gh-mirror related '#123'
-gh-mirror doctor
+gh-mirror status --check
 ```
 
 ## Contents
@@ -44,7 +44,6 @@ gh-mirror doctor
 - [REST API](#rest-api)
 - [Semantic and hybrid search](#semantic-and-hybrid-search)
 - [AI review comment filtering](#ai-review-comment-filtering)
-- [Evaluate retrieval](#evaluate-retrieval)
 - [Development](#development)
 
 ## Install
@@ -82,11 +81,10 @@ gh-mirror completion fish > ~/.config/fish/completions/gh-mirror.fish
 
 | Group | Commands |
 | --- | --- |
-| **Query** | `search`, `list`, `show`, `comments`, `context`, `related`, `catalog` |
+| **Query** | `search`, `list`, `comments`, `context`, `related`, `catalog` |
 | **Collect and publish** | `sync`, `index`, `snapshot`, `acquire` |
 | **Serve** | `mcp`, `serve` |
-| **Inspect** | `status`, `doctor`, `scope`, `bots`, `model`, `config` |
-| **Advanced** | `evaluate` |
+| **Inspect** | `status`, `scope`, `config` |
 
 - **Output format:** text when stdout is a terminal, JSON when piped. Override with
   `--format text` or `--format json`.
@@ -198,7 +196,6 @@ Queries read the local database and need no token.
 | --- | --- |
 | `search WORDS` | Rank tickets by words or meaning, with source evidence |
 | `list` | List tickets by filters, without search words |
-| `show REF...` | Read up to 100 tickets, without comments |
 | `comments REF` | Page through discussion and review comments |
 | `context REF` | Read bounded evidence for one ticket, for an agent or reviewer |
 | `related REF` | Find related tickets and duplicate candidates |
@@ -212,7 +209,6 @@ Queries read the local database and need no token.
 
 ```sh
 gh-mirror search 'socket timeout' --state closed --labels-all bug
-gh-mirror show '#123' https://github.com/owner/repository/pull/456
 gh-mirror comments '#123' --kind review --limit 20
 gh-mirror context '#123' --query 'session continuation'
 gh-mirror related 123 --include-comments
@@ -222,10 +218,6 @@ gh-mirror catalog projects owner
 
 - **Summaries by default:** every query command returns summaries. `--view full` adds
   raw GitHub records.
-- **`show` text view** lists title, state, labels, assignees, milestone, type, URL,
-  dates, comment count and the start of the body.
-- **Older command names still work.** `get`, `batch` and `candidates` are hidden and
-  print a notice naming their replacement.
 
 ### Search
 
@@ -312,8 +304,6 @@ gh-mirror list --labels-all 'client:Acme' --limit 100 --cursor "$next_cursor"
 
 ### Tickets and comments
 
-- **`show`** reads up to 100 tickets from one generation. Duplicates are merged; unknown
-  tickets appear under `missing`.
 - **`comments`** pages through `--kind all|discussion|review` comments in creation order.
 - **Previews** stop at 1,024 characters and set `truncated`. `--view full` returns
   complete text and raw JSON.
@@ -410,14 +400,14 @@ Duplicate detection is one case of this.
 
 1. **Search with exact terms first:** error text, component names, client labels.
 2. **Keep closed tickets.** They hold most resolutions.
-3. **Read the evidence,** then `show` the promising tickets.
+3. **Read the evidence,** then `context` the promising tickets.
 4. **Read the discussion** with `comments` or `context` before trusting a snippet.
 5. **Cite source URLs** and check `warnings` for stale or missing data.
 
 ```sh
 gh-mirror search 'workaround for downloads after reconnecting' --limit 10
 gh-mirror search 'session token retry fix' --in reviews
-gh-mirror show owner/support#123 owner/code#456
+gh-mirror context owner/support#123 --purpose duplicates
 gh-mirror comments owner/support#123 --view full
 ```
 
@@ -428,12 +418,12 @@ Semantic results near the bottom can be unrelated.
 
 ```sh
 gh-mirror sync      # first run creates the database; later runs update it
-gh-mirror status    # database path, generation, scope, counts, timestamps
-gh-mirror doctor    # health checks; exits 1 when one fails
+gh-mirror status           # database path, generation, scope, counts, timestamps
+gh-mirror status --check   # health checks; exits 1 when one fails
 ```
 
-After collecting, `sync` updates the semantic index and publishes a snapshot.
-`--index=false` and `--publish=false` skip those steps.
+After collecting, `sync` updates the semantic index. `--index=false` skips it.
+`status --check` never syncs first, so a stale mirror fails its freshness check.
 
 ### Sync only when stale
 
@@ -453,7 +443,7 @@ stale_after = "30m"
 ensure_fresh = true
 ```
 
-- **`ensure_fresh = true` covers queries and `status`.** These are `search`, `list`, `show`,
+- **`ensure_fresh = true` covers queries and `status`.** These are `search`, `list`,
   `comments`, `context`, `related` and `catalog`. `--ensure-fresh=false` turns it off for one call.
 - **`serve` and `mcp` sync only with an explicit `--ensure-fresh`.** They sync once at startup.
   The configuration key never makes a server write.
@@ -463,7 +453,7 @@ ensure_fresh = true
 - **A fresh mirror is left alone.** The check sends no GitHub requests and needs no token.
 - **A running sync is not joined.** If another process is collecting, the command uses the
   current data at once. An interrupted sync is not running, so it resumes.
-- **A stale, uncollected or missing mirror** gets a normal sync, including index and publish.
+- **A stale, uncollected or missing mirror** gets a normal sync, including the index.
 - **Concurrent calls collect once.** The others report `running`, or `fresh` after it commits.
 - **A failed sync keeps the old data.** The command prints a warning on stderr and reads the
   previous collection. It fails only when the mirror has never been collected.
@@ -505,8 +495,8 @@ A skipped `sync --ensure-fresh` prints one result instead of the sync report:
 - **Ctrl-C is safe.** Rerun `sync` to resume. Completed responses are saved in
   `<database>.sync.sqlite` and cost no requests on resume.
 - **A failed sync changes nothing.** Readers keep the last complete generation.
-- **Failures are recorded.** `status` and `doctor` show the attempt count and last error
-  while unfinished work exists.
+- **Failures are recorded.** `status` shows the attempt count and last error while
+  unfinished work exists, and `status --check` fails on them.
 - **Repeated failures still reach reconcile,** because intervals use the current time.
 - **`sync --restart`** discards unfinished work.
 - **Keep the database directory on persistent storage,** including the resume file.
@@ -530,34 +520,23 @@ gh-mirror sync --workers 1                    # strictly serial requests
 
 ### Progress
 
-Progress goes to stderr; stdout keeps the JSON result. In a terminal it shows the
-phase, pages, records, request budget, cache hits and remaining quota:
+Progress goes to stderr as plain status lines; stdout keeps the JSON result. A line
+prints on each phase change, at most once a second while work arrives, and every five
+seconds otherwise:
 
 ```text
-gh-mirror sync | elapsed 12s
-⠹ Hydrating issue metadata
-  ━━━━━━────────────── 100/300 (33%) | 25.0/s | phase ETA 8s
-  Received: 300 issues, 840 comments | repository 1/1
-  API: 19/3000 requests | 0 cached | GitHub workers 4/4 active
-  GitHub remaining: 4981/5000
-  Resume: 8 resumed responses | 10 saved before this run
+gh-mirror | Hydrating issue metadata | [======--------------] 100/300 (33%) | 25.0/s | phase ETA 8s | Received: 300 issues, 840 comments | repository 1/1 | API: 19/3000 requests | 0 cached | GitHub workers 4/4 active | elapsed 12s | GitHub remaining: 4981/5000
 ```
 
-`cached` counts 304 Not Modified answers. GitHub does not charge quota for them. A
-finished sync lists committed changes per repository, which the JSON result also
-reports under `changes`:
+`cached` counts 304 Not Modified answers. GitHub does not charge quota for them. The
+last line names the outcome and the committed changes per repository, which the JSON
+result also reports under `changes` (+ added, ~ updated, - removed):
 
 ```text
-✓ Sync complete | elapsed 2m41s
-  surfly/it: issues +3 ~41 -1 | comments +88 -2
-  surfly/cobro: pull requests +12 ~30 | comments +240
-  + added, ~ updated, - removed
+gh-mirror | Sync complete | last phase: Indexing semantic documents | … | changed surfly/it: issues +3 ~41 -1 | comments +88 -2
 ```
 
-Colours mark the phase, bar, retry waits, quota below 25% and 10%, and the outcome.
-`--color auto` (default) colours terminals unless `NO_COLOR` is set; `always` and
-`never` override it. Redirected stderr and `--debug` print plain status lines
-instead. `--quiet` hides progress.
+`--quiet` hides progress.
 
 ### Scheduling
 
@@ -569,18 +548,17 @@ Run one collector at a time, with `GITHUB_TOKEN` in its environment:
 
 `serve` and `mcp` only read. They sync once at startup only with an explicit `--ensure-fresh`.
 
-### Upgrading
+### Older databases
 
-- **Schema 3 needs a current binary.** Older binaries fail with "unsupported database schema".
+- **Only schema 3 opens.** An older database fails with "unsupported database schema";
+  move it aside and run `sync` to rebuild it.
 - **Parser or policy version changes** re-index locally on the next `sync` or `index`.
   This needs no GitHub requests.
-- **Changed listing order:** issues and comments are now listed by creation time. The
-  first sync after upgrading cannot reuse cached listing responses or saved listing pages.
 
 ## Snapshots
 
 A snapshot is a standalone, read-only copy of one complete generation, including its
-search index. `sync` publishes one after each successful run. To publish manually:
+search index. Publish one on demand, for example to give someone a copy:
 
 ```sh
 gh-mirror snapshot
@@ -602,7 +580,7 @@ Copy the file `latest.json` names, then query the copy:
 ```sh
 SNAPSHOTS=~/.local/share/gh-mirror/snapshots
 cp "$SNAPSHOTS/$(jq -r .filename "$SNAPSHOTS/latest.json")" ./mirror.sqlite
-gh-mirror --db ./mirror.sqlite doctor --max-age 2h
+gh-mirror --db ./mirror.sqlite status --check --max-age 2h
 gh-mirror --db ./mirror.sqlite search 'socket timeout'
 ```
 
@@ -695,8 +673,6 @@ curl -X POST 'http://127.0.0.1:8787/v1/issues/batch' -H 'Content-Type: applicati
 | `GET /v1/projects?owner=...&number=...` | Project record |
 | `GET /snapshots/latest`, `/snapshots/{filename}` | Snapshot manifest and files |
 
-`/v1/candidates?repo=...&number=...` remains as an alias of `/related`.
-
 | Status | Code | Cause |
 | --- | --- | --- |
 | 400 | `invalid_query` | Invalid input |
@@ -712,8 +688,8 @@ curl -X POST 'http://127.0.0.1:8787/v1/issues/batch' -H 'Content-Type: applicati
 ## Semantic and hybrid search
 
 The executable bundles the MiniLM L6 model, about 91 MB, and runs it in Go on the CPU.
-The first use unpacks it into `~/.cache/gh-mirror/models/`. `gh-mirror model` prints
-the model identity.
+The first use unpacks it into `~/.cache/gh-mirror/models/`. `gh-mirror status --check`
+verifies the encoder.
 
 | Engine | Ranks by | Index needed |
 | --- | --- | --- |
@@ -733,7 +709,6 @@ the model identity.
   boost the score.
 - **Limits:** 16,384 bytes and 16 passages per query; hybrid allows 512 literal terms.
 - **English-oriented model.** Hybrid keeps exact client labels and technical terms.
-  The [model research](docs/semantic-model-research.md) compares alternatives.
 
 ### Index
 
@@ -761,7 +736,7 @@ With Lemonade installed, its Vulkan runtime can encode text on the GPU:
 
 ```sh
 lemonade --no-discovery backends install llamacpp:vulkan
-gh-mirror model --check --embedding-backend lemonade-vulkan --format text
+gh-mirror status --check --format text   # encoder check, with backend = "lemonade-vulkan" set
 gh-mirror index --embedding-backend lemonade-vulkan
 ```
 
@@ -784,7 +759,6 @@ device = "Vulkan0"
 - **Interchangeable:** CPU and Vulkan vectors are compatible; switching keeps the index.
 - **Runtime path:** `embedding.runtime` or `--embedding-runtime` overrides the default
   Lemonade cache location.
-- **Benchmarks:** see the [Vulkan benchmark](docs/vulkan-benchmark-2026-10-10.md).
 
 ## AI review comment filtering
 
@@ -815,40 +789,8 @@ exclude_known_ai = false     # per-repository override
   inherited one; an empty list clears it.
 
 ```sh
-gh-mirror bots --format text                       # detected accounts and exclusion counts
 gh-mirror comments owner/code#123 --include-excluded
 ```
-
-## Evaluate retrieval
-
-Measure retrieval against your own relevance judgments:
-
-```json
-{
-  "cases": [
-    {
-      "name": "Known socket timeout tickets",
-      "search": {"query": "socket timeout", "match": "phrase"},
-      "relevant": [{"repo": "owner/repository", "number": 123}]
-    },
-    {
-      "name": "Known duplicate pair",
-      "candidates": {"repo": "owner/repository", "number": 123},
-      "relevant": [{"repo": "owner/repository", "number": 456}]
-    }
-  ]
-}
-```
-
-```sh
-gh-mirror --db ./mirror.sqlite evaluate --cases ./judgments.json --format text
-```
-
-- **Metrics:** Precision@10 (relevant hits divided by 10) and Recall@20, with p50 and
-  p95 latency.
-- **Judge every relevant ticket.** Unjudged results count as misses and cap Precision@10.
-- **Pinned generation:** evaluation fails if the mirror changes during the run.
-- **Benchmarks:** see the [measured comparison](docs/benchmark-2026-10-10.md) of the three engines.
 
 ## Development
 

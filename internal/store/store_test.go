@@ -12,13 +12,12 @@ import (
 )
 
 func TestCollectionVersion(t *testing.T) {
-	for _, name := range []string{"legacy", "current", "other contract", "malformed"} {
+	for _, name := range []string{"unset", "current", "other contract", "malformed"} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			db := testStore(t)
-			version := LegacyCollectionVersion
-			if name != "legacy" {
-				version = CollectionVersion
+			version := CollectionVersion
+			if name != "unset" {
 				if name == "other contract" {
 					version++
 				}

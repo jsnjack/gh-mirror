@@ -121,15 +121,6 @@ func (s *Service) Handler() http.Handler {
 		out, err := s.Store.Project(r.Context(), r.URL.Query().Get("owner"), number)
 		respond(w, out, err)
 	})
-	// Deprecated alias of /v1/issues/{owner}/{repo}/{number}/related.
-	mux.HandleFunc("GET /v1/candidates", func(w http.ResponseWriter, r *http.Request) {
-		number, err := strconv.Atoi(r.URL.Query().Get("number"))
-		if err != nil || number < 1 {
-			respond(w, nil, badInput("positive issue number required"))
-			return
-		}
-		s.related(w, r, r.URL.Query().Get("repo"), number)
-	})
 	mux.HandleFunc("GET /snapshots/latest", func(w http.ResponseWriter, r *http.Request) {
 		if s.SnapshotDir == "" {
 			http.NotFound(w, r)

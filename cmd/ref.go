@@ -47,19 +47,10 @@ func parseTicketRef(raw, defaultRepo string) (store.TicketID, error) {
 	return store.TicketID{Repo: repo, Number: n}, nil
 }
 
-// resolveTicket reads one positional REF or the legacy --repo/--number flags.
-func resolveTicket(args []string, repo string, number int) (store.TicketID, error) {
-	if len(args) > 0 {
-		if repo != "" || number != 0 {
-			return store.TicketID{}, fmt.Errorf("use REF or --repo/--number, not both")
-		}
-		return parseTicketRef(args[0], settings.DefaultRepository())
-	}
-	if number < 1 {
+// resolveTicket reads the positional REF.
+func resolveTicket(args []string) (store.TicketID, error) {
+	if len(args) == 0 {
 		return store.TicketID{}, fmt.Errorf("ticket REF is required, such as owner/repo#123")
 	}
-	if repo == "" {
-		return parseTicketRef(strconv.Itoa(number), settings.DefaultRepository())
-	}
-	return parseTicketRef(repo+"#"+strconv.Itoa(number), "")
+	return parseTicketRef(args[0], settings.DefaultRepository())
 }

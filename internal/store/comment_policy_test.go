@@ -65,7 +65,7 @@ func seedCommentPolicy(t *testing.T, db *Store) {
 }
 
 func TestAppliedCommentPolicy(t *testing.T) {
-	for _, name := range []string{"lexical exclusion", "context exclusion", "raw override", "issue comments retained", "actors", "invalid actor scope", "restore locally", "cursor invalidation", "atomic cancellation", "incremental sync writes", "candidate seed comments", "human AI attribution"} {
+	for _, name := range []string{"lexical exclusion", "context exclusion", "raw override", "issue comments retained", "restore locally", "cursor invalidation", "atomic cancellation", "incremental sync writes", "candidate seed comments", "human AI attribution"} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			db := testStore(t)
@@ -103,19 +103,6 @@ func TestAppliedCommentPolicy(t *testing.T) {
 				human, err := db.Search(ctx, SearchOptions{Query: "humanuniquetoken", Engine: "lexical"})
 				if err != nil || len(human.Matches) != 1 {
 					t.Fatal("other comments by the same human disappeared", human, err)
-				}
-				actors, err := db.CommentActors(ctx, "o/r")
-				if err != nil {
-					t.Fatal(err)
-				}
-				found := false
-				for _, actor := range actors {
-					if actor.Login == "alice" && actor.Provider == "claude" && actor.Comments == 1 && actor.Excluded == 1 {
-						found = true
-					}
-				}
-				if !found {
-					t.Fatal(actors)
 				}
 			case "lexical exclusion", "issue comments retained":
 				for _, tc := range []struct {
@@ -162,27 +149,6 @@ func TestAppliedCommentPolicy(t *testing.T) {
 				selected, err := db.Context(ctx, ContextOptions{Repo: "o/r", Number: 1, IncludeExcluded: true, CommentLimit: 1, Query: "aibotuniquetoken"})
 				if err != nil || len(selected.Comments) != 1 || selected.Comments[0].Body != "aibotuniquetoken" {
 					t.Fatal("query did not select retained excluded text", selected.Comments, err)
-				}
-			case "actors":
-				actors, err := db.CommentActors(ctx, "o/r")
-				if err != nil || len(actors) != 3 {
-					t.Fatal(actors, err)
-				}
-				copilot, dependency := 0, 0
-				for _, a := range actors {
-					if a.Provider == "copilot" {
-						copilot += a.Excluded
-					}
-					if a.Login == "dependabot[bot]" {
-						dependency += a.Excluded
-					}
-				}
-				if copilot != 2 || dependency != 0 {
-					t.Fatal(actors)
-				}
-			case "invalid actor scope":
-				if _, err := db.CommentActors(ctx, "invalid"); !errors.Is(err, ErrInvalidQuery) {
-					t.Fatal(err)
 				}
 			case "candidate seed comments":
 				if err := db.Update(ctx, func(w *Writer) error {

@@ -149,10 +149,6 @@ func syncVersion(ctx context.Context, db *store.Store, c config.Config, options 
 		if err := pruneScope(ctx, w, c); err != nil {
 			return fmt.Errorf("prune repository scope: %w", err)
 		}
-		report.Send(progress.Event{Phase: "Preparing label search index"})
-		if err := w.EnsureLabelIndex(ctx); err != nil {
-			return fmt.Errorf("prepare label search index: %w", err)
-		}
 		client := github.New(c.APIURL, c.GraphQLURL, token, c.MaxRequests, c.Workers, w)
 		client.Progress = report
 		client.Checkpoint = pending

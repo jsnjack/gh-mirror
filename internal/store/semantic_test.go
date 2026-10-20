@@ -285,46 +285,21 @@ func TestSemanticRetrieval(t *testing.T) {
 		})
 	}
 }
-func TestLegacySemanticSchema(t *testing.T) {
-	ctx := context.Background()
+func TestOlderSchemaIsRejected(t *testing.T) {
 	db := testStore(t)
 	seed(t, db)
-	if _, err := db.db.Exec("DROP TRIGGER semantic_insert; DROP TRIGGER semantic_delete; DROP TRIGGER semantic_invalidate; DROP TABLE semantic_vectors; DROP TABLE semantic_documents; UPDATE metadata SET value='1' WHERE key='schema_version'"); err != nil {
+	if _, err := db.db.Exec("UPDATE metadata SET value='2' WHERE key='schema_version'"); err != nil {
 		t.Fatal(err)
 	}
-	reader, err := Open(db.Path, true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if err := reader.Close(); err != nil {
-			t.Error(err)
+	for _, readOnly := range []bool{true, false} {
+		if _, err := Open(db.Path, readOnly); err == nil || !strings.Contains(err.Error(), "unsupported database schema") {
+			t.Fatalf("read-only %t opened an older schema: %v", readOnly, err)
 		}
-	}()
-	status, err := reader.Status(ctx)
-	if err != nil || status.SchemaVersion != 1 {
-		t.Fatal("legacy reader incompatibility", status, err)
 	}
-	if _, err := reader.Search(ctx, SearchOptions{Query: "network"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := reader.Search(ctx, SearchOptions{Engine: "hybrid", Query: "network"}); !errors.Is(err, ErrSemanticUnavailable) {
-		t.Fatal("legacy semantic should need local index", err)
-	}
-	writer, err := Open(db.Path, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if err := writer.Close(); err != nil {
-			t.Error(err)
-		}
-	}()
-	if _, err := writer.Index(ctx, &fakeVectorizer{}, IndexOptions{Workers: 2}); err != nil {
-		t.Fatal(err)
+	if _, err := Open(db.Path, false); err == nil || !strings.Contains(err.Error(), "run gh-mirror sync to rebuild") {
+		t.Fatal("writer error lacks the rebuild hint", err)
 	}
 }
-
 func BenchmarkSemanticIndex(b *testing.B) {
 	for _, workers := range []int{1, 4, 8, 16} {
 		b.Run(fmt.Sprintf("workers_%d", workers), func(b *testing.B) {

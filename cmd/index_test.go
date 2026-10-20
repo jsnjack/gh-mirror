@@ -15,7 +15,7 @@ import (
 )
 
 func TestOfflineIndexCommands(t *testing.T) {
-	for _, name := range []string{"model", "index"} {
+	for _, name := range []string{"index"} {
 		t.Run(name, func(t *testing.T) {
 			command, _, err := root.Find([]string{name})
 			if err != nil {
@@ -52,11 +52,6 @@ func TestOfflineIndexCommands(t *testing.T) {
 			var result map[string]json.RawMessage
 			if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
 				t.Fatal("stdout is not JSON", err)
-			}
-			if name == "model" {
-				if result["fingerprint"] == nil || result["dimension"] == nil {
-					t.Fatal("missing model identity", stdout.String())
-				}
 			}
 			if name == "index" {
 				if string(result["pending_documents"]) != "0" || !strings.Contains(stderr.String(), "Index complete") || strings.Contains(stderr.String(), "API:") {

@@ -17,7 +17,6 @@ import (
 	"gh-mirror/internal/config"
 	"gh-mirror/internal/diagnostics"
 	"gh-mirror/internal/embedding"
-	"gh-mirror/internal/progress"
 	"gh-mirror/internal/service"
 	"gh-mirror/internal/snapshot"
 	"gh-mirror/internal/store"
@@ -40,11 +39,10 @@ var root = &cobra.Command{Use: "gh-mirror", Short: "Mirror GitHub tickets into a
 
 // Command groups order the help output by task.
 const (
-	groupQuery    = "query"
-	groupCollect  = "collect"
-	groupServe    = "serve"
-	groupInspect  = "inspect"
-	groupAdvanced = "advanced"
+	groupQuery   = "query"
+	groupCollect = "collect"
+	groupServe   = "serve"
+	groupInspect = "inspect"
 )
 
 // configOptional marks commands that report setup errors instead of failing before running.
@@ -58,7 +56,7 @@ func init() {
 	root.SetVersionTemplate("{{.Version}}\n")
 	root.Flags().Bool("version", false, "Print the version and exit")
 	root.PersistentFlags().Bool("help", false, "Show command help")
-	root.AddGroup(&cobra.Group{ID: groupQuery, Title: "Query the local mirror:"}, &cobra.Group{ID: groupCollect, Title: "Collect and publish:"}, &cobra.Group{ID: groupServe, Title: "Serve agents and clients:"}, &cobra.Group{ID: groupInspect, Title: "Inspect configuration and state:"}, &cobra.Group{ID: groupAdvanced, Title: "Advanced:"})
+	root.AddGroup(&cobra.Group{ID: groupQuery, Title: "Query the local mirror:"}, &cobra.Group{ID: groupCollect, Title: "Collect and publish:"}, &cobra.Group{ID: groupServe, Title: "Serve agents and clients:"}, &cobra.Group{ID: groupInspect, Title: "Inspect configuration and state:"})
 	root.PersistentFlags().StringVarP(&configPath, "config", "c", "", "TOML configuration file (default: XDG gh-mirror/config.toml)")
 	root.PersistentFlags().StringVar(&database, "db", "", "Override the database path")
 	root.PersistentFlags().StringVar(&outputFormat, "format", "auto", "Output format: auto (text in terminals, JSON when piped), text or json")
@@ -83,7 +81,8 @@ func init() {
 		if setupErr != nil && command.Annotations[configOptional] == "" {
 			return setupErr
 		}
-		if setupErr != nil || command.Annotations[ensureFreshMode] == freshSelf {
+		// status --check reports the mirror's age, so syncing first would hide a stale mirror.
+		if checking, _ := command.Flags().GetBool("check"); setupErr != nil || checking || command.Annotations[ensureFreshMode] == freshSelf {
 			return nil
 		}
 		staleAfter, err := staleThreshold(command)
@@ -93,13 +92,11 @@ func init() {
 		return ensureFreshMirror(command, staleAfter)
 	}
 	addConfig()
-	addBots()
 	addCollection()
 	addIndex()
 	addQueries()
 	addSnapshots()
 	addServers()
-	addDoctor()
 	addCompletions()
 	markEnsureFresh()
 }
@@ -189,14 +186,10 @@ func closeStore(ctx context.Context, db *store.Store) {
 }
 func addCollection() {
 	var run syncRun
-	var colorFlag string
 	var workers, indexWorkers int
-	command := &cobra.Command{Use: "sync", GroupID: groupCollect, Short: "Collect configured repositories from GitHub, then index and publish", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+	command := &cobra.Command{Use: "sync", GroupID: groupCollect, Short: "Collect configured repositories from GitHub, then index", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
 		var err error
 		if run.staleAfter, err = staleThreshold(command); err != nil {
-			return err
-		}
-		if run.color, err = progress.ParseColor(colorFlag); err != nil {
 			return err
 		}
 		if command.Flags().Changed("workers") {
@@ -222,9 +215,7 @@ func addCollection() {
 	command.Flags().IntVar(&indexWorkers, "index-workers", 0, "Parallel CPU workers (1–16; defaults to --workers/configuration)")
 	command.Flags().BoolVar(&run.restart, "restart", false, "Discard pending fetches and start a new sync")
 	command.Flags().BoolVar(&run.full, "full", false, "Force complete inventories and enrichment")
-	command.Flags().BoolVar(&run.publish, "publish", true, "Publish a standalone snapshot after collection")
 	command.Flags().BoolVar(&run.quiet, "quiet", false, "Suppress sync progress; retain results and errors")
-	addColorFlag(command, &colorFlag)
 	addEmbeddingFlags(command)
 	root.AddCommand(command)
 }
@@ -271,10 +262,9 @@ func addQueries() {
 	addRelated()
 	addCatalog()
 	addStatus()
-	addEvaluate()
 }
 func addSnapshots() {
-	root.AddCommand(&cobra.Command{Use: "snapshot", GroupID: groupCollect, Short: "Publish an immutable snapshot of the last successful collection", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+	root.AddCommand(&cobra.Command{Use: "snapshot", GroupID: groupCollect, Short: "Publish a snapshot of the mirror to share it", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
 		db, err := open(true)
 		if err != nil {
 			return err
@@ -289,7 +279,7 @@ func addSnapshots() {
 	var source, dest string
 	var repos []string
 	var maxAge, maxEnrichmentAge time.Duration
-	command := &cobra.Command{Use: "acquire", GroupID: groupCollect, Short: "Verify and install a published snapshot for a CI job", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+	command := &cobra.Command{Use: "acquire", GroupID: groupCollect, Short: "Verify and install a shared snapshot", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
 		if len(repos) == 0 {
 			repos = settings.Repositories
 		}

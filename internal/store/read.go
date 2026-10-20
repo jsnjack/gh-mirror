@@ -91,10 +91,6 @@ type CatalogOptions struct {
 
 var catalogKinds = []string{"labels", "milestones", "issue_types", "issue_fields", "projects"}
 
-// obsoleteCatalogKinds remain readable through the legacy full catalog so older mirrors
-// can be inspected until a sync removes them.
-var obsoleteCatalogKinds = []string{"project_fields", "project_items"}
-
 // CatalogKinds returns the catalog kinds accepted by Catalog and CatalogPage.
 func CatalogKinds() []string { return slices.Clone(catalogKinds) }
 

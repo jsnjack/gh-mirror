@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"slices"
 	"strings"
 
 	"gh-mirror/internal/store"
@@ -12,18 +11,10 @@ import (
 
 func queryFlags(command *cobra.Command, f *store.QueryFilters, p *store.PageOptions) {
 	var fields []string
-	var label string
 	flags := command.Flags()
 	flags.StringArrayVar(&fields, "field", nil, "Require collected field name=value; repeat")
-	flags.StringVar(&label, "label", "", "Alias for --labels-all")
-	if err := flags.MarkHidden("label"); err != nil {
-		panic(err)
-	}
 	run := command.RunE
 	command.RunE = func(command *cobra.Command, args []string) error {
-		if label != "" && !slices.Contains(f.LabelsAll, label) {
-			f.LabelsAll = append(f.LabelsAll, label)
-		}
 		f.FieldValues = nil
 		for _, raw := range fields {
 			name, value, ok := strings.Cut(raw, "=")

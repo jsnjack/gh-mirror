@@ -60,22 +60,17 @@ func TestResolveTicket(t *testing.T) {
 		name   string
 		config config.Config
 		args   []string
-		repo   string
-		number int
 		want   store.TicketID
 		fails  bool
 	}{
 		{name: "positional", args: []string{"o/r#1"}, want: store.TicketID{Repo: "o/r", Number: 1}},
-		{name: "legacy flags", repo: "o/r", number: 2, want: store.TicketID{Repo: "o/r", Number: 2}},
-		{name: "number flag with default_repo", config: config.Config{DefaultRepo: "o/d", Repositories: []string{"o/a", "o/b"}}, number: 3, want: store.TicketID{Repo: "o/d", Number: 3}},
 		{name: "single configured repository", config: config.Config{Repositories: []string{"o/a"}}, args: []string{"#4"}, want: store.TicketID{Repo: "o/a", Number: 4}},
 		{name: "several repositories without default", config: config.Config{Repositories: []string{"o/a", "o/b"}}, args: []string{"4"}, fails: true},
-		{name: "both forms", args: []string{"o/r#1"}, repo: "o/r", fails: true},
 		{name: "missing", fails: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			settings = tc.config
-			got, err := resolveTicket(tc.args, tc.repo, tc.number)
+			got, err := resolveTicket(tc.args)
 			if tc.fails {
 				if err == nil {
 					t.Fatalf("accepted %v", got)
@@ -91,11 +86,10 @@ func TestResolveTicket(t *testing.T) {
 
 func TestCommandGroups(t *testing.T) {
 	want := map[string][]string{
-		groupQuery:    {"catalog", "comments", "context", "list", "related", "search", "show"},
-		groupCollect:  {"acquire", "index", "snapshot", "sync"},
-		groupServe:    {"mcp", "serve"},
-		groupInspect:  {"bots", "config", "doctor", "model", "scope", "status"},
-		groupAdvanced: {"evaluate"},
+		groupQuery:   {"catalog", "comments", "context", "list", "related", "search"},
+		groupCollect: {"acquire", "index", "snapshot", "sync"},
+		groupServe:   {"mcp", "serve"},
+		groupInspect: {"config", "scope", "status"},
 	}
 	got := map[string][]string{}
 	shorts := map[string]string{}
@@ -120,52 +114,8 @@ func TestCommandGroups(t *testing.T) {
 	}
 }
 
-func TestDeprecatedAliases(t *testing.T) {
-	for _, tc := range []struct{ alias, replacement string }{{"get", "show"}, {"batch", "show"}, {"candidates", "related"}} {
-		t.Run(tc.alias, func(t *testing.T) {
-			command, _, err := root.Find([]string{tc.alias})
-			if err != nil || command.Name() != tc.alias {
-				t.Fatal("alias missing", err)
-			}
-			if command.IsAvailableCommand() || !strings.Contains(command.Deprecated, tc.replacement) {
-				t.Fatalf("alias is listed or lacks a pointer to %s: %q", tc.replacement, command.Deprecated)
-			}
-		})
-	}
-	t.Run("candidates keeps its flags", func(t *testing.T) {
-		command, _, err := root.Find([]string{"candidates"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, name := range []string{"repo", "number", "limit", "engine", "repositories", "include-labels", "include-comments", "comment-limit", "cursor", "count", "facets", "view"} {
-			if command.Flags().Lookup(name) == nil {
-				t.Errorf("missing --%s", name)
-			}
-		}
-	})
-	t.Run("label maps to labels-all", func(t *testing.T) {
-		command, _, err := root.Find([]string{"list"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		flag := command.Flags().Lookup("label")
-		if flag == nil || !flag.Hidden {
-			t.Fatal("--label is missing or listed in help")
-		}
-	})
-	t.Run("get limit describes comment paging", func(t *testing.T) {
-		command, _, err := root.Find([]string{"get"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if usage := command.Flags().Lookup("limit").Usage; !strings.Contains(usage, "Comment page") {
-			t.Fatal(usage)
-		}
-	})
-}
-
 func TestEmbeddingFlagsOnlyOnEncoders(t *testing.T) {
-	encoders := []string{"search", "related", "candidates", "index", "sync", "model", "serve", "mcp", "evaluate", "doctor"}
+	encoders := []string{"search", "related", "index", "sync", "serve", "mcp"}
 	for _, command := range root.Commands() {
 		has := command.Flags().Lookup("embedding-backend") != nil
 		if has != slices.Contains(encoders, command.Name()) {
@@ -266,33 +216,24 @@ func TestStatusReportsDatabasePath(t *testing.T) {
 	}
 }
 
-func TestShowText(t *testing.T) {
-	old := settings
-	t.Cleanup(func() { settings = old })
-	settings = config.Config{Database: seedMirror(t, time.Now()), Repositories: []string{"o/r"}}
-	out, err := runCommand(t, "show", []string{"#1", "o/r#9"}, "text")
+// checkStatus turns on status --check for one test.
+func checkStatus(t *testing.T) {
+	t.Helper()
+	command, _, err := root.Find([]string{"status"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"o/r#1  Socket timeout", "issue | open", "Labels: bug", "Assignees: dev", "Milestone: v1", "https://github.com/o/r/issues/1", "Comments: 2", "Reconnect fails", "Not in mirror: o/r#9"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("missing %q in:\n%s", want, out)
+	if err := command.Flags().Set("check", "true"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := command.Flags().Set("check", "false"); err != nil {
+			t.Error(err)
 		}
-	}
-	if strings.Contains(out, "avatar") || strings.Contains(out, "node_id") {
-		t.Fatal("text view printed raw fields", out)
-	}
-	raw, err := runCommand(t, "show", []string{"o/r#1"}, "json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var result store.BatchResult
-	if err := json.Unmarshal([]byte(raw), &result); err != nil || len(result.Issues) != 1 || result.Issues[0].Payload != nil {
-		t.Fatal("JSON summary should omit raw records", raw, err)
-	}
+	})
 }
 
-func TestDoctor(t *testing.T) {
+func TestStatusCheck(t *testing.T) {
 	oldSettings, oldSetup := settings, setupErr
 	t.Cleanup(func() {
 		settings, setupErr = oldSettings, oldSetup
@@ -318,7 +259,8 @@ func TestDoctor(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			settings, setupErr = config.Config{Database: tc.database, TokenEnv: "GH_MIRROR_TEST_TOKEN", Repositories: []string{"o/r"}}, tc.setup
 			t.Setenv("GH_MIRROR_TEST_TOKEN", "")
-			out, err := runCommand(t, "doctor", nil, "json")
+			checkStatus(t)
+			out, err := runCommand(t, "status", nil, "json")
 			var report doctorReport
 			if decodeErr := json.Unmarshal([]byte(out), &report); decodeErr != nil {
 				t.Fatal(out, decodeErr)
@@ -346,7 +288,8 @@ func TestDoctor(t *testing.T) {
 	t.Run("text marks", func(t *testing.T) {
 		settings, setupErr = config.Config{Database: fresh, TokenEnv: "GH_MIRROR_TEST_TOKEN"}, nil
 		t.Setenv("GH_MIRROR_TEST_TOKEN", "secret")
-		out, err := runCommand(t, "doctor", nil, "text")
+		checkStatus(t)
+		out, err := runCommand(t, "status", nil, "text")
 		if err != nil || !strings.Contains(out, "✓ github token: GH_MIRROR_TEST_TOKEN is set") || strings.Contains(out, "secret") {
 			t.Fatal(out, err)
 		}
@@ -379,7 +322,7 @@ func TestCatalogArguments(t *testing.T) {
 }
 
 func TestCompletionRegistered(t *testing.T) {
-	for _, tc := range []struct{ command, flag string }{{"search", "state"}, {"search", "engine"}, {"search", "labels-any"}, {"list", "sort"}, {"related", "repositories"}, {"context", "purpose"}, {"comments", "kind"}, {"show", "view"}, {"mcp", "tools"}} {
+	for _, tc := range []struct{ command, flag string }{{"search", "state"}, {"search", "engine"}, {"search", "labels-any"}, {"list", "sort"}, {"related", "repositories"}, {"context", "purpose"}, {"comments", "kind"}, {"mcp", "tools"}} {
 		command, _, err := root.Find([]string{tc.command})
 		if err != nil {
 			t.Fatal(err)
@@ -423,7 +366,8 @@ func TestStatusReportsSyncFailures(t *testing.T) {
 	if err != nil || !strings.Contains(text, "Sync failures: 1 since 2026-01-02T03:04:05Z | last: node vanished") {
 		t.Fatal(text, err)
 	}
-	doctor, _ := runCommand(t, "doctor", nil, "text")
+	checkStatus(t)
+	doctor, _ := runCommand(t, "status", nil, "text")
 	if !strings.Contains(doctor, "✗ pending sync") {
 		t.Fatal(doctor)
 	}

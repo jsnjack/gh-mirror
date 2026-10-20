@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"gh-mirror/internal/config"
-	"gh-mirror/internal/store"
 )
 
 const checkpointVersion = 1
@@ -22,11 +21,6 @@ func sessionSignature(c config.Config, repos []string, generation string, full b
 			options[repo] = scope
 		}
 	}
-	contract := version
-	if version == store.LegacyCollectionVersion {
-		// Keep legacy fingerprints identical so introducing the guard preserves pending work.
-		contract = 0
-	}
 	data, err := json.Marshal(struct {
 		Version                        int
 		CollectionVersion              int                     `json:",omitempty"`
@@ -36,7 +30,7 @@ func sessionSignature(c config.Config, repos []string, generation string, full b
 		API, GraphQL                   string
 		Fields, Projects, Full         bool
 		Overlap, Enrichment, Reconcile string
-	}{checkpointVersion, contract, options, repos, generation, c.APIURL, c.GraphQLURL, c.Fields, c.Projects, full, c.Overlap, c.EnrichmentInterval, c.ReconcileInterval})
+	}{checkpointVersion, version, options, repos, generation, c.APIURL, c.GraphQLURL, c.Fields, c.Projects, full, c.Overlap, c.EnrichmentInterval, c.ReconcileInterval})
 	if err != nil {
 		return "", fmt.Errorf("encode sync session: %w", err)
 	}

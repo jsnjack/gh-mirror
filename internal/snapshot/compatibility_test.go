@@ -12,7 +12,7 @@ import (
 )
 
 func TestSnapshotCompatibility(t *testing.T) {
-	for _, name := range []string{"legacy manifest", "future manifest", "future embedded", "old enrichment allowed", "old enrichment rejected", "missing enrichment", "future enrichment", "negative enrichment age"} {
+	for _, name := range []string{"manifest without collection version", "future manifest", "future embedded", "old enrichment allowed", "old enrichment rejected", "missing enrichment", "future enrichment", "negative enrichment age"} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			db, dir := source(t)
@@ -45,8 +45,9 @@ func TestSnapshotCompatibility(t *testing.T) {
 			options := Options{Source: source, Destination: dest, Repositories: []string{"o/r"}, MaxAge: time.Hour}
 			fail := false
 			switch name {
-			case "legacy manifest":
+			case "manifest without collection version":
 				manifest.CollectionVersion = 0
+				fail = true
 			case "future manifest":
 				manifest.CollectionVersion = store.CollectionVersion + 1
 				fail = true

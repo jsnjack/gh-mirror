@@ -6,13 +6,11 @@ changes and `make check` before reporting completion. Do not install missing too
 commit, push, or change another repository without user authorization.
 
 `cmd/` parses Cobra commands and wires dependencies. Help groups commands as Query
-(search, list, show, comments, context, related, catalog), Collect (sync, index,
-snapshot, acquire), Serve (serve, mcp), Inspect (status, doctor, scope, bots, model,
-config) and Advanced (evaluate). Ticket commands share REF parsing (`owner/repo#N`,
-GitHub URLs, `#N` with `default_repo` or one configured repository) and keep hidden
-`--repo/--number`. Hidden deprecated `get`, `batch`, `candidates` and `--label`
-keep scripts working. CLI query views default to summary. `status` reports `db_path`
-and `pending_sync`; `doctor` exits 1 on failed checks. Completion reads configured
+(search, list, comments, context, related, catalog), Collect (sync, index,
+snapshot, acquire), Serve (serve, mcp) and Inspect (status, scope, config). Ticket
+commands take only REF (`owner/repo#N`, GitHub URLs, `#N` with `default_repo` or one
+configured repository). CLI query views default to summary. `status` reports `db_path`
+and `pending_sync`; `status --check` runs health checks and exits 1 on a failed check. Completion reads configured
 repositories and local labels without failing when either is missing. `internal/config` loads TOML configuration
 and resolves XDG paths; JSON is rejected. `internal/diagnostics` manages stderr and trace
 logging; the trace file is per user and refuses links. `internal/progress` renders sync activity from explicit collector/client
@@ -40,10 +38,9 @@ least one repository. Explicit equivalent defaults preserve pending fingerprints
 Index attached label names as separate full-text documents for each issue, with
 the issue URL as their source and the same weight as titles. Keep raw issue titles
 and bodies unchanged. Update label documents with issue changes; removals, transfers,
-and issue deletion must remove stale matches. `Writer.EnsureLabelIndex` backfills
-legacy mirrors locally during sync using stored payloads and `label_index_version`.
-This derived index change preserves collection compatibility and pending work and
-must not force extra upstream requests. Unused labels remain catalog entries and
+and issue deletion must remove stale matches. Writers index labels as issues are stored;
+this derived index preserves collection compatibility and must not force extra
+upstream requests. Unused labels remain catalog entries and
 do not produce ticket search matches.
 `Store.List` enumerates raw tickets and metadata by repository and issue number,
 without comments or required search words. CLI `list`, REST `/v1/issues` and MCP
@@ -66,8 +63,7 @@ the same way, then clears that repository's reconciled_at instead of failing the
 The enrichment label refresh refetches tickets carrying renamed or deleted labels,
 found through the committed mirror. Recovered comment parents outside scope record
 only their kind. Record project coverage
-as `memberships` or `disabled`; upgrading older complete project coverage preserves
-existing memberships and removes obsolete catalogs without forcing enrichment.
+as `memberships` or `disabled`.
 Keep compatible request checkpoints when narrowing project collection. Poll comments
 separately from issues. Bootstrap uses 100-record REST pages and 50-node GraphQL batches shared
 across repositories. Hydrate only changed tickets on deltas; reconcile catalogs,
@@ -81,10 +77,10 @@ inaccessible or mismatched parents fail explicitly without dropping comments.
 
 `store.CollectionVersion` defines data compatibility separately from release and SQL
 schema versions. Increment it when collection or normalization changes invalidate
-existing data for incremental updates. Missing metadata means legacy version 1.
+existing data for incremental updates. Missing metadata means the current version.
 A mismatch forces a full inventory and enrichment rebuild, discards incompatible
 conditional responses, and fingerprints pending work with the target version and
-effective full mode. Keep the legacy version-1 fingerprint unchanged. Persist the
+effective full mode; session fingerprints always encode the version. Persist the
 new version only when collection commits; cancellation or failure preserves the
 previous mirror and resumes completed fetches for the target version. Compatible
 code changes do not bump this version or force collection. Physical SQL schema
@@ -120,10 +116,11 @@ credentials; worker/budget changes preserve pending work. Initialize and clean u
 sessions under the collector lock. Never discard staged work before the mirror commits
 or delete another collector's session. Snapshot exports exclude pending work.
 Validate GraphQL node identities, resource kinds, connections and pagination cursors
-before saving responses. Refetch invalid legacy saves by deleting only that request;
+before saving responses. Refetch invalid saves by deleting only that request;
 retain valid saved pages and batches when a later request fails.
 
-Readers open existing databases without migrations or writes. Publish standalone
+Readers open existing databases without migrations or writes. Only `snapshot`
+publishes, on demand; `sync` never publishes. Publish standalone
 SQLite exports, never copies of live WAL databases. Complete and validate the export
 before atomically replacing `latest.json`, then prune all but the three newest
 snapshot files. Same-host consumers copy the named file; `acquire` serves remote hosts. Acquisition resolves the manifest once,
@@ -131,8 +128,8 @@ verifies checksum, scope, schema and freshness, and installs a private local cop
 Exports remove all conditional response caches and local credential identity, then
 compact the private export to remove deleted payload bytes. Prune disabled field
 and project caches and obsolete full-item caches inside successful sync transactions.
-Snapshot manifests include collection version; legacy manifests default to version
-1. Publication and acquisition reject incompatible collection contracts and compare
+Snapshot manifests include collection version; manifests without it are rejected.
+Publication and acquisition reject incompatible collection contracts and compare
 the embedded version. Optional `acquire --max-enrichment-age` constrains metadata
 freshness independently of comment/issue collection age.
 Credentials come from named environment variables and never enter the database,
@@ -145,22 +142,20 @@ runs the shared `runSync` before reading when `Status.CollectionAge` reaches `st
 `sync --ensure-fresh` skips instead. `collect.CheckFreshness` treats a held write lock with
 a checkpoint session as running; `collect.Options.StaleAfter` repeats the age check under
 the lock and busy errors map to running. Failed pre-read syncs warn and read old data.
+`status --check` never syncs first, so a stale mirror fails its freshness check.
 Sync progress starts before opening the database and uses stderr, leaving stdout
-for command results. Animate terminal output; use plain phase updates and periodic heartbeats
-for nonterminals or debug mode. `sync --quiet` disables progress. Report actual
+for command results. Print plain status lines on phase changes, at most once a second
+while events arrive, and every 5 seconds otherwise. `--quiet` disables progress. Report actual
 pages, records, hydration batches, HTTP attempts, conditional hits, and retry waits
 without extra GitHub requests. Show bounded progress only for known local totals.
-Stop refreshes on success, failure, and cancellation. Diagnostic logs must not
-interleave with animated frames.
+Stop refreshes on success, failure, and cancellation.
 Count interleaved listing records independently and report active workers and resumed
 responses separately from HTTP attempts.
-Wrap terminal rows to the detected width without truncating metrics. Keep GitHub
-quota and resume counters on separate rows and track physical rows when clearing
-frames. Known totals show percentage, phase throughput, and a phase ETA after
+Known totals show percentage, phase throughput, and a phase ETA after
 measurable progress; unknown totals and retry waits do not show an ETA.
 Writers tally committed ticket/comment additions, updates and removals per repository
 (transfers count as removal plus addition); sync reports them in `changes` and the
-final frame. `--color` styles rows after wrapping and honours NO_COLOR.
+final status line, which also names the outcome.
 
 CI runs format, vet, build, race tests and lint on pushes and pull requests.
 `make release` runs locally: it requires a clean, pushed HEAD, packages CGO-free
@@ -221,9 +216,10 @@ lower them without new evidence. Regenerate the fixture only from local judgment
 it hashes words, shuffles their order, rotates vectors and renumbers tickets so no
 ticket text, numbers or client names enter the public repository. Seed labels
 are enabled unless explicitly false; recent seed comments are opt-in and bounded.
-Candidate reads never load all seed comments or query GitHub. Offline evaluation
-uses explicit local relevance judgments, reports P@10 with a fixed denominator of
-10 and Recall@20, and fails on generation changes. Synthetic fixtures test retrieval
+Candidate reads never load all seed comments or query GitHub. Test-only offline
+evaluation (`TestRetrievalEvaluation`) uses explicit local relevance judgments,
+reports P@10 with a fixed denominator of 10 and Recall@20, and fails on generation
+changes. Synthetic fixtures test retrieval
 semantics; their scores do not establish quality on real tickets. Benchmark broad,
 selective and candidate queries before changing query plans or adding dependencies.
 
@@ -248,18 +244,18 @@ concurrency across calls; bound GPU batches and queues and join them on shutdown
 Pass the encoder explicitly through `OpenWithVectorizer` for REST/MCP/CLI queries.
 CPU/Vulkan switching preserves fingerprints, collection sessions and saved vectors.
 Config `embedding` and `--embedding-*` flags on text-encoding commands select backend, runtime, device and batch
-bound; `model --check` verifies the selected runtime offline without opening a mirror.
+bound; `status --check` verifies the selected runtime offline.
 
-Schema 2 adds semantic state/vectors; schema 3 stores shared vectors separately
-from source passages. Writer migrations from schemas 1/2 are local and transactional.
-Readers accept schemas 1–3 without migrations. Keep CollectionVersion unchanged for this derived index. Index only
+Schema 3 stores semantic state and shared vectors separately from source passages.
+Only schema 3 opens; older databases are refused with a hint to move them aside and
+rebuild with sync. Keep CollectionVersion unchanged for this derived index. Index only
 pending documents, reuse identical passages after edits, and checkpoint vectors
 with FULL durability. Guard writes against changed text/model; cascade deletions.
 Incomplete states are excluded from semantic queries and stripped from exports,
 which retain completed vectors and record model identity in manifests. Local
 resumable passages remain in the collector database. Query-only paths never index.
 
-`index` works offline. `sync` indexes after collection commits and before publishing,
+`index` works offline. `sync` indexes after collection commits,
 unless --index=false; CPU workers are bounded separately from GitHub workers.
 Indexing inherits the effective sync/configured worker count unless explicitly
 overridden with sync --index-workers or standalone index --workers. Keep document
@@ -278,7 +274,7 @@ explicitly. Preserve vector fingerprints and reusable checkpoints for scheduling
 Progress names standalone indexing correctly and retains stderr/stdout separation.
 CLI --format auto selects text only for terminal stdout; piped output stays JSON.
 Explicit json/text overrides detection. Render search/candidate evidence, labels,
-pagination, warnings and evaluation tables in text; preserve integer identities,
+pagination and warnings in text; preserve integer identities,
 sanitize terminal controls and propagate output errors. REST/MCP are unaffected.
 Semantic/hybrid queries share ticket filters and result contracts. Use exact filtered
 cosine scans and lexical/semantic/whole-ticket rank fusion (k=60, weights 1/1/3); higher scores rank
@@ -314,8 +310,7 @@ evidence. Bind cursors to the ranking version.
 model fingerprint, representation version and text using compact 32-byte hashes.
 The shared SQLite dictionary checkpoints completed inference before source
 attachments, retaining reusable values on cancellation. Source passages reference
-the dictionary; migration accepts legacy inline BLOBs until the local rebuild
-shares them. Version derived inputs separately from collection. Ticket body
+the dictionary. Version derived inputs separately from collection. Ticket body
 passages exclude empty sections and known checklists while preserving raw source
 offsets. Exports prune incomplete sources and unreferenced shared vectors.
 Classification context projects label names and descriptions from the raw catalog,
@@ -330,8 +325,7 @@ strings cannot contain backticks. Bump `representation.Version` or the registry
 version when their parsing changes.
 
 Keep large vector BLOBs in ordinary rowid tables: WITHOUT ROWID index pages
-overflow 1536-byte values at SQLite’s default page size. Migrate early dictionary
-layouts locally without changing vector generations or rerunning inference.
+overflow 1536-byte values at SQLite’s default page size.
 Whole-ticket coverage reads identities and fields from FTS postings without
 computing snippets or BM25. Default coverage uses a source pass and a title pass,
 keeping exact SQLite token matching. The signal field ticket covers title/body
@@ -342,8 +336,8 @@ accounts and deterministic PR comment selection. Require Bot metadata for known
 account aliases; numeric actor IDs are GitHub.com scoped. Also recognize explicit
 final-line Claude Code attribution and the declared-AI HTML marker, outside code
 and quotes, per comment regardless of account type. Keep unmarked comments and
-never infer authorship from style or mere mentions. bots separates account and
-attribution detection without labeling every post by a human as AI-generated.
+never infer authorship from style or mere mentions. Keep account and attribution
+detection separate without labeling every post by a human as AI-generated.
 Explicit includes take precedence.
 Resolve same-ticket inline reply roots, reject cycles, and exclude an excluded root's
 thread when configured; discussion comments remain individual. Preserve raw comments.
@@ -355,8 +349,7 @@ Persist resolved policies/registry identity in snapshot metadata; readers never
 change policy. Bounded comment/context reads follow document eligibility, with
 include_excluded overrides and counted warnings. Legacy all-comment reads retain
 raw history. Bind lexical/comment cursors to the local policy generation while
-collection Generation remains unchanged. bots shows detected actors and actual
-exclusion counts. Effective TOML explicitly renders false policy overrides and
+collection Generation remains unchanged. Effective TOML explicitly renders false policy overrides and
 empty author lists so copying it preserves inheritance semantics.
-Evaluation pins collection, comment-policy and semantic generations/model identity,
+Test-only evaluation pins collection, comment-policy and semantic generations/model identity,
 rejecting concurrent local policy/index changes as well as collection updates.

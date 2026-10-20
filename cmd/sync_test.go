@@ -73,7 +73,7 @@ func newConditionalSync(t *testing.T, settings map[string]any) *conditionalSync 
 	t.Cleanup(func() {
 		for flags, values := range map[*pflag.FlagSet]map[string]string{
 			root.PersistentFlags(): {"ensure-fresh": "false", "stale-after": "0s"},
-			command.Flags():        {"index": "true", "publish": "true", "quiet": "false"},
+			command.Flags():        {"index": "true", "quiet": "false"},
 		} {
 			for name, value := range values {
 				flag := flags.Lookup(name)
@@ -90,7 +90,7 @@ func newConditionalSync(t *testing.T, settings map[string]any) *conditionalSync 
 // run executes sync and returns its JSON result and the upstream requests it made.
 func (s *conditionalSync) run(args ...string) (map[string]any, int64, error) {
 	s.t.Helper()
-	stdout, _, requests, err := s.exec(append([]string{"sync", "--quiet", "--publish=false", "--index=false"}, args...)...)
+	stdout, _, requests, err := s.exec(append([]string{"sync", "--quiet", "--index=false"}, args...)...)
 	if err != nil {
 		return nil, requests, err
 	}

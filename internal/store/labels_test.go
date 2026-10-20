@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -31,7 +30,7 @@ func labeledIssue(t *testing.T, name, updated string) json.RawMessage {
 }
 
 func TestLabelSearch(t *testing.T) {
-	for _, name := range []string{"label only", "accented name", "label filter", "rename", "remove", "stale update", "transfer", "deletion", "unused label", "backfill", "backfill rollback", "snapshot"} {
+	for _, name := range []string{"label only", "accented name", "label filter", "rename", "remove", "stale update", "transfer", "deletion", "unused label", "snapshot"} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			db := testStore(t)
@@ -87,33 +86,6 @@ func TestLabelSearch(t *testing.T) {
 					t.Fatal(err)
 				}
 				options.Query, want = "UnusedClient", 0
-			case "backfill", "backfill rollback":
-				if err := db.Update(ctx, func(w *Writer) error {
-					if _, err := w.tx.ExecContext(ctx, "DELETE FROM documents WHERE id LIKE 'labels:%'; DELETE FROM metadata WHERE key='label_index_version'"); err != nil {
-						return fmt.Errorf("simulate legacy label index: %w", err)
-					}
-					return nil
-				}); err != nil {
-					t.Fatal(err)
-				}
-				if name == "backfill rollback" {
-					err := db.Update(ctx, func(w *Writer) error {
-						if err := w.EnsureLabelIndex(ctx); err != nil {
-							return err
-						}
-						return fmt.Errorf("collection interrupted")
-					})
-					if err == nil {
-						t.Fatal("failed backfill committed")
-					}
-					out, err := db.Search(ctx, options)
-					if err != nil || len(out.Matches) != 0 {
-						t.Fatal("partial label index became visible", out, err)
-					}
-				}
-				if err := db.Update(ctx, func(w *Writer) error { return w.EnsureLabelIndex(ctx) }); err != nil {
-					t.Fatal(err)
-				}
 			case "snapshot":
 				path := filepath.Join(t.TempDir(), "mirror.sqlite")
 				if err := db.Export(ctx, path); err != nil {

@@ -56,8 +56,7 @@ type SemanticStatus struct {
 
 func semanticStatus(ctx context.Context, q querier) (*SemanticStatus, error) {
 	out := &SemanticStatus{Model: embedding.Model}
-	schemaVersion := "2"
-	rows, err := q.QueryContext(ctx, "SELECT key,value FROM metadata WHERE key IN ('semantic_model','semantic_generation','semantic_indexed_at','representation_version','schema_version')")
+	rows, err := q.QueryContext(ctx, "SELECT key,value FROM metadata WHERE key IN ('semantic_model','semantic_generation','semantic_indexed_at','representation_version')")
 	if err != nil {
 		return nil, fmt.Errorf("read semantic metadata: %w", err)
 	}
@@ -67,8 +66,6 @@ func semanticStatus(ctx context.Context, q querier) (*SemanticStatus, error) {
 			return nil, finishRows(rows, err)
 		}
 		switch k {
-		case "schema_version":
-			schemaVersion = v
 		case "representation_version":
 			out.RepresentationVersion = v
 		case "semantic_model":
@@ -93,10 +90,8 @@ func semanticStatus(ctx context.Context, q querier) (*SemanticStatus, error) {
 	if err := q.QueryRowContext(ctx, "SELECT count(*) FROM semantic_vectors").Scan(&out.Chunks); err != nil {
 		return nil, fmt.Errorf("count semantic chunks: %w", err)
 	}
-	if schemaVersion == "3" {
-		if err := q.QueryRowContext(ctx, "SELECT count(*) FROM embedding_cache").Scan(&out.SharedVectors); err != nil {
-			return nil, fmt.Errorf("count shared embeddings: %w", err)
-		}
+	if err := q.QueryRowContext(ctx, "SELECT count(*) FROM embedding_cache").Scan(&out.SharedVectors); err != nil {
+		return nil, fmt.Errorf("count shared embeddings: %w", err)
 	}
 	return out, nil
 }

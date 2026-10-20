@@ -57,7 +57,22 @@ func findPendingSync(ctx context.Context, dbPath string) (*pendingSync, error) {
 }
 
 func addStatus() {
-	root.AddCommand(&cobra.Command{Use: "status", GroupID: groupInspect, Short: "Show database path, collection times, counts and coverage", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
+	var check bool
+	var maxAge time.Duration
+	command := &cobra.Command{Use: "status", GroupID: groupInspect, Short: "Show database path, collection times, counts and coverage", Long: "Show database path, collection times, counts and coverage.\nWith --check, run health checks instead and exit 1 when one fails.", Args: cobra.NoArgs, Annotations: map[string]string{configOptional: "true"}, RunE: func(command *cobra.Command, _ []string) error {
+		if check {
+			report := runDoctor(command.Context(), maxAge)
+			if err := output(command, report); err != nil {
+				return err
+			}
+			if !report.OK {
+				return errDoctorFailed
+			}
+			return nil
+		}
+		if setupErr != nil {
+			return setupErr
+		}
 		path, err := databasePath()
 		if err != nil {
 			return err
@@ -77,5 +92,8 @@ func addStatus() {
 			return err
 		}
 		return output(command, out)
-	}})
+	}}
+	command.Flags().BoolVar(&check, "check", false, "Check configuration, token, freshness, index and encoder; exit 1 on a failed check")
+	command.Flags().DurationVar(&maxAge, "max-age", 24*time.Hour, "With --check, fail when the last collection is older than this")
+	root.AddCommand(command)
 }

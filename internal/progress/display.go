@@ -5,37 +5,27 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
-
-	"github.com/mattn/go-isatty"
 )
 
 const (
-	refreshInterval = 200 * time.Millisecond
-	plainInterval   = 5 * time.Second
-	barWidth        = 20
-	lineWidth       = 78
-	indent          = "  "
-	barFilled       = '━'
-	barEmpty        = '─'
-	noChanges       = "no changes"
+	// plainInterval spaces status lines; phase changes and events print sooner.
+	plainInterval = 5 * time.Second
+	barWidth      = 20
+	noChanges     = "no changes"
 )
 
-var frames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-
-// Display renders terminal activity or periodic plain status lines on its writer.
+// Display writes plain status lines on its writer: on phase changes, at most once a
+// second while events arrive, and every plainInterval otherwise.
 type Display struct {
 	mu                                  sync.Mutex
 	writer                              io.Writer
-	interactive                         bool
 	started, printed, until             time.Time
 	phaseStarted                        time.Time
-	columns                             func() int
 	phase, scope, remaining             string
 	resource                            string
 	received                            map[string]int
@@ -47,7 +37,6 @@ type Display struct {
 	active, workers                     int
 	workerKind                          string
 	resumed, saved                      int
-	lines, frame                        int
 	err                                 error
 	stop, stopped                       chan struct{}
 	finished                            bool
@@ -55,39 +44,26 @@ type Display struct {
 	backend, device, fallback, listener string
 	embeddingVectors, batchSize         int
 	embeddingRate                       float64
-	color                               bool
 	quotaLimit                          string
 	changes                             []RepositoryChanges
 }
 
-// New starts immediate status reporting and animates only a terminal writer.
-func New(writer io.Writer, animate bool, color ColorMode) (*Display, error) {
-	return NewOperation(writer, animate, "sync", color)
+// New starts status reporting for a sync.
+func New(writer io.Writer) (*Display, error) {
+	return NewOperation(writer, "sync")
 }
 
 // NewOperation reports collection or standalone offline indexing activity.
-func NewOperation(writer io.Writer, animate bool, operation string, color ColorMode) (*Display, error) {
-	interactive := false
-	if fd, ok := writer.(interface{ Fd() uintptr }); ok && animate && os.Getenv("TERM") != "dumb" {
-		interactive = isatty.IsTerminal(fd.Fd()) || isatty.IsCygwinTerminal(fd.Fd())
-	}
-	return startDisplay(writer, interactive, operation, color.enabled(interactive))
-}
-
-func newDisplay(writer io.Writer, interactive bool) (*Display, error) {
-	return startDisplay(writer, interactive, "sync", false)
-}
-func startDisplay(writer io.Writer, interactive bool, operation string, color bool) (*Display, error) {
+func NewOperation(writer io.Writer, operation string) (*Display, error) {
 	now := time.Now()
-	d := &Display{writer: writer, interactive: interactive, started: now, phaseStarted: now, columns: func() int { return terminalWidth(writer) }, phase: "Opening database", received: map[string]int{}, stop: make(chan struct{}), stopped: make(chan struct{})}
-	d.operation, d.color = operation, color
+	d := &Display{writer: writer, started: now, phaseStarted: now, phase: "Opening database", received: map[string]int{}, stop: make(chan struct{}), stopped: make(chan struct{}), operation: operation}
 	d.render(time.Now(), "")
 	if d.err != nil {
 		return nil, d.err
 	}
 	go func() {
 		defer close(d.stopped)
-		ticker := time.NewTicker(refreshInterval)
+		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()
 		for {
 			select {
@@ -95,7 +71,7 @@ func startDisplay(writer io.Writer, interactive bool, operation string, color bo
 				return
 			case now := <-ticker.C:
 				d.mu.Lock()
-				if !d.finished && (d.interactive || now.Sub(d.printed) >= plainInterval) {
+				if !d.finished && now.Sub(d.printed) >= plainInterval {
 					d.render(now, "")
 				}
 				d.mu.Unlock()
@@ -243,9 +219,6 @@ func (d *Display) render(now time.Time, status string) {
 		done := min(d.done, d.total)
 		filled := done * barWidth / d.total
 		bar := "[" + strings.Repeat("=", filled) + strings.Repeat("-", barWidth-filled) + "]"
-		if d.interactive {
-			bar = strings.Repeat(string(barFilled), filled) + strings.Repeat(string(barEmpty), barWidth-filled)
-		}
 		bounded = fmt.Sprintf("%s %d/%d (%d%%)", bar, done, d.total, done*100/d.total)
 		if seconds := now.Sub(d.phaseStarted).Seconds(); seconds >= 1 && done > 0 {
 			rate := float64(done) / seconds
@@ -314,109 +287,42 @@ func (d *Display) render(now time.Time, status string) {
 		}
 	}
 	changes := d.changeRows(status)
-	var text string
-	if d.interactive {
-		var b strings.Builder
-		if d.lines > 0 {
-			fmt.Fprintf(&b, "\x1b[%dA", d.lines)
+	for _, detail := range []string{bounded, wait} {
+		if detail != "" {
+			activity += " | " + detail
 		}
-		header := row{fmt.Sprintf("gh-mirror %s | elapsed %s", d.operation, elapsed), toneHeader}
-		current := row{activity, toneActivity}
-		if status != "" {
-			icons := map[tone]string{toneSuccess: "✓ ", toneFailure: "✗ ", toneCancelled: "■ "}
-			t := statusTone(status)
-			header = row{icons[t] + status + " | elapsed " + elapsed.String(), t}
-			current = row{"Last phase: " + activity, toneLabel}
-		} else {
-			current.text = frames[d.frame%len(frames)] + " " + current.text
-			d.frame++
-		}
-		rows := append([]row{header}, changes...)
-		rows = append(rows, current, row{bounded, toneBar}, row{wait, toneWarn}, row{counters, toneLabel}, row{requests, toneLabel}, row{quota, quotaTone(d.remaining, d.quotaLimit)}, row{resume, toneLabel}, row{embeddings, toneLabel}, row{fallback, toneWarn}, row{listener, toneMuted})
-		var lines []string
-		// Leave the final column unused to avoid an untracked terminal wrap.
-		width := max(1, d.columns()-1)
-		for index, r := range rows {
-			if r.text == "" {
-				continue
-			}
-			// Detail rows sit indented under the header and the current phase.
-			prefix := ""
-			if index > 0 && r.tone != toneActivity {
-				prefix = indent
-			}
-			for at, line := range wrap(r.text, max(1, width-len(prefix))) {
-				if d.color {
-					line = styleLine(r.tone, line, at == 0)
-				}
-				lines = append(lines, prefix+line)
-			}
-		}
-		for index := range max(d.lines, len(lines)) {
-			b.WriteString("\r\x1b[2K")
-			if index < len(lines) {
-				b.WriteString(lines[index])
-			}
-			b.WriteByte('\n')
-		}
-		if d.lines > len(lines) {
-			fmt.Fprintf(&b, "\x1b[%dA", d.lines-len(lines))
-		}
-		text, d.lines = b.String(), len(lines)
-	} else {
-		for _, detail := range []string{bounded, wait} {
-			if detail != "" {
-				activity += " | " + detail
-			}
-		}
-		if status != "" {
-			activity = status + " | last phase: " + activity
-		}
-		text = fmt.Sprintf("gh-mirror | %s | %s | %s | elapsed %s | %s", activity, counters, requests, elapsed, quota)
-		if d.operation == "index" {
-			text = fmt.Sprintf("gh-mirror index | %s | elapsed %s | %s", activity, elapsed, requests)
-		}
-		if resume != "" {
-			text += " | " + resume
-		}
-		for _, detail := range []string{embeddings, fallback, listener} {
-			if detail != "" {
-				text += " | " + detail
-			}
-		}
-		for _, r := range changes {
-			if r.tone == toneChanges {
-				text += " | changed " + r.text
-			}
-		}
-		if d.color && status != "" {
-			text = styleLine(statusTone(status), text, true)
-		}
-		text += "\n"
 	}
+	if status != "" {
+		activity = status + " | last phase: " + activity
+	}
+	text := fmt.Sprintf("gh-mirror | %s | %s | %s | elapsed %s | %s", activity, counters, requests, elapsed, quota)
+	if d.operation == "index" {
+		text = fmt.Sprintf("gh-mirror index | %s | elapsed %s | %s", activity, elapsed, requests)
+	}
+	if resume != "" {
+		text += " | " + resume
+	}
+	for _, detail := range []string{embeddings, fallback, listener} {
+		if detail != "" {
+			text += " | " + detail
+		}
+	}
+	for _, change := range changes {
+		text += " | changed " + change
+	}
+	text += "\n"
 	if _, err := io.WriteString(d.writer, text); err != nil {
 		d.err = fmt.Errorf("write sync progress: %w", err)
 	}
 	d.printed = now
 }
 
-// statusTone colours a completion status by its outcome.
-func statusTone(status string) tone {
-	switch {
-	case strings.Contains(status, "cancelled"):
-		return toneCancelled
-	case strings.Contains(status, "failed"):
-		return toneFailure
-	}
-	return toneSuccess
-}
-
 // changeRows summarises committed changes per repository once the sync finishes.
-func (d *Display) changeRows(status string) []row {
+func (d *Display) changeRows(status string) []string {
 	if status == "" || d.changes == nil {
 		return nil
 	}
-	rows := make([]row, 0, len(d.changes)+1)
+	rows := make([]string, 0, len(d.changes))
 	for _, c := range d.changes {
 		var parts []string
 		for _, kind := range []struct {
@@ -431,9 +337,9 @@ func (d *Display) changeRows(status string) []row {
 		if len(parts) > 0 {
 			summary = strings.Join(parts, " | ")
 		}
-		rows = append(rows, row{clean(c.Repo) + ": " + summary, toneChanges})
+		rows = append(rows, clean(c.Repo)+": "+summary)
 	}
-	return append(rows, row{"+ added, ~ updated, - removed", toneMuted})
+	return rows
 }
 
 // tallyText renders non-zero counts as +added ~updated -removed.
@@ -457,32 +363,4 @@ func clean(value string) string {
 		}
 		return r
 	}, value)
-}
-
-func wrap(line string, width int) []string {
-	runes := []rune(line)
-	var lines []string
-	for len(runes) > width {
-		at, skip := width, 0
-		for i := width; i > 0; i-- {
-			if i+2 < len(runes) && string(runes[i:i+3]) == " | " {
-				at, skip = i, 3
-				break
-			}
-		}
-		if skip == 0 {
-			for i := width; i > 0; i-- {
-				if runes[i] == ' ' {
-					at, skip = i, 1
-					break
-				}
-			}
-		}
-		lines = append(lines, string(runes[:at]))
-		runes = runes[at+skip:]
-	}
-	if len(runes) > 0 {
-		lines = append(lines, string(runes))
-	}
-	return lines
 }

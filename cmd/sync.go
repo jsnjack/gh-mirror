@@ -7,7 +7,6 @@ import (
 
 	"gh-mirror/internal/collect"
 	"gh-mirror/internal/progress"
-	"gh-mirror/internal/snapshot"
 	"gh-mirror/internal/store"
 
 	"github.com/spf13/cobra"
@@ -28,7 +27,7 @@ const (
 // markEnsureFresh annotates mirror readers after every command is registered.
 // Servers start without writing unless asked; sync skips a fresh mirror itself.
 func markEnsureFresh() {
-	modes := map[string]string{"status": freshConfig, "get": freshConfig, "batch": freshConfig, "candidates": freshConfig, "serve": freshFlag, "mcp": freshFlag, "sync": freshSelf}
+	modes := map[string]string{"status": freshConfig, "serve": freshFlag, "mcp": freshFlag, "sync": freshSelf}
 	for _, command := range root.Commands() {
 		mode := modes[command.Name()]
 		if command.GroupID == groupQuery {
@@ -77,7 +76,7 @@ func staleThreshold(command *cobra.Command) (time.Duration, error) {
 // keeps the previous collection, so the read continues with a warning; a mirror
 // that was never collected fails.
 func ensureFreshMirror(command *cobra.Command, staleAfter time.Duration) error {
-	_, freshness, err := runSync(command, syncRun{index: true, publish: true, quiet: !terminalWriter(command.ErrOrStderr()), cpuWorkers: settings.Workers, staleAfter: staleAfter})
+	_, freshness, err := runSync(command, syncRun{index: true, quiet: !terminalWriter(command.ErrOrStderr()), cpuWorkers: settings.Workers, staleAfter: staleAfter})
 	if err == nil {
 		return nil
 	}
@@ -92,14 +91,13 @@ func ensureFreshMirror(command *cobra.Command, staleAfter time.Duration) error {
 
 // syncRun holds the settings shared by sync and --ensure-fresh.
 type syncRun struct {
-	full, restart, index, publish, quiet bool
-	color                                progress.ColorMode
-	cpuWorkers                           int
+	full, restart, index, quiet bool
+	cpuWorkers                  int
 	// staleAfter, when positive, skips a fresh mirror or one another collector is updating.
 	staleAfter time.Duration
 }
 
-// runSync collects, indexes and publishes, returning the command result and the
+// runSync collects and indexes, returning the command result and the
 // freshness found before collecting. A conditional run returns syncSkip when it
 // leaves the mirror unchanged.
 func runSync(command *cobra.Command, run syncRun) (_ any, freshness collect.Freshness, runErr error) {
@@ -135,7 +133,7 @@ func runSync(command *cobra.Command, run syncRun) (_ any, freshness collect.Fres
 	}
 	if !run.quiet {
 		var err error
-		display, err = progress.New(command.ErrOrStderr(), !debug, run.color)
+		display, err = progress.New(command.ErrOrStderr())
 		if err != nil {
 			return nil, freshness, fmt.Errorf("start sync progress: %w", err)
 		}
@@ -181,22 +179,10 @@ func runSync(command *cobra.Command, run syncRun) (_ any, freshness collect.Fres
 			return nil, freshness, err
 		}
 	}
-	var manifest *snapshot.Manifest
-	if run.publish {
-		report.Send(progress.Event{Phase: "Publishing snapshot"})
-		m, err := snapshot.Publish(ctx, db, settings.SnapshotDir)
-		if err != nil {
-			return nil, freshness, fmt.Errorf("publish collected mirror: %w", err)
-		}
-		manifest = &m
-	}
 	if err := finishDisplay(); err != nil {
 		return nil, freshness, err
 	}
-	return struct {
-		collect.Result
-		Snapshot *snapshot.Manifest `json:"snapshot,omitempty"`
-	}{Result: result, Snapshot: manifest}, freshness, nil
+	return result, freshness, nil
 }
 
 // syncSkip reports a conditional sync that left the mirror unchanged.
@@ -226,10 +212,4 @@ func (s syncSkip) text() string {
 		collected = fmt.Sprintf("collected %s ago at %s", s.Age, cleanLine(s.CollectedAt))
 	}
 	return fmt.Sprintf("Sync skipped: %s | %s | stale after %s", reason, collected, s.StaleAfter)
-}
-
-// addColorFlag registers --color for commands that render progress on stderr.
-func addColorFlag(command *cobra.Command, value *string) {
-	command.Flags().StringVar(value, "color", "auto", "Colour progress: auto (terminal without NO_COLOR), always or never")
-	registerCompletion(command, "color", "auto", "always", "never")
 }

@@ -15,11 +15,10 @@ bundled for pure Go CPU inference. Cobra follows workspace
 standards. modernc.org/sqlite supplies SQLite and FTS5 without platform-specific
 C libraries. The official Go MCP SDK handles stdio and Streamable HTTP.
 
-Help groups the CLI commands by task. Query: `search`, `list`, `show`, `comments`, `context`, `related`,
+Help groups the CLI commands by task. Query: `search`, `list`, `comments`, `context`, `related`,
 `catalog`. Collect: `sync`, `index`, `snapshot`, `acquire`. Serve: `serve`, `mcp`. Inspect: `status`,
-`doctor`, `scope`, `bots`, `model`, `config`. Advanced: `evaluate`. Hidden deprecated aliases `get`,
-`batch` and `candidates` keep earlier scripts working. Ticket commands accept REF as `owner/repo#N`, a
-GitHub issue/pull URL, or `#N`/`N` with `default_repo` or a single configured repository. Embedding
+`scope`, `config`. Ticket commands accept only REF as `owner/repo#N`, a GitHub
+issue/pull URL, or `#N`/`N` with `default_repo` or a single configured repository. Embedding
 flags appear only on commands that encode text. All commands inherit `--config`/`-c`, `--debug`/`-d`,
 `--format`, `--db`, `--trace`, `--ensure-fresh` and `--stale-after`. The root supports `--version`. Configuration is TOML under the XDG
 configuration directory. Durable data uses the XDG data directory. Tokens are
@@ -160,16 +159,17 @@ the mirror commit. Checkpoints are excluded from snapshots and removed after suc
 
 `--ensure-fresh` syncs before a command when the committed `collected_at` is at
 least `stale_after` old (default 1h; `--stale-after` overrides it, requires an enabled
-check and must be positive). `ensure_fresh = true` enables it for queries, `status`
-and hidden query aliases; `--ensure-fresh=false` disables it per call. `serve` and
+check and must be positive). `ensure_fresh = true` enables it for queries and
+`status`; `--ensure-fresh=false` disables it per call. `serve` and
 `mcp` sync once at startup only with the explicit flag. `sync --ensure-fresh` skips
 instead of syncing first; `ensure_fresh` never affects `sync`. Other commands reject
-the flag. `doctor` computes collection age the same way. A fresh mirror continues
-after a read-only check: no token, GitHub request, index, publish or write.
+the flag. `status --check` computes collection age the same way but never syncs
+first, so a stale mirror fails. A fresh mirror continues after a read-only check:
+no token, GitHub request, index or write.
 A collector is running when the mirror write lock is held and a checkpoint session
 exists; a non-blocking lock probe detects it, and the command continues without
 waiting. A session without that lock is interrupted work and resumes. Stale,
-uncollected and missing mirrors run the normal sync with index and publish. The
+uncollected and missing mirrors run the normal sync with index. The
 collection transaction repeats the age check under the lock, so a racing call that
 waited for it reports fresh. A call that loses the lock race inside SQLite's busy
 timeout reports running instead of failing. Skipped `sync --ensure-fresh` calls
@@ -180,38 +180,34 @@ stderr warning and reads the previous collection; it fails when the mirror was n
 collected or the command was cancelled. Plain `sync` always collects.
 
 The persisted `collection_version` identifies data compatibility independently of
-release and physical SQL schema versions. Missing metadata denotes legacy version 1.
+release and physical SQL schema versions. Missing metadata denotes the current version.
 Increment `store.CollectionVersion` when collection or normalization changes make
 existing data unsafe for deltas. A mismatch automatically forces complete issue and
 comment inventories plus metadata/catalog enrichment, resets incompatible stored
 records and conditional responses within the transaction, and reports the reason.
 The effective full mode and target collection version identify the pending session.
-Version-1 fingerprints retain their original encoding to preserve legacy work.
+Session fingerprints always encode the target version.
 Only a successful commit records the target version; interruption retains the old
 published generation and resumable fetches for the rebuild. After success, the next
 sync returns to ordinary incremental operation. Compatible code changes do not
 change this contract version. Generic API/network failures do not cause a rebuild.
 Physical SQL schema compatibility is checked separately before collection.
 
-Sync reports progress on stderr by default, starting before database setup. A
-terminal receives a refreshed display of phase, repository, listing counts,
-elapsed time, request usage, conditional cache hits, and rate-limit information.
-It also reports active/configured workers and saved responses reused on resume.
-Terminal rows wrap to the current terminal width without truncating metrics; quota
-and resume counts occupy separate rows. Changing frame heights erase obsolete rows.
-Known indexing/hydration totals have progress bars, percentage, phase throughput,
-and a phase ETA after measurable progress. Unknown totals and retry waits have no
-ETA; listings with unknown totals have a spinner. Explicit callbacks carry activity from the collector and client
-without additional upstream calls. Status refreshes during slow requests, retries,
-and snapshot publication. Nonterminal/debug output uses plain phase updates and
-periodic heartbeats. `sync --quiet` disables progress. A finished sync lists
-committed ticket and comment additions, updates and removals per configured
-repository; the JSON result reports the same tallies under `changes`. `--color`
-auto styles terminal frames unless NO_COLOR is set; always/never override it.
-Styling is applied after wrapping, so escape codes never change row widths. CLI --format auto chooses
+Sync reports progress on stderr by default, starting before database setup. Plain
+status lines show phase, repository, listing counts, elapsed time, request usage,
+conditional cache hits, and rate-limit information. They also report
+active/configured workers and saved responses reused on resume. A line prints on
+each phase change, at most once a second while events arrive, and every 5 seconds
+otherwise. Known indexing/hydration totals have progress bars, percentage, phase
+throughput, and a phase ETA after measurable progress. Unknown totals and retry
+waits have no ETA. Explicit callbacks carry activity from the collector and client
+without additional upstream calls. `--quiet` disables progress. The final line
+names the outcome and lists committed ticket and comment additions, updates and
+removals per configured repository; the JSON result reports the same tallies under
+`changes`. CLI --format auto chooses
 readable text for terminal stdout and JSON for pipes/files, with explicit json/text
 overrides. Text queries show ranked tickets, labels, bounded evidence, warnings and
-continuation; evaluations show a metrics table. Preserve complete JSON contracts,
+continuation. Preserve complete JSON contracts,
 integer identities and output errors. REST/MCP always remain structured.
 Success, failure, and cancellation stop refreshes and produce a final status.
 
@@ -227,18 +223,17 @@ probabilities. No automatic duplicate adjudication or closure belongs in gh-mirr
 
 Full-text search includes issue titles, bodies, attached label names, and comments.
 Label documents preserve the issue URL as evidence and have the same BM25 weight
-as titles. Label changes, transfers, and deletion remove stale matches. Existing
-mirrors receive a transactional local backfill from stored payloads on the next
-sync, recorded by `label_index_version`, without invalidating pending work or
-forcing extra upstream requests. Unused labels remain catalog data.
+as titles. Label changes, transfers, and deletion remove stale matches. Writers index labels
+as issues are stored, without extra upstream requests. Unused labels remain catalog
+data.
 
-`show` returns ticket summaries or raw records without comments; `comments` pages
-comments. Project queries return the local project catalog record and collection
+`comments` pages comments. Project queries return the local project catalog record and collection
 status. REST and MCP call the same query functions. Reads report the database
 generation and resource coverage; they never contact GitHub. `status` adds the
-absolute `db_path` and `pending_sync` when unfinished sync work exists; `doctor`
-checks configuration, token, database, freshness, index, encoder and PR comment
-policy and exits 1 on failure.
+absolute `db_path` and `pending_sync` when unfinished sync work exists; `status
+--check` checks configuration, token, database, freshness (`--max-age`, default
+24h), pending sync failures, index, encoder and PR comment policy and exits 1 on
+failure.
 
 The core MCP tools are `search_issues`, `find_duplicate_candidates`,
 `get_issue_context`, `get_issues`, `get_issue`, `list_comments` and
@@ -251,15 +246,15 @@ defaults to summary view without comments.
 HTTP provides `/health`, `/v1/status`, `/v1/search`, `/v1/issues`,
 `/v1/issues/{owner}/{repo}/{number}` and its `/comments`, `/context` and `/related`
 subresources, `POST /v1/issues/batch`, `/v1/catalog`, `/v1/projects`,
-`/snapshots/latest`, and `/snapshots/{filename}`. `/v1/candidates` is a deprecated
-alias of `/related`.
+`/snapshots/latest`, and `/snapshots/{filename}`.
 HTTP requires bearer authentication outside loopback. Stdio MCP uses local filesystem
 access. The HTTP server uses request limits/timeouts and graceful shutdown.
 
 ## Snapshot publication and acquisition
 
-Snapshots use SQLite `VACUUM INTO` to produce a standalone database including FTS
-and metadata from one SQLite read snapshot. Derive the manifest from the exported
+`snapshot` publishes on demand; `sync` never publishes. Snapshots use SQLite
+`VACUUM INTO` to produce a standalone database including FTS and metadata from one
+SQLite read snapshot. Derive the manifest from the exported
 database so concurrent collection cannot mix manifest and database generations.
 Remove conditional caches, local credential identity and private kind inventory
 from the export, then vacuum away deleted payload bytes. Keep source collector
@@ -268,7 +263,7 @@ Close and validate the output, fsync it, compute SHA-256, then install it with a
 immutable filename. Finally atomically replace and fsync `latest.json`. The manifest
 contains filename, checksum, schema and collection versions, generation, scope,
 collection time and enrichment time. Publication and acquisition reject unsupported
-collection versions; missing manifest versions default to legacy version 1.
+collection versions and manifests without one.
 Failed publication leaves the previous pointer intact. After `latest.json` is
 replaced, publication keeps the three newest versioned files, never removes the one
 it names, and only logs pruning failures. Consumers copy the named file before use.
@@ -284,19 +279,17 @@ published snapshot is never opened for writes. Copying a live WAL file is unsupp
 
 ## WakeCI
 
-Keep collector state outside WakeCI build workspaces, for example
-`/home/client/gh-mirror/`. A scheduled collector job runs with concurrency one and
-publishes after success. A gh-tidy build on the same host copies the file
-`latest.json` names into `${WAKE_BUILD_WORKSPACE}` and pins it for its whole batch;
-gh-tidy rejects a copy older than its configured maximum age. Remote hosts use
-`acquire`. Record generation/checksum in the triage report. Before applying changes,
-gh-tidy refreshes affected upstream tickets and supporting evidence.
+Keep the mirror database outside WakeCI build workspaces, for example the CI user's
+default `~/.local/share/gh-mirror/state.sqlite`. A gh-tidy build on that host reads it
+through the user's configuration, read-only and concurrently with other readers. With
+`ensure_fresh`, gh-tidy's startup `status` syncs a stale mirror first; its `mcp` server
+never syncs. GitHub stays authoritative: before applying changes, gh-tidy re-reads the
+affected tickets upstream.
 
-Missing or stale snapshots fail explicitly; consumers never bootstrap the corpus
-as a fallback. Bootstrap has a separate, longer timeout. Multiple CI hosts can use
-the authenticated snapshot endpoint or private object storage with the same immutable
-file and manifest contract. WakeCI's artifact redaction is not a binary-preserving
-database transport. Keep reports/manifest metadata as artifacts, not SQLite files.
+`snapshot` and `acquire` share an immutable copy on demand, with the same file and
+manifest contract for a local path or the authenticated snapshot endpoint. WakeCI's
+artifact redaction is not a binary-preserving database transport; keep SQLite files
+out of build artifacts.
 
 ## Validation
 
@@ -342,8 +335,8 @@ CPU/Vulkan results must have cosine >=0.9999 and coordinate difference <=0.001.
 
 The configured encoder is shared by CLI, REST and MCP query paths. Runtime progress
 reports the actual backend/device, batch size, vector throughput and fallback
-reason while preserving document progress and resume checkpoints. `model --check`
-verifies the selected backend without opening or modifying the mirror.
+reason while preserving document progress and resume checkpoints. `status --check`
+verifies the selected backend without modifying the mirror.
 
 ## Repository resource options
 
@@ -368,7 +361,7 @@ fingerprints. Different resource selections participate in pending session ident
 
 CLI `list`, REST `/v1/issues` and MCP `list_issues` enumerate raw ticket payloads,
 fields and observations with repository/state/label/type/kind/project filters,
-ordered by repository and ticket number. Comments are retrieved through `get`.
+ordered by repository and ticket number. Comments are retrieved through `comments`.
 Opaque keyset cursors bind filters and committed generation; reject changed filters
 or generations. Search also supports kind and owner/project-number filters,
 including archived memberships and enterprise/user project URLs.
@@ -377,7 +370,7 @@ Credential/upstream identities are opaque hashes retained only in collector
 metadata. Changes or missing identity on an existing mirror require an atomic,
 resumable full rebuild with cleared conditional cache. Same-token permission changes
 still use explicit or periodic reconciliation. GraphQL observations are validated
-before checkpointing; refetch invalid legacy responses without discarding good work.
+before checkpointing; refetch invalid saved responses without discarding good work.
 
 GitHub Actions checks formatting, vet, build, race tests and lint. `make release`
 packages CGO-free Linux/macOS binaries for amd64 and arm64 with SHA-256 checksums
@@ -411,15 +404,14 @@ rembed Go/assembly inference, FP32 mean pooling and L2 normalization, with 384
 coordinates. Extract verified bundled bytes to a private XDG cache directory;
 load only its absolute existing path, never a remote model ID. No model download,
 model service, CGO, shared library or GPU/NPU driver is required at runtime.
-The model research and hardware measurements live in semantic-model-research.md.
 
 SQL schema 2 adds semantic document state and little-endian FP32 passage vectors.
 Schema 3 shares vectors in a content-addressed SQLite dictionary, using 32-byte
-model/representation/input hashes and separate passage attribution. Writers migrate
-schemas 1 and 2 transactionally; readers accept schemas 1–3 without writing.
-Collection compatibility remains version 1. Keep the model/tokenizer, inference,
-pooling, precision and chunking fingerprint separate from collection identity.
-Schema-2 snapshots require a compatible new reader binary.
+model/representation/input hashes and separate passage attribution. Only schema 3
+opens; older databases are refused with a hint to move them aside and rebuild with
+`sync`. Collection compatibility remains version 1. Keep the model/tokenizer,
+inference, pooling, precision and chunking fingerprint separate from collection
+identity.
 
 Split title/body and label/comment/review sources into passages of at most 256
 WordPiece tokens including framing, with a 2,048-rune character cap, 32-rune overlap and original byte offsets.
@@ -435,8 +427,8 @@ and model identity. Deletions cascade. Exports remove incomplete/obsolete passag
 and compact the file; completed vectors travel in the SQLite snapshot and its
 manifest records embedding fingerprint, dimension and index generation.
 
-`index` performs local indexing only. `sync` indexes after the collection commit and
-before publication by default, with `--index=false` available and separate
+`index` performs local indexing only. `sync` indexes after the collection commit by
+default, with `--index=false` available and separate
 `--index-workers`. When omitted, CPU workers inherit the effective sync worker
 setting; standalone `index` inherits configured workers unless its --workers flag
 overrides them. Keep a persistent worker pool fed through a bounded document queue
@@ -507,7 +499,7 @@ fence parser serves sections, references and AI attribution; a backtick fence's
 info string cannot contain backticks, so inline triple backticks open no fence.
 Shorthand references require valid owner/repository syntax and a preceding
 boundary; URLs count only as GitHub issue or pull request links. Views require
-neither embeddings nor network calls and work with legacy snapshots. Purpose
+neither embeddings nor network calls. Purpose
 controls source selection, not classification or duplicate decisions.
 Classification label definitions contain source names and descriptions, with attached
 labels first and at most a third of the shared text budget. Configured role rules
@@ -554,7 +546,7 @@ follows native inline reply chains within a PR; general discussion is individual
 Keep issue comments and every PR description. Recognize explicit final-line Claude
 Code attribution and a declared-AI marker per comment, including human accounts.
 Ignore quoted/code examples and mere mentions; never infer authorship from prose
-style. Account and declared-attribution detection remain distinct in diagnostics.
+style. Account and declared-attribution detection remain distinct.
 
 Preserve raw comments and bulk collection behavior. Reconcile derived documents
 atomically in sync (including without semantic indexing) and offline index. Retain
@@ -563,5 +555,4 @@ comments from local records. Persist resolved rules and registry identity in the
 snapshot. Lexical/semantic/hybrid retrieval, duplicate seeds, context and bounded
 comment reads share exclusions. include_excluded overrides and legacy all-comment
 reads expose original records. Count exclusions and reject changed-policy cursors
-without changing GitHub collection generation or resume signatures. bots reports
-local automation accounts, providers and actual excluded counts.
+without changing GitHub collection generation or resume signatures.

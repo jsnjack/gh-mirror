@@ -22,8 +22,8 @@ import (
 // SchemaVersion identifies compatible mirror databases.
 const SchemaVersion = 3
 
-// CompatibleSchema accepts current and legacy lexical snapshots.
-func CompatibleSchema(version int) bool { return version >= 1 && version <= SchemaVersion }
+// CompatibleSchema accepts only the current schema; older databases are rebuilt with a new sync.
+func CompatibleSchema(version int) bool { return version == SchemaVersion }
 
 // ErrNotFound indicates that the requested local resource is absent.
 var ErrNotFound = errors.New("local resource not found")
@@ -115,17 +115,14 @@ func (s *Store) initialize(readOnly bool) error {
 			}
 			parsed, parseErr := strconv.Atoi(version)
 			if parseErr != nil || !CompatibleSchema(parsed) {
-				return fmt.Errorf("unsupported database schema %q", version)
+				return fmt.Errorf("unsupported database schema %q; move the database aside and run gh-mirror sync to rebuild it", version)
 			}
 		}
 		tx, err := s.db.Begin()
 		if err != nil {
-			return fmt.Errorf("begin schema migration: %w", err)
+			return fmt.Errorf("begin schema setup: %w", err)
 		}
 		defer rollback(tx)
-		if err := migrateVectorStorage(tx); err != nil {
-			return err
-		}
 		if _, err := tx.Exec(schema + semanticSchema); err != nil {
 			return fmt.Errorf("initialize schema: %w", err)
 		}
@@ -133,7 +130,7 @@ func (s *Store) initialize(readOnly bool) error {
 			return fmt.Errorf("set schema version: %w", err)
 		}
 		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("commit schema migration: %w", err)
+			return fmt.Errorf("commit schema setup: %w", err)
 		}
 	}
 	var version string

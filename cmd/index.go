@@ -16,7 +16,6 @@ import (
 func addIndex() {
 	var workers int
 	var quiet bool
-	var colorFlag string
 	command := &cobra.Command{Use: "index", GroupID: groupCollect, Short: "Build or resume the offline semantic index without GitHub requests", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) (runErr error) {
 		cpuWorkers, err := inferenceWorkers(command, "workers", workers)
 		if err != nil {
@@ -29,11 +28,7 @@ func addIndex() {
 		var report progress.Reporter
 		if !quiet {
 			var err error
-			color, err := progress.ParseColor(colorFlag)
-			if err != nil {
-				return err
-			}
-			display, err = progress.NewOperation(command.ErrOrStderr(), !debug, "index", color)
+			display, err = progress.NewOperation(command.ErrOrStderr(), "index")
 			if err != nil {
 				return err
 			}
@@ -66,32 +61,8 @@ func addIndex() {
 	}}
 	command.Flags().IntVar(&workers, "workers", 0, "Parallel CPU inference workers (1–16; defaults to configuration)")
 	command.Flags().BoolVar(&quiet, "quiet", false, "Suppress indexing progress")
-	addColorFlag(command, &colorFlag)
 	addEmbeddingFlags(command)
 	root.AddCommand(command)
-	var check bool
-	modelCommand := &cobra.Command{Use: "model", GroupID: groupInspect, Short: "Describe or check the bundled offline encoder", Args: cobra.NoArgs, RunE: func(command *cobra.Command, _ []string) error {
-		var runtime *embedding.State
-		if check {
-			s, err := checkEncoder(command.Context())
-			if err != nil {
-				return err
-			}
-			runtime = &s
-		}
-		return output(command, struct {
-			Model       string           `json:"model"`
-			Revision    string           `json:"revision"`
-			Fingerprint string           `json:"fingerprint"`
-			Dimension   int              `json:"dimension"`
-			MaxTokens   int              `json:"max_tokens"`
-			License     string           `json:"license"`
-			Runtime     *embedding.State `json:"runtime,omitempty"`
-		}{embedding.Model, embedding.Revision, embedding.Fingerprint, embedding.Dimension, embedding.MaxTokens, "Apache-2.0", runtime})
-	}}
-	modelCommand.Flags().BoolVar(&check, "check", false, "Verify the configured backend, model compatibility, and CPU fallback offline")
-	addEmbeddingFlags(modelCommand)
-	root.AddCommand(modelCommand)
 }
 
 // checkEncoder embeds a fixed text with the configured backend and reports the runtime used.

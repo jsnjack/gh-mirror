@@ -13,18 +13,16 @@ import (
 
 	"gh-mirror/internal/commentpolicy"
 	"gh-mirror/internal/store"
-
-	"github.com/spf13/cobra"
 )
 
-// Doctor check outcomes; only failures make the command exit with an error.
+// status --check outcomes; only failures make the command exit with an error.
 const (
 	checkOK   = "ok"
 	checkWarn = "warn"
 	checkFail = "fail"
 )
 
-var errDoctorFailed = errors.New("doctor found failing checks")
+var errDoctorFailed = errors.New("status --check found failing checks")
 
 // doctorCheck is one named health check result.
 type doctorCheck struct {
@@ -45,23 +43,6 @@ func (r *doctorReport) add(name, status, format string, args ...any) {
 	if status == checkFail {
 		r.OK = false
 	}
-}
-
-func addDoctor() {
-	var maxAge time.Duration
-	command := &cobra.Command{Use: "doctor", GroupID: groupInspect, Short: "Check configuration, token, database freshness, index and encoder", Args: cobra.NoArgs, Annotations: map[string]string{configOptional: "true"}, RunE: func(c *cobra.Command, _ []string) error {
-		report := runDoctor(c.Context(), maxAge)
-		if err := output(c, report); err != nil {
-			return err
-		}
-		if !report.OK {
-			return errDoctorFailed
-		}
-		return nil
-	}}
-	command.Flags().DurationVar(&maxAge, "max-age", 24*time.Hour, "Fail when the last collection is older than this")
-	addEmbeddingFlags(command)
-	root.AddCommand(command)
 }
 
 func runDoctor(ctx context.Context, maxAge time.Duration) doctorReport {

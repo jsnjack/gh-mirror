@@ -5,74 +5,43 @@ import (
 	"context"
 	"errors"
 	"io"
-	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
 
-func TestResponsiveProgress(t *testing.T) {
-	for _, width := range []int{40, 78, 120} {
-		t.Run(strconv.Itoa(width)+" columns", func(t *testing.T) {
-			var output lockedBuffer
-			display, err := newDisplay(&output, true)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer func() {
-				if err := display.Finish(nil); err != nil {
-					t.Error(err)
-				}
-			}()
-			display.Report(Event{Phase: "Hydrating issue metadata", Total: 8447, Advance: 2800, Requests: 60, Limit: 3000, Workers: 4, Active: 4, Remaining: "4773", Resumed: 202, Saved: 984})
-			display.mu.Lock()
-			display.columns = func() int { return width }
-			display.started, display.phaseStarted = time.Now().Add(-20*time.Second), time.Now().Add(-20*time.Second)
-			before := len(output.String())
-			display.render(display.phaseStarted.Add(20*time.Second), "")
-			frame := output.String()[before:]
-			lines := display.lines
-			display.mu.Unlock()
-			for _, want := range []string{"GitHub remaining: 4773", "2800/8447 (33%)", "140.0/s", "phase ETA 40s", "60/3000 requests", "202 resumed responses", "984 saved before this run"} {
-				if !strings.Contains(frame, want) {
-					t.Fatal("progress hid information", want, frame)
-				}
-			}
-			if strings.Contains(frame, "...") {
-				t.Fatal("progress still truncates rows", frame)
-			}
-			rows := 0
-			for _, line := range strings.Split(frame, "\n") {
-				if at := strings.Index(line, "\x1b[2K"); at >= 0 {
-					rows++
-					if len([]rune(line[at+len("\x1b[2K"):])) >= width {
-						t.Fatal("row would wrap outside the rendered frame", line)
-					}
-				}
-			}
-			if rows != lines {
-				t.Fatal("wrapped rows were not tracked", rows, lines)
-			}
-			// A shorter frame must erase old rows and leave the cursor below its new end.
-			display.mu.Lock()
-			display.total, display.saved, display.resumed = 0, 0, 0
-			before = len(output.String())
-			display.render(time.Now(), "")
-			frame = output.String()[before:]
-			shorter := display.lines
-			display.mu.Unlock()
-			if shorter >= lines || strings.Count(frame, "\x1b[2K") != lines || !strings.HasSuffix(frame, "\x1b["+strconv.Itoa(lines-shorter)+"A") {
-				t.Fatal("shorter frame left stale rows or misplaced the cursor", frame)
-			}
-		})
+func TestProgressShowsEveryCounter(t *testing.T) {
+	var output lockedBuffer
+	display, err := New(&output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := display.Finish(nil); err != nil {
+			t.Error(err)
+		}
+	}()
+	display.Report(Event{Phase: "Hydrating issue metadata", Total: 8447, Advance: 2800, Requests: 60, Limit: 3000, Workers: 4, Active: 4, Remaining: "4773", Resumed: 202, Saved: 984})
+	display.mu.Lock()
+	display.started, display.phaseStarted = time.Now().Add(-20*time.Second), time.Now().Add(-20*time.Second)
+	before := len(output.String())
+	display.render(display.phaseStarted.Add(20*time.Second), "")
+	line := output.String()[before:]
+	display.mu.Unlock()
+	for _, want := range []string{"GitHub remaining: 4773", "2800/8447 (33%)", "140.0/s", "phase ETA 40s", "60/3000 requests", "202 resumed responses", "984 saved before this run"} {
+		if !strings.Contains(line, want) {
+			t.Fatal("progress hid information", want, line)
+		}
+	}
+	if strings.Count(line, "\n") != 1 || strings.Contains(line, "\x1b") {
+		t.Fatal("status is not one plain line", line)
 	}
 }
 
 func TestSyncSeparatesCPUWorkerProgress(t *testing.T) {
 	var output bytes.Buffer
-	display, err := New(&output, false, ColorAuto)
+	display, err := New(&output)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +61,7 @@ func TestPhaseEstimate(t *testing.T) {
 	for _, name := range []string{"unknown total", "no completed records", "first second", "known total", "retry wait", "complete", "phase changed"} {
 		t.Run(name, func(t *testing.T) {
 			var output lockedBuffer
-			display, err := newDisplay(&output, false)
+			display, err := New(&output)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -150,20 +119,14 @@ func TestReporter(t *testing.T) {
 }
 
 func TestDisplay(t *testing.T) {
-	for _, name := range []string{"plain", "terminal", "cancelled", "failed", "output failure", "heartbeat", "terminal detection"} {
+	for _, name := range []string{"plain", "cancelled", "failed", "output failure", "heartbeat"} {
 		t.Run(name, func(t *testing.T) {
 			var output lockedBuffer
 			writer := io.Writer(&output)
 			if name == "output failure" {
 				writer = failingWriter{}
 			}
-			var display *Display
-			var err error
-			if name == "terminal" {
-				display, err = newDisplay(writer, true)
-			} else {
-				display, err = New(writer, true, ColorAuto)
-			}
+			display, err := New(writer)
 			if name == "output failure" {
 				if !errors.Is(err, io.ErrClosedPipe) {
 					t.Fatal("progress output error lost", err)
@@ -175,25 +138,6 @@ func TestDisplay(t *testing.T) {
 			}
 			if !strings.Contains(output.String(), "Opening database") {
 				t.Fatal("no immediate startup status", output.String())
-			}
-			if name == "terminal detection" {
-				f, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
-				if err != nil {
-					t.Fatal(err)
-				}
-				nullDisplay, err := New(f, true, ColorAuto)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if nullDisplay.interactive {
-					t.Fatal("a character device was mistaken for a terminal")
-				}
-				if err := nullDisplay.Finish(nil); err != nil {
-					t.Fatal(err)
-				}
-				if err := f.Close(); err != nil {
-					t.Fatal(err)
-				}
 			}
 			display.Report(Event{Phase: FetchingIssues, Scope: "owner/repo", Repository: 1, Repositories: 2})
 			display.Report(Event{Page: 1, Records: 100})
@@ -210,7 +154,7 @@ func TestDisplay(t *testing.T) {
 				display.mu.Lock()
 				display.printed = time.Now().Add(-plainInterval)
 				display.mu.Unlock()
-				time.Sleep(2 * refreshInterval)
+				time.Sleep(1500 * time.Millisecond)
 			}
 			var result error
 			switch name {
@@ -235,8 +179,8 @@ func TestDisplay(t *testing.T) {
 			case "failed":
 				want = "Sync failed"
 			}
-			if !strings.Contains(text, want) || (strings.Contains(text, "\x1b[") != (name == "terminal")) {
-				t.Fatal("wrong completion or terminal mode", text)
+			if !strings.Contains(text, want) || strings.Contains(text, "\x1b[") {
+				t.Fatal("wrong completion or escape codes in plain progress", text)
 			}
 			if name == "heartbeat" && strings.Count(text, "retry wait") < 2 {
 				t.Fatal("status did not refresh during idle work", text)
@@ -255,7 +199,7 @@ func TestDisplay(t *testing.T) {
 func TestParallelProgress(t *testing.T) {
 	t.Run("interleaved pages and shared counters", func(t *testing.T) {
 		var output lockedBuffer
-		display, err := newDisplay(&output, false)
+		display, err := New(&output)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -304,7 +248,7 @@ func (b *lockedBuffer) String() string {
 
 func TestIndexProgress(t *testing.T) {
 	var output bytes.Buffer
-	display, err := NewOperation(&output, false, "index", ColorAuto)
+	display, err := NewOperation(&output, "index")
 	if err != nil {
 		t.Fatal(err)
 	}

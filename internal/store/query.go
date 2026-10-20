@@ -42,7 +42,7 @@ type querier interface {
 }
 
 func status(ctx context.Context, q querier) (Status, error) {
-	s := Status{RepositoryOptions: map[string]json.RawMessage{}, SchemaVersion: SchemaVersion, CollectionVersion: LegacyCollectionVersion, Repositories: []string{}, Coverage: []Coverage{}}
+	s := Status{RepositoryOptions: map[string]json.RawMessage{}, SchemaVersion: SchemaVersion, CollectionVersion: CollectionVersion, Repositories: []string{}, Coverage: []Coverage{}}
 	rows, err := q.QueryContext(ctx, "SELECT key,value FROM metadata")
 	if err != nil {
 		return s, fmt.Errorf("read generation: %w", err)
@@ -119,11 +119,9 @@ func status(ctx context.Context, q querier) (Status, error) {
 			return s, fmt.Errorf("count excluded PR comments: %w", err)
 		}
 	}
-	if s.SchemaVersion >= 2 {
-		s.Semantic, err = semanticStatus(ctx, q)
-		if err != nil {
-			return s, err
-		}
+	s.Semantic, err = semanticStatus(ctx, q)
+	if err != nil {
+		return s, err
 	}
 	return s, nil
 }
@@ -216,8 +214,6 @@ func (w *Writer) ResetScope(ctx context.Context, repos []string, resetCatalog, r
 		if _, err := w.tx.ExecContext(ctx, "DELETE FROM catalog"); err != nil {
 			return fmt.Errorf("reset catalogs: %w", err)
 		}
-	} else if _, err := w.tx.ExecContext(ctx, "DELETE FROM catalog WHERE kind IN ('project_fields','project_items')"); err != nil {
-		return fmt.Errorf("remove obsolete project catalogs: %w", err)
 	}
 	return nil
 }
@@ -282,10 +278,8 @@ type CatalogResult struct {
 // Catalog retrieves a complete named catalog for a repository, owner, or project scope.
 func (s *Store) Catalog(ctx context.Context, kind, scope string) (CatalogResult, error) {
 	out := CatalogResult{Items: []json.RawMessage{}}
-	if !slices.Contains(obsoleteCatalogKinds, kind) {
-		if err := validCatalogKind(kind); err != nil {
-			return out, err
-		}
+	if err := validCatalogKind(kind); err != nil {
+		return out, err
 	}
 	err := s.view(ctx, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, "SELECT payload FROM catalog WHERE kind=? AND scope=? ORDER BY id", kind, scope)

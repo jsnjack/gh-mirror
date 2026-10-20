@@ -27,10 +27,10 @@ func catalogScope(kind string) string {
 }
 
 func addCatalog() {
-	var kind, scope, cursor string
+	var cursor string
 	var limit int
 	command := &cobra.Command{Use: "catalog KIND [SCOPE]", GroupID: groupQuery, Short: "Read a repository or owner catalog such as labels or milestones", Long: "Read a catalog. KIND is one of " + strings.Join(catalogKinds, ", ") + ".\nSCOPE is a repository for labels and milestones, or an owner for issue_types, issue_fields and projects.\nIt defaults to the default repository or its owner.", Args: cobra.MaximumNArgs(2), ValidArgsFunction: completeCatalog, RunE: func(c *cobra.Command, args []string) error {
-		k, s := kind, scope
+		var k, s string
 		if len(args) > 0 {
 			k = args[0]
 		}
@@ -62,14 +62,6 @@ func addCatalog() {
 		}
 		return output(c, out)
 	}}
-	command.Flags().StringVar(&kind, "kind", "", "Catalog name (legacy; prefer KIND)")
-	command.Flags().StringVar(&scope, "scope", "", "Repository or owner (legacy; prefer SCOPE)")
-	for _, name := range []string{"kind", "scope"} {
-		if err := command.Flags().MarkHidden(name); err != nil {
-			panic(err)
-		}
-	}
-	registerCompletion(command, "kind", catalogKinds...)
 	command.Flags().IntVar(&limit, "limit", 30, "Return pages of this size (1–100); without --limit or --cursor the whole catalog is returned")
 	command.Flags().StringVar(&cursor, "cursor", "", "Continue next_cursor")
 	root.AddCommand(command)

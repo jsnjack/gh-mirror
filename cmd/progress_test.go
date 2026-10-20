@@ -66,10 +66,7 @@ func TestSyncStatus(t *testing.T) {
 			}
 			root.SetOut(&stdout)
 			root.SetErr(&stderr)
-			args := []string{"--config", path, "sync", "--publish=false", "--quiet=false"}
-			if name == "default" {
-				args[len(args)-2] = "--publish=true"
-			}
+			args := []string{"--config", path, "sync", "--quiet=false"}
 			if name == "quiet" {
 				args[len(args)-1] = "--quiet"
 			}
@@ -124,9 +121,6 @@ func TestSyncStatus(t *testing.T) {
 				}
 				if name == "default" && !strings.Contains(stderr.String(), "Sync complete") {
 					t.Fatal("missing completion status", stderr.String())
-				}
-				if name == "default" && !strings.Contains(stderr.String(), "Publishing snapshot") {
-					t.Fatal("snapshot publication was silent", stderr.String())
 				}
 			}
 			if strings.Contains(stderr.String(), "\x1b[") {

@@ -1,11 +1,8 @@
 package store
 
-// LegacyCollectionVersion identifies data collected before compatibility metadata existed.
-const LegacyCollectionVersion = 1
-
 // CollectionVersion identifies compatible collected data, independently of release and SQL schema versions.
 // Increment it when collection or normalization changes make existing data unsafe for deltas.
-const CollectionVersion = LegacyCollectionVersion
+const CollectionVersion = 1
 
 const schema = `
 CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);

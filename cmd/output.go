@@ -40,12 +40,6 @@ func terminalWriter(w io.Writer) bool {
 	return ok && (isatty.IsTerminal(file.Fd()) || isatty.IsCygwinTerminal(file.Fd()))
 }
 
-// textOutput reports whether a command renders readable text rather than JSON.
-func textOutput(command *cobra.Command) (bool, error) {
-	format, err := commandFormat(command)
-	return format == "text", err
-}
-
 func output(command *cobra.Command, value any) error {
 	w := command.OutOrStdout()
 	format, err := commandFormat(command)
@@ -73,18 +67,6 @@ func output(command *cobra.Command, value any) error {
 func humanOutput(value any) (string, error) {
 	lines := []string{}
 	switch v := value.(type) {
-	case []store.CommentActor:
-		lines = append(lines, "PR comment actors | excluded counts reflect the saved mirror policy")
-		for _, a := range v {
-			provider := a.Provider
-			if provider == "" {
-				provider = "unclassified automation"
-				if a.Type == "User" {
-					provider = "configured author"
-				}
-			}
-			lines = append(lines, fmt.Sprintf("%s | %s (%s) | %s | detection: %s | account %s | %d comments | %d excluded", cleanLine(a.Repo), cleanLine(a.Login), cleanLine(a.Type), cleanLine(provider), cleanLine(a.Detection), cleanLine(a.AccountID), a.Comments, a.Excluded))
-		}
 	case store.CommentResult:
 		lines = append(lines, fmt.Sprintf("%d comments | %d excluded by policy", len(v.Comments), v.ExcludedByPolicy))
 		for _, c := range v.Comments {
@@ -151,18 +133,6 @@ func humanOutput(value any) (string, error) {
 			}
 		}
 		lines = append(lines, resultFooter(v.Total, v.HasMore, v.NextCursor, v.Warnings, v.Facets)...)
-	case store.EvaluationReport:
-		lines = append(lines, fmt.Sprintf("Retrieval evaluation | %d cases", len(v.Cases)), fmt.Sprintf("Mean P@10: %.1f%% | Mean R@20: %.1f%%", v.MeanPrecisionAt10*100, v.MeanRecallAt20*100), fmt.Sprintf("Latency: p50 %.1f ms | p95 %.1f ms", v.P50MS, v.P95MS), "", fmt.Sprintf("%-28s %-10s %7s %7s %9s %8s", "Case", "Kind", "P@10", "R@20", "Time (ms)", "Returned"))
-		for _, c := range v.Cases {
-			lines = append(lines, fmt.Sprintf("%-28s %-10s %6.1f%% %6.1f%% %9.1f %8d", preview(c.Name, 28), cleanLine(c.Kind), c.PrecisionAt10*100, c.RecallAt20*100, c.ElapsedMS, c.Returned))
-		}
-		if v.SearchPrecisionAt10 != nil {
-			lines = append(lines, fmt.Sprintf("Search P@10: %.1f%%", *v.SearchPrecisionAt10*100))
-		}
-		if v.CandidateRecallAt20 != nil {
-			lines = append(lines, fmt.Sprintf("Candidate R@20: %.1f%%", *v.CandidateRecallAt20*100))
-		}
-		lines = append(lines, "", "Metrics use supplied judgments; unjudged results are not confirmed negatives.")
 	case store.Status:
 		lines = statusLines(v)
 	case statusReport:
@@ -178,11 +148,6 @@ func humanOutput(value any) (string, error) {
 		marks := map[string]string{checkOK: "✓", checkWarn: "!", checkFail: "✗"}
 		for _, c := range v.Checks {
 			lines = append(lines, fmt.Sprintf("%s %s: %s", marks[c.Status], cleanLine(c.Name), cleanLine(c.Detail)))
-		}
-	case ticketDetails:
-		var err error
-		if lines, err = ticketDetailLines(v); err != nil {
-			return "", err
 		}
 	case store.SemanticStatus:
 		lines = semanticLines(v)
@@ -206,76 +171,6 @@ func statusLines(v store.Status) []string {
 		lines = append(lines, fmt.Sprintf("%s | fields: %s | projects: %s | reconciled: %s", cleanLine(c.Repo), cleanLine(c.Fields), cleanLine(c.Projects), cleanLine(c.ReconciledAt)))
 	}
 	return lines
-}
-
-// bodyExcerptRunes bounds the ticket body shown by show in summary view.
-const bodyExcerptRunes = 800
-
-func ticketDetailLines(v ticketDetails) ([]string, error) {
-	lines := []string{}
-	for i, t := range v.Issues {
-		if i > 0 {
-			lines = append(lines, "", strings.Repeat("─", 40))
-		}
-		var payload struct {
-			Body     string `json:"body"`
-			Comments *int   `json:"comments"`
-		}
-		if len(t.Payload) > 0 {
-			if err := json.Unmarshal(t.Payload, &payload); err != nil {
-				return nil, fmt.Errorf("decode %s#%d: %w", t.Repo, t.Number, err)
-			}
-		}
-		lines = append(lines, fmt.Sprintf("%s#%d  %s", cleanLine(t.Repo), t.Number, summaryTitle(t.Summary)))
-		if s := t.Summary; s != nil {
-			state := cleanLine(s.State)
-			if s.StateReason != "" {
-				state += " (" + cleanLine(s.StateReason) + ")"
-			}
-			if s.Draft {
-				state += " | draft"
-			}
-			lines = append(lines, cleanLine(t.Kind)+" | "+state, cleanLine(s.URL))
-			for _, field := range []struct{ name, value string }{{"Type", s.Type}, {"Author", s.Author}, {"Labels", strings.Join(s.Labels, ", ")}, {"Assignees", strings.Join(s.Assignees, ", ")}, {"Milestone", s.Milestone}, {"Projects", strings.Join(s.Projects, ", ")}} {
-				if field.value != "" {
-					lines = append(lines, field.name+": "+cleanLine(field.value))
-				}
-			}
-			dates := "Created: " + cleanLine(s.CreatedAt) + " | Updated: " + cleanLine(s.UpdatedAt)
-			if s.ClosedAt != "" {
-				dates += " | Closed: " + cleanLine(s.ClosedAt)
-			}
-			if s.MergedAt != "" {
-				dates += " | Merged: " + cleanLine(s.MergedAt)
-			}
-			lines = append(lines, dates)
-		}
-		if payload.Comments != nil {
-			lines = append(lines, fmt.Sprintf("Comments: %d (gh-mirror comments %s#%d)", *payload.Comments, cleanLine(t.Repo), t.Number))
-		}
-		body := strings.TrimSpace(cleanText(payload.Body))
-		if body == "" {
-			continue
-		}
-		runes := []rune(body)
-		lines = append(lines, "")
-		if !v.fullBody && len(runes) > bodyExcerptRunes {
-			lines = append(lines, string(runes[:bodyExcerptRunes])+"…", "[Body shortened; use --view full for the whole body]")
-			continue
-		}
-		lines = append(lines, body)
-	}
-	for _, m := range v.Missing {
-		lines = append(lines, fmt.Sprintf("Not in mirror: %s#%d", cleanLine(m.Repo), m.Number))
-	}
-	return lines, nil
-}
-
-func summaryTitle(s *store.TicketSummary) string {
-	if s == nil {
-		return ""
-	}
-	return cleanLine(s.Title)
 }
 
 func semanticLines(s store.SemanticStatus) []string {

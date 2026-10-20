@@ -7,11 +7,9 @@ import (
 	"fmt"
 	"net/url"
 	"slices"
-	"sort"
 	"strings"
 
 	"gh-mirror/internal/commentpolicy"
-	"gh-mirror/internal/config"
 )
 
 const commentPolicyKey = "comment_policy"
@@ -182,99 +180,7 @@ func retrievalGeneration(s Status) string {
 }
 
 func commentFilterWarning(repo string, count int) Warning {
-	return Warning{Code: "comments_excluded", Repo: repo, Resource: "comments", Message: fmt.Sprintf("%d comments excluded by the applied PR comment policy; use include_excluded=true (CLI --include-excluded) or get --comments all to inspect retained sources.", count)}
-}
-
-// CommentActor reports detected automation and configured author exclusions in one repository.
-type CommentActor struct {
-	Detection string `json:"detection,omitempty"`
-	Repo      string `json:"repo"`
-	Login     string `json:"login"`
-	Type      string `json:"type"`
-	AccountID string `json:"account_id"`
-	Provider  string `json:"provider,omitempty"`
-	Comments  int    `json:"comments"`
-	Excluded  int    `json:"excluded"`
-}
-
-// CommentActors reads current account metadata without contacting GitHub.
-func (s *Store) CommentActors(ctx context.Context, repo string) ([]CommentActor, error) {
-	out := []CommentActor{}
-	if repo != "" && !config.ValidRepository(repo) {
-		return out, invalid("invalid repository")
-	}
-	err := s.view(ctx, func(q *sql.Tx) error {
-		inventory, err := prCommentInventory(ctx, q)
-		if err != nil {
-			return err
-		}
-		saved, err := commentPolicies(ctx, q)
-		if err != nil {
-			return err
-		}
-		excluded, err := commentpolicy.Select(inventory, saved.Repositories)
-		if err != nil {
-			return fmt.Errorf("inspect comment policy: %w", err)
-		}
-		rows, err := q.QueryContext(ctx, "SELECT c.id FROM comments c JOIN issues i ON i.repo=c.repo AND i.number=c.number WHERE i.kind='pull_request' AND NOT "+visibleComment("c"))
-		if err != nil {
-			return fmt.Errorf("read actual comment exclusions: %w", err)
-		}
-		actual := map[string]bool{}
-		for rows.Next() {
-			var id string
-			if err := rows.Scan(&id); err != nil {
-				return finishRows(rows, err)
-			}
-			actual[id] = true
-		}
-		if err := finishRows(rows, rows.Err()); err != nil {
-			return err
-		}
-		indices := map[string]int{}
-		for _, c := range inventory {
-			if repo != "" && repo != c.Repo {
-				continue
-			}
-			provider := commentpolicy.DetectedAI(c)
-			detection := "account"
-			if commentpolicy.KnownAI(c.Author) == "" && provider != "" {
-				detection = "attribution"
-			}
-			decision, omit := excluded[c.ID]
-			if c.Author.Type != "Bot" && provider == "" && (!omit || decision.Reason == "excluded_thread") {
-				continue
-			}
-			if provider == "" && c.Author.Type != "Bot" {
-				detection = "configured_author"
-			}
-			key := c.Repo + "\x00" + c.Author.Login + "\x00" + c.Author.ID + "\x00" + provider + "\x00" + detection
-			i, ok := indices[key]
-			if !ok {
-				i = len(out)
-				indices[key] = i
-				out = append(out, CommentActor{Repo: c.Repo, Login: c.Author.Login, Type: c.Author.Type, AccountID: c.Author.ID, Provider: provider, Detection: detection})
-			}
-			out[i].Comments++
-			if actual[c.ID] {
-				out[i].Excluded++
-			}
-		}
-		return nil
-	})
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Repo != out[j].Repo {
-			return out[i].Repo < out[j].Repo
-		}
-		if out[i].Login != out[j].Login {
-			return out[i].Login < out[j].Login
-		}
-		if out[i].AccountID != out[j].AccountID {
-			return out[i].AccountID < out[j].AccountID
-		}
-		return out[i].Provider < out[j].Provider
-	})
-	return out, err
+	return Warning{Code: "comments_excluded", Repo: repo, Resource: "comments", Message: fmt.Sprintf("%d comments excluded by the applied PR comment policy; use include_excluded=true (CLI --include-excluded) to inspect retained sources.", count)}
 }
 
 func searchCommentWarning(ctx context.Context, q querier, s Status, f filters, in []string) ([]Warning, error) {

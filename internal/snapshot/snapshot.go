@@ -259,9 +259,6 @@ func decode(body []byte) (Manifest, error) {
 	if err := json.Unmarshal(body, &m); err != nil {
 		return m, fmt.Errorf("decode snapshot manifest: %w", err)
 	}
-	if m.CollectionVersion == 0 {
-		m.CollectionVersion = store.LegacyCollectionVersion
-	}
 	if m.CollectionVersion != store.CollectionVersion {
 		return m, fmt.Errorf("unsupported snapshot collection version %d", m.CollectionVersion)
 	}
