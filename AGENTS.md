@@ -212,7 +212,14 @@ and 500 for internal failures. Query warnings explain disabled, stale and uncoll
 resources without making network requests.
 Candidate retrieval preserves short technical terms, de-duplicates template words
 and ranks seed terms using title/label/comment weights and local ticket frequency.
-Default scope is the seed repository; explicit repositories widen it. Seed labels
+Default scope is the seed repository; explicit repositories widen it. Seed candidates match title/body passages and hybrid adds mutual-neighbour ranks.
+`make duplicates` (part of `make check` and CI) replays anonymized real duplicate pairs
+from `internal/store/testdata/duplicates.json.gz` and fails below recorded floors; run
+it before reporting ranking changes, raise floors when recovery improves and never
+lower them without new evidence. Regenerate the fixture only from local judgments
+(`GH_MIRROR_DUPLICATE_DB`, `GH_MIRROR_DUPLICATE_CASES`, `TestWriteDuplicateFixture`);
+it hashes words, shuffles their order, rotates vectors and renumbers tickets so no
+ticket text, numbers or client names enter the public repository. Seed labels
 are enabled unless explicitly false; recent seed comments are opt-in and bounded.
 Candidate reads never load all seed comments or query GitHub. Offline evaluation
 uses explicit local relevance judgments, reports P@10 with a fixed denominator of

@@ -12,7 +12,7 @@ import (
 	"gh-mirror/internal/representation"
 )
 
-const ticketRankingVersion = "3"
+const ticketRankingVersion = "4"
 
 const ticketFusionWeight = 3
 

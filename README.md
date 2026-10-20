@@ -337,6 +337,8 @@ gh-mirror related owner/support#123 --repositories owner/support --repositories 
 - **Comments are opt-in.** `--include-comments` adds recent seed comments, bounded by
   `--comment-limit` (default 20, maximum 100).
 - **Scope:** the seed repository by default; `--repositories` widens it.
+- **Mutual similarity counts.** Hybrid ranking favours tickets that also rank the seed
+  among their own nearest neighbours, which finds duplicates worded differently.
 
 ### Ticket context
 

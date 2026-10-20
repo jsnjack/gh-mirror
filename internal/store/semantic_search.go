@@ -128,6 +128,10 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 		return out, fmt.Errorf("scan semantic vectors: %w", err)
 	}
 	hits := map[TicketID]*semanticHit{}
+	var neighbours *seedNeighbours
+	if o.seed != nil && o.Engine == "hybrid" {
+		neighbours = newSeedNeighbours()
+	}
 	for rows.Next() {
 		var id TicketID
 		var evidence scoredEvidence
@@ -141,6 +145,16 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 			return out, finishRows(rows, err)
 		}
 		evidence.score = score
+		if o.seed != nil {
+			if neighbours != nil {
+				neighbours.add(id, evidence.field, raw)
+			}
+			// Seed candidates match on titles and bodies; shared labels and
+			// discussion otherwise make unrelated tickets look alike.
+			if evidence.field != "title" && evidence.field != "body" {
+				continue
+			}
+		}
 		hit := hits[id]
 		if hit == nil {
 			hit = &semanticHit{id: id, score: score, created: created, updated: updated, fieldScores: map[string]float64{}}
@@ -210,6 +224,15 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 		retrieved[h.id] = n < semanticCandidateLimit
 		if o.Engine == "hybrid" {
 			h.score = 1 / float64(fusionConstant+n+1)
+		}
+	}
+	if neighbours != nil {
+		top := []TicketID{}
+		for _, h := range ranked[:min(len(ranked), mutualCandidateLimit)] {
+			top = append(top, h.id)
+		}
+		for n, id := range neighbours.mutualOrder(queryVector, top) {
+			hits[id].score += 1 / float64(fusionConstant+n+1)
 		}
 	}
 	entities := []string{}
@@ -354,7 +377,7 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 		out.Ranking = Ranking{"ticket_reciprocal_rank_fusion", "descending", fmt.Sprintf("1/(60+lexical rank) + 1/(60+semantic rank) + 3/(60+ticket evidence rank). Results are every literal or ticket evidence match plus the %d most similar tickets. Ticket evidence combines term coverage across fields and soft client/partner matches; semantic ranking combines the best passage with field evidence. Higher is better; scores are not confidence percentages.", semanticCandidateLimit)}
 	}
 	if o.Engine == "hybrid" && o.seed != nil {
-		out.Ranking = Ranking{"reciprocal_rank_fusion", "descending", fmt.Sprintf("1/(60+lexical rank) + 1/(60+semantic rank) from the weighted cached seed vector. Results are every literal match plus the %d most similar tickets. Higher is better; scores are not duplicate probabilities.", semanticCandidateLimit)}
+		out.Ranking = Ranking{"reciprocal_rank_fusion", "descending", fmt.Sprintf("1/(60+lexical rank) + 1/(60+semantic rank) + 1/(60+mutual rank). Semantic rank compares the weighted cached seed vector with candidate titles and bodies; mutual rank orders the %d most similar tickets by how highly each ranks the seed among its own neighbours. Results are every literal match plus the %d most similar tickets. Higher is better; scores are not duplicate probabilities.", mutualCandidateLimit, semanticCandidateLimit)}
 	}
 	out.Query = QueryInfo{Terms: queryTerms(o.Query, true), Match: "any", In: o.In, Engine: o.Engine}
 	out.Query.Entities = entities

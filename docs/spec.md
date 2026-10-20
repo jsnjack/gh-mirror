@@ -459,7 +459,10 @@ Semantic queries average normalized query passage embeddings and use exact cosin
 scanning over filtered vectors, selecting the best passage per ticket. Semantic duplicate
 candidates reuse weighted stored seed vectors: title 4, body 1, labels 1.5 and
 bounded recent comments 0.5, averaging passages within each source family before
-normalizing. Hybrid combines independent lexical and semantic ticket ranks with
+normalizing. Candidates match on title and body passages only; shared labels and
+discussion otherwise make unrelated tickets look alike. Hybrid candidates add a third
+reciprocal rank: the 100 most similar tickets ordered by the seed's rank among each
+candidate's own neighbours, using ticket vectors built from the same scan. Hybrid combines independent lexical and semantic ticket ranks with
 reciprocal rank fusion constant 60, with lexical/semantic weights 1 and whole-ticket evidence weight 3. Preserve exact ticket filters, source scopes,
 exclusions, counts, facets, projections, evidence and deterministic pagination.
 Report score meanings and component scores. Every engine reports higher-is-better

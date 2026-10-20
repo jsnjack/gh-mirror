@@ -30,7 +30,7 @@ jobs:
           go build -C .tools/monova -o "$(go env GOPATH)/bin/monova" .
       - name: Format, vet, build and race tests
         run: |
-          make fmt vet build test
+          make fmt vet build test duplicates
           git diff --exit-code
       - uses: golangci/golangci-lint-action@v9
         with:

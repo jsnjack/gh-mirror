@@ -2,7 +2,7 @@ BINARY := gh-mirror
 export PATH := $(PATH):$(shell go env GOPATH)/bin
 .NOTPARALLEL:
 
-.PHONY: build check fmt vet test lint standards release
+.PHONY: build check fmt vet test duplicates lint standards release
 build:
 	@command -v monova >/dev/null || { echo 'Install monova: grm install jsnjack/monova'; exit 1; }
 	@mkdir -p bin
@@ -15,10 +15,13 @@ vet:
 	go vet ./...
 test:
 	go test -race ./...
+# Real duplicate pairs, anonymized; the race detector makes this fixture take minutes.
+duplicates:
+	go test -count=1 -run '^TestDuplicateRegression$$' -v ./internal/store
 lint:
 	@command -v golangci-lint >/dev/null || { echo 'Install golangci-lint: grm install golangci/golangci-lint'; exit 1; }
 	golangci-lint run
-check: fmt vet build test lint
+check: fmt vet build test duplicates lint
 # grm creates the v<monova> tag on GitHub, so HEAD must already be pushed.
 release: build
 	@command -v grm >/dev/null || { echo 'Install grm: https://github.com/jsnjack/grm'; exit 1; }
