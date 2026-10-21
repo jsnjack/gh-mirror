@@ -193,7 +193,13 @@ sync returns to ordinary incremental operation. Compatible code changes do not
 change this contract version. Generic API/network failures do not cause a rebuild.
 Physical SQL schema compatibility is checked separately before collection.
 
-Sync reports progress on stderr by default, starting before database setup. Plain
+Sync reports progress on stderr by default, starting before database setup. On a
+terminal stderr, outside debug mode and `TERM=dumb`, it draws a checklist. Finished
+phases become fixed lines, and a repository's sub-phases fold into one line with
+its received records. The running phase redraws in place every 100 ms with a
+spinner, bar and counters. Frame rows are cut to the terminal width, so redraws
+move up exactly the rows they printed. Diagnostics print above the frame. `NO_COLOR`
+disables colour. Elsewhere, plain
 status lines show phase, repository, listing counts, elapsed time, request usage,
 conditional cache hits, and rate-limit information. They also report
 active/configured workers and saved responses reused on resume. A line prints on

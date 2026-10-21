@@ -46,6 +46,14 @@ type Display struct {
 	embeddingRate                       float64
 	quotaLimit                          string
 	changes                             []RepositoryChanges
+	// Terminal checklist state; see live.go.
+	live, color                bool
+	frame                      int
+	pending                    []string
+	group                      string
+	groupStarted               time.Time
+	groupIssues, groupComments int
+	noted                      string
 }
 
 // New starts status reporting for a sync.
@@ -55,15 +63,23 @@ func New(writer io.Writer) (*Display, error) {
 
 // NewOperation reports collection or standalone offline indexing activity.
 func NewOperation(writer io.Writer, operation string) (*Display, error) {
+	return startDisplay(writer, operation, false, false)
+}
+
+func startDisplay(writer io.Writer, operation string, live, color bool) (*Display, error) {
 	now := time.Now()
-	d := &Display{writer: writer, started: now, phaseStarted: now, phase: "Opening database", received: map[string]int{}, stop: make(chan struct{}), stopped: make(chan struct{}), operation: operation}
+	d := &Display{writer: writer, started: now, phaseStarted: now, phase: "Opening database", received: map[string]int{}, stop: make(chan struct{}), stopped: make(chan struct{}), operation: operation, live: live, color: color}
 	d.render(time.Now(), "")
 	if d.err != nil {
 		return nil, d.err
 	}
+	interval := time.Second
+	if live {
+		interval = liveInterval
+	}
 	go func() {
 		defer close(d.stopped)
-		ticker := time.NewTicker(time.Second)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
@@ -71,7 +87,7 @@ func NewOperation(writer io.Writer, operation string) (*Display, error) {
 				return
 			case now := <-ticker.C:
 				d.mu.Lock()
-				if !d.finished && now.Sub(d.printed) >= plainInterval {
+				if !d.finished && (d.live || now.Sub(d.printed) >= plainInterval) {
 					d.render(now, "")
 				}
 				d.mu.Unlock()
@@ -88,9 +104,12 @@ func (d *Display) Report(event Event) {
 	if d.finished {
 		return
 	}
-	changed := event.Phase != "" && (event.Phase != d.phase || event.Scope != d.scope)
+	changed := event.Phase != "" && (clean(event.Phase) != d.phase || clean(event.Scope) != d.scope)
 	if event.Phase != "" {
 		if changed {
+			if d.live {
+				d.commitPhase(event, time.Now())
+			}
 			d.phaseStarted = time.Now()
 			d.page, d.records, d.done, d.total = 0, 0, 0, 0
 			d.resource = ""
@@ -161,6 +180,16 @@ func (d *Display) Report(event Event) {
 			d.until = time.Now().Add(event.Wait)
 		}
 	}
+	if d.live {
+		if d.fallback != "" && d.fallback != d.noted {
+			d.noted = d.fallback
+			d.pending = append(d.pending, d.paint(ansiYellow, "  ! ")+"CPU fallback: "+d.fallback)
+		}
+		if len(d.pending) > 0 {
+			d.render(time.Now(), "")
+		}
+		return
+	}
 	if changed || event.Wait > 0 || (d.total > 0 && d.done == d.total) || time.Since(d.printed) >= time.Second {
 		d.render(time.Now(), "")
 	}
@@ -180,6 +209,10 @@ func (d *Display) Finish(result error) error {
 	<-d.stopped
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.live {
+		d.finishLive(result)
+		return d.err
+	}
 	status := "Sync complete"
 	if errors.Is(result, context.Canceled) {
 		status = "Sync cancelled; rerun sync to resume"
@@ -200,6 +233,10 @@ func (d *Display) Finish(result error) error {
 }
 
 func (d *Display) render(now time.Time, status string) {
+	if d.live {
+		d.renderLive(now, status)
+		return
+	}
 	if d.err != nil {
 		return
 	}
@@ -324,22 +361,26 @@ func (d *Display) changeRows(status string) []string {
 	}
 	rows := make([]string, 0, len(d.changes))
 	for _, c := range d.changes {
-		var parts []string
-		for _, kind := range []struct {
-			name  string
-			tally Tally
-		}{{"issues", c.Issues}, {"pull requests", c.PullRequests}, {"comments", c.Comments}} {
-			if part := tallyText(kind.tally); part != "" {
-				parts = append(parts, kind.name+" "+part)
-			}
-		}
-		summary := noChanges
-		if len(parts) > 0 {
-			summary = strings.Join(parts, " | ")
-		}
-		rows = append(rows, clean(c.Repo)+": "+summary)
+		rows = append(rows, clean(c.Repo)+": "+repositoryChanges(c, " | "))
 	}
 	return rows
+}
+
+// repositoryChanges lists one repository's non-zero tallies joined by separator.
+func repositoryChanges(c RepositoryChanges, separator string) string {
+	var parts []string
+	for _, kind := range []struct {
+		name  string
+		tally Tally
+	}{{"issues", c.Issues}, {"pull requests", c.PullRequests}, {"comments", c.Comments}} {
+		if part := tallyText(kind.tally); part != "" {
+			parts = append(parts, kind.name+" "+part)
+		}
+	}
+	if len(parts) == 0 {
+		return noChanges
+	}
+	return strings.Join(parts, separator)
 }
 
 // tallyText renders non-zero counts as +added ~updated -removed.

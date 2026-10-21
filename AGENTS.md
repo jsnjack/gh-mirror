@@ -144,8 +144,11 @@ a checkpoint session as running; `collect.Options.StaleAfter` repeats the age ch
 the lock and busy errors map to running. Failed pre-read syncs warn and read old data.
 `status --check` never syncs first, so a stale mirror fails its freshness check.
 Sync progress starts before opening the database and uses stderr, leaving stdout
-for command results. Print plain status lines on phase changes, at most once a second
-while events arrive, and every 5 seconds otherwise. `--quiet` disables progress. Report actual
+for command results. On terminal stderr (not --debug or TERM=dumb) `progress.NewTerminal`
+draws a checklist: finished phases and per-repository groups become fixed lines and
+the running phase redraws in place, fitted to the width; stderr diagnostics print
+above it and NO_COLOR disables colour. Otherwise print plain status lines on phase
+changes, at most once a second while events arrive, and every 5 seconds otherwise. `--quiet` disables progress. Report actual
 pages, records, hydration batches, HTTP attempts, conditional hits, and retry waits
 without extra GitHub requests. Show bounded progress only for known local totals.
 Stop refreshes on success, failure, and cancellation.

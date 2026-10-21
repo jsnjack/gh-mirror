@@ -71,7 +71,8 @@ func init() {
 		if _, err := resolveOutputFormat(outputFormat, false); err != nil {
 			return err
 		}
-		logger, closer, err := diagnostics.Setup(debug, trace, command.ErrOrStderr())
+		progressLogs.reset(command.ErrOrStderr())
+		logger, closer, err := diagnostics.Setup(debug, trace, progressLogs)
 		if err != nil {
 			return fmt.Errorf("set up diagnostics: %w", err)
 		}

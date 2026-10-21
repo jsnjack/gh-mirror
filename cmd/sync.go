@@ -133,7 +133,7 @@ func runSync(command *cobra.Command, run syncRun) (_ any, freshness collect.Fres
 	}
 	if !run.quiet {
 		var err error
-		display, err = progress.New(command.ErrOrStderr())
+		display, err = startProgress(command, "sync")
 		if err != nil {
 			return nil, freshness, fmt.Errorf("start sync progress: %w", err)
 		}

@@ -28,7 +28,7 @@ func addIndex() {
 		var report progress.Reporter
 		if !quiet {
 			var err error
-			display, err = progress.NewOperation(command.ErrOrStderr(), "index")
+			display, err = startProgress(command, "index")
 			if err != nil {
 				return err
 			}

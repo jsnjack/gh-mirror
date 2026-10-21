@@ -520,17 +520,39 @@ gh-mirror sync --workers 1                    # strictly serial requests
 
 ### Progress
 
-Progress goes to stderr as plain status lines; stdout keeps the JSON result. A line
-prints on each phase change, at most once a second while work arrives, and every five
-seconds otherwise:
+Progress goes to stderr; stdout keeps the JSON result. On a terminal it is a live
+checklist. Each finished phase becomes a `✓` line, with one line per repository. The
+current phase redraws below them:
+
+```text
+  ✓ Opening database                                                  0.0s
+  ✓ Checking checkpoints                                              0.2s
+  ✓ surfly/cobro                      412 issues · 1,903 comments     4.2s
+  ⠹ Hydrating issue metadata          ━━━━━━━━━━━━────────   61%  310/508  42.0/s  ETA 5s
+    GitHub 4,812/5,000 left · 188/3,000 requests · 37 cached · GitHub workers 8/8 · 12s
+```
+
+The run ends with the outcome and the committed changes per repository, which the
+JSON result also reports under `changes` (+ added, ~ updated, - removed):
+
+```text
+  Synced in 21s · 188 requests · 37 cached
+  surfly/cobro   issues +12 ~40   comments +188 ~3
+  surfly/it      no changes
+```
+
+- **Colours follow `NO_COLOR`.** Set it to any value for monochrome output.
+- **Warnings print above the checklist,** so they never break the redrawn lines.
+- **Plain status lines replace the checklist** when stderr is piped, with `--debug`,
+  or with `TERM=dumb`. A line prints on each phase change, at most once a second
+  while work arrives, and every five seconds otherwise:
 
 ```text
 gh-mirror | Hydrating issue metadata | [======--------------] 100/300 (33%) | 25.0/s | phase ETA 8s | Received: 300 issues, 840 comments | repository 1/1 | API: 19/3000 requests | 0 cached | GitHub workers 4/4 active | elapsed 12s | GitHub remaining: 4981/5000
 ```
 
 `cached` counts 304 Not Modified answers. GitHub does not charge quota for them. The
-last line names the outcome and the committed changes per repository, which the JSON
-result also reports under `changes` (+ added, ~ updated, - removed):
+last plain line names the outcome and the committed changes:
 
 ```text
 gh-mirror | Sync complete | last phase: Indexing semantic documents | … | changed surfly/it: issues +3 ~41 -1 | comments +88 -2
