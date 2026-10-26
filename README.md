@@ -182,8 +182,10 @@ Some data is never collected:
 The token needs read access to the configured repositories, their issues, organization
 issue types and fields, and owner projects.
 
+- **Sync needs the token.** Without it, sync stops before any request and names the
+  variable. GitHub would answer private repositories with 404.
 - **Enabled resources must be readable.** A 403, 404 or GraphQL error fails the sync;
-  disable the switch instead.
+  disable the switch instead. A 404 usually means the token cannot see the repository.
 - **Personal repositories** have no organization issue fields.
 - **User-owned Projects endpoints** need a classic PAT. Fine-grained and installation
   tokens are not supported there.

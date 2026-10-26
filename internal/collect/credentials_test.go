@@ -16,17 +16,16 @@ import (
 )
 
 func TestCredentialScope(t *testing.T) {
-	for _, name := range []string{"unchanged", "changed", "anonymous to token", "token removed", "legacy identity", "cancelled rebuild", "failed rebuild"} {
+	for _, name := range []string{"unchanged", "changed", "token removed", "legacy identity", "cancelled rebuild", "failed rebuild"} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
 			db, c, f, started := setup(t, 1)
 			initialToken := "synthetic-first"
-			if name == "anonymous to token" {
-				initialToken = ""
-			}
 			t.Setenv(c.TokenEnv, initialToken)
 			var legacyVisible atomic.Bool
+			var hits atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				hits.Add(1)
 				if r.URL.Path != "/repos/o/r/issues" {
 					f.ServeHTTP(w, r)
 					return
@@ -34,7 +33,7 @@ func TestCredentialScope(t *testing.T) {
 				items := []any{}
 				if r.URL.Query().Get("since") == "" {
 					count := 1
-					if r.Header.Get("Authorization") == "Bearer synthetic-second" || legacyVisible.Load() || (name == "token removed" && r.Header.Get("Authorization") != "") {
+					if r.Header.Get("Authorization") == "Bearer synthetic-second" || legacyVisible.Load() {
 						count = 2
 					}
 					for n := 1; n <= count; n++ {
@@ -59,6 +58,18 @@ func TestCredentialScope(t *testing.T) {
 				token = ""
 			}
 			t.Setenv(c.TokenEnv, token)
+			if name == "token removed" {
+				before := hits.Load()
+				_, err := syncAt(ctx, db, c, Options{}, started.Add(10*time.Minute))
+				if err == nil || !strings.Contains(err.Error(), c.TokenEnv+" is not set") || hits.Load() != before {
+					t.Fatal("sync ran without a token", err, hits.Load()-before)
+				}
+				after, err := db.Status(ctx)
+				if err != nil || after.Generation != initial.Status.Generation {
+					t.Fatal("tokenless sync changed the mirror", after, err)
+				}
+				return
+			}
 			if name == "legacy identity" {
 				legacyVisible.Store(true)
 				if err := db.Update(ctx, func(w *store.Writer) error { return w.SetMetadata(ctx, "credential_identity", "") }); err != nil {
@@ -109,7 +120,7 @@ func TestCredentialScope(t *testing.T) {
 				t.Fatal(err)
 			}
 			want := 2
-			if name == "unchanged" || name == "token removed" {
+			if name == "unchanged" {
 				want = 1
 			}
 			if result.Status.Issues != want {

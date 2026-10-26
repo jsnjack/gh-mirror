@@ -98,6 +98,11 @@ func syncVersion(ctx context.Context, db *store.Store, c config.Config, options 
 				return ErrFresh
 			}
 		}
+		// GitHub answers unauthenticated requests for private repositories with 404, so
+		// stop before the first request and name the variable instead.
+		if token == "" {
+			return fmt.Errorf("%s is not set; sync needs a GitHub token that can read %s", c.TokenEnv, strings.Join(repos, ", "))
+		}
 		incompatible := old.Generation != "" && old.CollectionVersion != version
 		priorIdentity, err := w.Metadata(ctx, "credential_identity")
 		if err != nil {

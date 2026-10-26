@@ -23,6 +23,9 @@ flags appear only on commands that encode text. All commands inherit `--config`/
 `--format`, `--db`, `--trace`, `--ensure-fresh` and `--stale-after`. The root supports `--version`. Configuration is TOML under the XDG
 configuration directory. Durable data uses the XDG data directory. Tokens are
 read from named environment variables, never configuration values or databases.
+Sync stops before its first request when the `token_env` variable is empty, naming
+the variable: GitHub answers unauthenticated requests for private repositories with
+404. A fresh mirror under `--ensure-fresh` still skips without a token.
 
 ## Data contract
 

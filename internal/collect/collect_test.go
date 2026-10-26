@@ -223,6 +223,7 @@ func setup(t *testing.T, count int) (*store.Store, config.Config, *fixture, time
 	c.APIURL = server.URL
 	c.GraphQLURL = server.URL + "/graphql"
 	c.TokenEnv = "GH_MIRROR_TEST_TOKEN"
+	t.Setenv(c.TokenEnv, "test-token")
 	db, err := store.Open(c.Database, false)
 	if err != nil {
 		t.Fatal(err)

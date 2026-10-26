@@ -55,6 +55,7 @@ func TestSyncStatus(t *testing.T) {
 				t.Fatal(err)
 			}
 			path := filepath.Join(dir, "config.toml")
+			t.Setenv("GH_MIRROR_TEST_TOKEN", "test-token")
 			if err := os.WriteFile(path, configuration, 0600); err != nil {
 				t.Fatal(err)
 			}

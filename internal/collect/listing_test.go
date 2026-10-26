@@ -113,6 +113,7 @@ func TestListingEditedBetweenPages(t *testing.T) {
 			c.RepositoryOptions = map[string]config.Scope{"o/r": {Issues: true}}
 			c.Database = filepath.Join(t.TempDir(), "mirror.sqlite")
 			c.APIURL, c.GraphQLURL, c.TokenEnv, c.Workers = server.URL, server.URL+"/graphql", "GH_MIRROR_TEST_TOKEN", 1
+			t.Setenv(c.TokenEnv, "test-token")
 			db, err := store.Open(c.Database, false)
 			if err != nil {
 				t.Fatal(err)

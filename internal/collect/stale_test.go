@@ -33,6 +33,10 @@ func TestConditionalSync(t *testing.T) {
 			f.mu.Lock()
 			f.requests = 0
 			f.mu.Unlock()
+			if tc.fresh {
+				// A fresh mirror skips before the token check, so readers need no token.
+				t.Setenv(c.TokenEnv, "")
+			}
 			out, err := Sync(ctx, db, c, Options{StaleAfter: tc.staleAfter})
 			f.mu.Lock()
 			requests := f.requests

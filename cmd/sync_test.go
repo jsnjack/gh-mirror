@@ -63,6 +63,7 @@ func newConditionalSync(t *testing.T, settings map[string]any) *conditionalSync 
 		t.Fatal(err)
 	}
 	s.config = filepath.Join(dir, "config.toml")
+	t.Setenv("GH_MIRROR_TEST_TOKEN", "test-token")
 	if err := os.WriteFile(s.config, raw, 0600); err != nil {
 		t.Fatal(err)
 	}
