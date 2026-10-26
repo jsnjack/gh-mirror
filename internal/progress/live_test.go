@@ -9,14 +9,16 @@ import (
 	"time"
 )
 
-// syncEvents mimics two repositories followed by hydration.
+// syncEvents mimics two repositories listed together, stored in turn, then hydration.
 func syncEvents(d *Display) {
 	d.Report(Event{Phase: "Checking checkpoints", Limit: 3000})
-	for i, repo := range []string{"owner/alpha", "owner/beta"} {
-		d.Report(Event{Phase: "Fetching issues and comments", Scope: repo, Repository: i + 1, Repositories: 2})
+	d.Report(Event{Phase: "Fetching issues and comments"})
+	for _, repo := range []string{"owner/alpha", "owner/beta"} {
 		d.Report(Event{Resource: FetchingIssues, Scope: repo, Page: 1, Records: 120})
 		d.Report(Event{Resource: FetchingComments, Scope: repo, Page: 2, Records: 1500})
-		d.Report(Event{Phase: "Indexing issues", Scope: repo, Total: 120, Advance: 120})
+	}
+	for i, repo := range []string{"owner/alpha", "owner/beta"} {
+		d.Report(Event{Phase: "Indexing issues", Scope: repo, Total: 120, Advance: 120, Repository: i + 1, Repositories: 2})
 		d.Report(Event{Phase: "Recovering comment parent", Scope: repo + "#7"})
 		d.Report(Event{Phase: "Reconciling inventories", Scope: repo})
 	}
@@ -35,7 +37,7 @@ func TestTerminalChecklist(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := output.String()
-	for _, want := range []string{"✓ Opening database", "✓ Checking checkpoints", "✓ owner/alpha", "120 issues · 1,500 comments", "✓ Hydrating issue metadata", "240/240", "Synced in", "12 requests", "owner/alpha   issues +3 ~2", "owner/beta    no changes"} {
+	for _, want := range []string{"✓ Opening database", "✓ Checking checkpoints", "✓ Fetching issues and comments", "240 issues · 3,000 comments", "✓ owner/alpha", "120 issues · 1,500 comments", "✓ Hydrating issue metadata", "240/240", "Synced in", "12 requests", "owner/alpha   issues +3 ~2", "owner/beta    no changes"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("checklist missing %q:\n%s", want, text)
 		}
@@ -61,6 +63,29 @@ func TestTerminalColour(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), ansiGreen+"  ✓ "+ansiReset) {
 		t.Fatalf("finished phases are not green:\n%q", output.String())
+	}
+}
+
+func TestTerminalConcurrentListings(t *testing.T) {
+	var output lockedBuffer
+	d, err := NewTerminal(&output, "sync", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := d.Finish(nil); err != nil {
+			t.Error(err)
+		}
+	}()
+	d.Report(Event{Phase: "Fetching issues and comments"})
+	d.Report(Event{Resource: FetchingIssues, Scope: "owner/alpha", Page: 3, Records: 300})
+	d.Report(Event{Resource: FetchingIssues, Scope: "owner/beta", Page: 2, Records: 200})
+	d.mu.Lock()
+	head := d.frameLines(time.Now())[0]
+	d.mu.Unlock()
+	// Pages from several repositories interleave, so the counter names its repository.
+	if !strings.Contains(head, "Fetching issues and comments") || !strings.Contains(head, "owner/beta issues page 2 · 200 records") {
+		t.Fatalf("frame hid which repository the page belongs to: %q", head)
 	}
 }
 
@@ -166,12 +191,15 @@ func TestTerminalDemo(t *testing.T) {
 	}
 	step := func(e Event) { d.Report(e); time.Sleep(150 * time.Millisecond) }
 	step(Event{Phase: "Checking checkpoints", Limit: 3000})
-	for i, repo := range []string{"surfly/cobro", "surfly/it"} {
-		step(Event{Phase: "Fetching issues and comments", Scope: repo, Repository: i + 1, Repositories: 2})
-		for page := 1; page <= 6; page++ {
-			step(Event{Resource: FetchingComments, Scope: repo, Page: page, Records: page * 100, Requests: page + 10*i, Remaining: "4900", QuotaLimit: "5000", Workers: 8, Active: 3})
+	repos := []string{"surfly/cobro", "surfly/it"}
+	step(Event{Phase: "Fetching issues and comments"})
+	for page := 1; page <= 6; page++ {
+		for i, repo := range repos {
+			step(Event{Resource: FetchingComments, Scope: repo, Page: page, Records: page * 100, Requests: 2*page + i, Remaining: "4900", QuotaLimit: "5000", Workers: 8, Active: 3})
 		}
-		step(Event{Phase: "Indexing issues", Scope: repo, Total: 300})
+	}
+	for i, repo := range repos {
+		step(Event{Phase: "Indexing issues", Scope: repo, Total: 300, Repository: i + 1, Repositories: 2})
 		for range 6 {
 			step(Event{Advance: 50})
 		}

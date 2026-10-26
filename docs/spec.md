@@ -108,6 +108,9 @@ two HTTP requests. A 251-ticket fixture with complete catalogs, one project, and
 nested overflow requires 17 bootstrap requests. Exact conditional responses retain
 ETags and Link headers for reusable listing/catalog URLs. Delta URLs with changing
 `since` watermarks are not persisted in the HTTP cache; conditional requests still count against the request budget.
+A complete listing deletes cached pages of its own paths that it did not request,
+such as pages from an older sort order, stale cursors or a shrunken tail. Delta
+listings never prune the cache.
 Use advertised numeric next/last page ranges to dispatch bounded page workers through
 the shared request pool. Preserve query ordering in generated URLs for checkpoint
 compatibility, checkpoint each finished page, report monotonic completed-page counts,
@@ -131,20 +134,25 @@ temporary directory. They refuse symbolic and hard links and record resource/cou
 credentials or ticket bodies. No upstream mutation API exists.
 
 Fetch concurrency defaults to four workers and is bounded to 1–16 through `workers`
-or `sync --workers`. Independent issue/comment listings and 50-node hydration batches
-run concurrently; dependent pagination remains sequential. One client coordinates
+or `sync --workers`. The issue and comment listings of every repository share one
+pool, issue listings first, because GitHub pages issues by cursor. Repositories are
+then stored one at a time. 50-node hydration batches also run concurrently;
+dependent pagination remains sequential. One client coordinates
 REST, GraphQL, retries, budget reservations, and rate-limit pauses. Worker failures
 cancel and join the pool before the collection transaction can end. Hydration
 results are applied serially. One worker selects serial collection.
 
-Completed REST pages (including resolved conditional bodies, ETags, and next links)
-and successful GraphQL data are committed to a separate private SQLite checkpoint
+Completed REST pages (bodies, ETags and next links) and successful GraphQL data
+are committed to a separate private SQLite checkpoint
 at `<database>.sync.sqlite` with FULL synchronous durability. Interrupted collection
 rolls back the visible mirror while retaining these fetches, even across process
 termination. Resume replays saved responses and requests only missing work; reused
 responses do not consume the current invocation's request budget. Pending work keeps
 its original collection start timestamp so the next delta can cover changes made
-while collection was stopped. Enrichment and reconciliation intervals use the current
+while collection was stopped. A 304 page saves only its confirmed ETag and links.
+Resume reads its body from the committed conditional cache, and fetches the page
+again when that cache no longer holds the confirmed ETag. Enrichment and
+reconciliation intervals use the current
 time, so a session that keeps failing still reaches its scheduled refreshes. Each
 failed attempt records its error and count in the checkpoint for status reporting.
 Only a completed sync advances visible coverage.
@@ -195,8 +203,10 @@ Physical SQL schema compatibility is checked separately before collection.
 
 Sync reports progress on stderr by default, starting before database setup. On a
 terminal stderr, outside debug mode and `TERM=dumb`, it draws a checklist. Finished
-phases become fixed lines, and a repository's sub-phases fold into one line with
-its received records. The running phase redraws in place every 100 ms with a
+phases become fixed lines. All repositories' listings share one fetch phase, whose
+line totals the received records. Each repository's later sub-phases fold into one
+line with that repository's received records. While pages from several
+repositories interleave, the page counter names its repository. The running phase redraws in place every 100 ms with a
 spinner, bar and counters. Frame rows are cut to the terminal width, so redraws
 move up exactly the rows they printed. Diagnostics print above the frame. `NO_COLOR`
 disables colour. Elsewhere, plain

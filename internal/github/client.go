@@ -104,9 +104,11 @@ func (c *Client) Requests() int {
 }
 
 type cachedResponse struct {
-	Body json.RawMessage `json:"body"`
+	Body json.RawMessage `json:"body,omitempty"`
 	Link string          `json:"link"`
 	ETag string          `json:"etag,omitempty"`
+	// NotModified marks a checkpointed 304 whose body stays in the conditional cache under ETag.
+	NotModified bool `json:"not_modified,omitempty"`
 }
 
 func (c *Client) request(ctx context.Context, method, target string, payload []byte, etag string) (body []byte, headers http.Header, code int, requestErr error) {
@@ -268,7 +270,18 @@ func (c *Client) get(ctx context.Context, target string) (cachedResponse, error)
 		if err := json.Unmarshal(saved, &cached); err != nil {
 			return cached, fmt.Errorf("decode saved REST response: %w", err)
 		}
-		return cached, c.remember(ctx, target, cached, saved)
+		if !cached.NotModified {
+			return cached, c.remember(ctx, target, cached, saved)
+		}
+		confirmed, ok, err := c.confirmedResponse(ctx, target, cached)
+		if err != nil || ok {
+			return confirmed, err
+		}
+		// The committed cache no longer holds the confirmed version, so fetch the page again.
+		if err := c.Checkpoint.Delete(ctx, key); err != nil {
+			return cached, fmt.Errorf("discard stale conditional checkpoint: %w", err)
+		}
+		cached = cachedResponse{}
 	}
 	etag := ""
 	u, err := url.Parse(target)
@@ -300,15 +313,26 @@ func (c *Client) get(ctx context.Context, target string) (cachedResponse, error)
 		if len(cached.Body) == 0 {
 			return cached, fmt.Errorf("GitHub returned 304 without cached response")
 		}
+		link := cached.Link
 		if links, present := headers["Link"]; present {
 			cached.Link = strings.Join(links, ",")
 		}
-		encoded, err := json.Marshal(cached)
+		cached.ETag = etag
+		// The checkpoint keeps only the confirmed ETag and links; resume reads the body
+		// from the committed cache instead of a second copy.
+		reference, err := json.Marshal(cachedResponse{Link: cached.Link, ETag: etag, NotModified: true})
 		if err != nil {
 			return cached, fmt.Errorf("encode saved conditional response: %w", err)
 		}
-		if err := c.save(ctx, key, encoded); err != nil {
+		if err := c.save(ctx, key, reference); err != nil {
 			return cached, err
+		}
+		if cached.Link == link {
+			return cached, nil
+		}
+		encoded, err := json.Marshal(cached)
+		if err != nil {
+			return cached, fmt.Errorf("encode conditional response: %w", err)
 		}
 		return cached, c.remember(ctx, target, cached, encoded)
 	}
@@ -324,6 +348,39 @@ func (c *Client) get(ctx context.Context, target string) (cachedResponse, error)
 		return out, err
 	}
 	return out, c.remember(ctx, target, out, encoded)
+}
+
+// confirmedResponse resolves a checkpointed 304 from the committed conditional cache. It
+// reports false when the cache no longer holds the version GitHub confirmed.
+func (c *Client) confirmedResponse(ctx context.Context, target string, reference cachedResponse) (cachedResponse, bool, error) {
+	var cached cachedResponse
+	if c.cache == nil || reference.ETag == "" {
+		return cached, false, nil
+	}
+	c.cacheMu.Lock()
+	etag, body, err := c.cache.Cached(ctx, target)
+	c.cacheMu.Unlock()
+	if err != nil {
+		return cached, false, fmt.Errorf("load conditional response: %w", err)
+	}
+	if etag != reference.ETag || len(body) == 0 {
+		return cached, false, nil
+	}
+	if err := json.Unmarshal(body, &cached); err != nil {
+		return cached, false, fmt.Errorf("decode conditional response: %w", err)
+	}
+	if len(cached.Body) == 0 {
+		return cached, false, nil
+	}
+	if cached.Link == reference.Link {
+		return cached, true, nil
+	}
+	cached.Link, cached.ETag = reference.Link, etag
+	encoded, err := json.Marshal(cached)
+	if err != nil {
+		return cached, false, fmt.Errorf("encode conditional response: %w", err)
+	}
+	return cached, true, c.remember(ctx, target, cached, encoded)
 }
 
 func (c *Client) remember(ctx context.Context, target string, response cachedResponse, encoded []byte) error {

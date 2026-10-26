@@ -521,13 +521,16 @@ gh-mirror sync --workers 1                    # strictly serial requests
 ### Progress
 
 Progress goes to stderr; stdout keeps the JSON result. On a terminal it is a live
-checklist. Each finished phase becomes a `✓` line, with one line per repository. The
-current phase redraws below them:
+checklist. Each finished phase becomes a `✓` line. All repositories are listed in one
+fetch phase, then stored with one line per repository. The current phase redraws
+below them:
 
 ```text
   ✓ Opening database                                                  0.0s
   ✓ Checking checkpoints                                              0.2s
-  ✓ surfly/cobro                      412 issues · 1,903 comments     4.2s
+  ✓ Fetching issues and comments      530 issues · 2,310 comments     3.1s
+  ✓ surfly/cobro                      412 issues · 1,903 comments     1.1s
+  ✓ surfly/it                         118 issues · 407 comments       0.4s
   ⠹ Hydrating issue metadata          ━━━━━━━━━━━━────────   61%  310/508  42.0/s  ETA 5s
     GitHub 4,812/5,000 left · 188/3,000 requests · 37 cached · GitHub workers 8/8 · 12s
 ```

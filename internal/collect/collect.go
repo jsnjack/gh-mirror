@@ -157,16 +157,12 @@ func syncVersion(ctx context.Context, db *store.Store, c config.Config, options 
 		groups := map[hydrationScope][]store.IssueRef{}
 		coverages := map[string]store.Coverage{}
 		unreconciled := map[string]bool{}
+		plans := make([]repositoryPlan, len(repos))
 		for repository, repo := range repos {
 			scope := scopes[repo]
 			priorScope, knownScope := priorScopes[repo]
 			changedScope := knownScope && priorScope != scope
 			changedInventory := knownScope && (priorScope.Issues != scope.Issues || priorScope.PullRequests != scope.PullRequests || priorScope.IssueComments != scope.IssueComments || priorScope.PullRequestComments != scope.PullRequestComments || priorScope.PullRequestReviewComments != scope.PullRequestReviewComments)
-			repoRefresh := refresh || changedScope
-			projectCoverage := "disabled"
-			if scope.Projects {
-				projectCoverage = "memberships"
-			}
 			if changedScope {
 				if err := w.ClearExtras(ctx, repo); err != nil {
 					return err
@@ -197,31 +193,28 @@ func syncVersion(ctx context.Context, db *store.Store, c config.Config, options 
 					return err
 				}
 			}
-			client.Report(progress.Event{Phase: "Fetching issues and comments", Scope: repo, Repository: repository + 1, Repositories: len(repos)})
-			type listing struct {
-				index   int
-				records []json.RawMessage
+			plans[repository] = repositoryPlan{scope: scope, previous: previous, inventory: inventory, refresh: refresh || changedScope,
+				paths: [3]string{"/repos/" + repo + "/issues?" + query.Encode(), "/repos/" + repo + "/issues/comments?" + commentQuery.Encode(), "/repos/" + repo + "/pulls/comments?" + commentQuery.Encode()}}
+		}
+		// Each listing page names its repository; the phase covers all of them.
+		client.Report(progress.Event{Phase: "Fetching issues and comments"})
+		listings, err := fetchListings(ctx, client, repos, plans, c.Workers)
+		if err != nil {
+			return err
+		}
+		for repository, repo := range repos {
+			scope, previous, inventory, repoRefresh := plans[repository].scope, plans[repository].previous, plans[repository].inventory, plans[repository].refresh
+			projectCoverage := "disabled"
+			if scope.Projects {
+				projectCoverage = "memberships"
 			}
-			lists := [3][]json.RawMessage{}
-			paths := []string{"/repos/" + repo + "/issues?" + query.Encode(), "/repos/" + repo + "/issues/comments?" + commentQuery.Encode(), "/repos/" + repo + "/pulls/comments?" + commentQuery.Encode()}
-			resources := []string{progress.FetchingIssues, progress.FetchingComments, progress.FetchingReviewComments}
-			err := parallelFetch(ctx, c.Workers, len(paths), func(ctx context.Context, index int) (listing, error) {
-				if (index == 1 && !scope.IssueComments && !scope.PullRequestComments) || (index == 2 && !scope.PullRequestReviewComments) {
-					return listing{index: index, records: []json.RawMessage{}}, nil
-				}
-				items, err := client.ListWithProgress(ctx, paths[index], progress.Event{Resource: resources[index], Scope: repo})
-				if err != nil {
-					return listing{}, fmt.Errorf("collect %s for %s: %w", resources[index], repo, err)
-				}
-				return listing{index, items}, nil
-			}, func(result listing) error { lists[result.index] = result.records; return nil })
-			if err != nil {
-				return err
-			}
-			issues, comments := lists[0], append(lists[1], lists[2]...)
+			// Drop the shared reference so each repository's pages are freed once stored.
+			lists := listings[repository]
+			listings[repository] = [3]listing{}
+			issues, comments := lists[0].records, append(lists[1].records, lists[2].records...)
 			seenIssues := map[int]bool{}
 			changed := []store.IssueRef{}
-			client.Report(progress.Event{Phase: "Indexing issues", Scope: repo, Total: len(issues)})
+			client.Report(progress.Event{Phase: "Indexing issues", Scope: repo, Total: len(issues), Repository: repository + 1, Repositories: len(repos)})
 			for i, raw := range issues {
 				ref, err := retainIssue(ctx, w, repo, raw, scope)
 				if err != nil {
@@ -320,6 +313,11 @@ func syncVersion(ctx context.Context, db *store.Store, c config.Config, options 
 				client.Report(progress.Event{Phase: "Reconciling inventories", Scope: repo})
 				if err := w.Reconcile(ctx, repo, seenIssues, seenComments); err != nil {
 					return fmt.Errorf("reconcile %s: %w", repo, err)
+				}
+				for _, list := range lists {
+					if err := w.PruneListing(ctx, list.pages); err != nil {
+						return fmt.Errorf("prune %s listing cache: %w", repo, err)
+					}
 				}
 				previous.ReconciledAt = started.Format(time.RFC3339Nano)
 			}
@@ -494,6 +492,43 @@ func syncVersion(ctx context.Context, db *store.Store, c config.Config, options 
 		slog.Log(ctx, diagnostics.TraceLevel, "retain completed sync checkpoint", "error", err)
 	}
 	return result, nil
+}
+
+// repositoryPlan holds what one repository collects in this sync.
+type repositoryPlan struct {
+	scope              config.Scope
+	previous           store.Coverage
+	inventory, refresh bool
+	paths              [3]string
+}
+
+// listingResources names the issue, comment and review comment listings in path order.
+var listingResources = [3]string{progress.FetchingIssues, progress.FetchingComments, progress.FetchingReviewComments}
+
+type listing struct {
+	repository, index int
+	records           []json.RawMessage
+	pages             []string
+}
+
+// fetchListings runs every repository's listings in one pool, issue listings first:
+// GitHub pages issues by cursor, so each issue listing holds one request at a time.
+func fetchListings(ctx context.Context, client *github.Client, repos []string, plans []repositoryPlan, workers int) ([][3]listing, error) {
+	out := make([][3]listing, len(repos))
+	err := parallelFetch(ctx, workers, 3*len(repos), func(ctx context.Context, job int) (listing, error) {
+		result := listing{repository: job % len(repos), index: job / len(repos), records: []json.RawMessage{}}
+		repo, scope := repos[result.repository], plans[result.repository].scope
+		if (result.index == 1 && !scope.IssueComments && !scope.PullRequestComments) || (result.index == 2 && !scope.PullRequestReviewComments) {
+			return result, nil
+		}
+		items, pages, err := client.ListWithProgress(ctx, plans[result.repository].paths[result.index], progress.Event{Resource: listingResources[result.index], Scope: repo})
+		if err != nil {
+			return listing{}, fmt.Errorf("collect %s for %s: %w", listingResources[result.index], repo, err)
+		}
+		result.records, result.pages = items, pages
+		return result, nil
+	}, func(result listing) error { out[result.repository][result.index] = result; return nil })
+	return out, err
 }
 
 func recoverIssue(ctx context.Context, c *github.Client, w *store.Writer, repo string, number int, scope config.Scope) (store.IssueRef, error) {

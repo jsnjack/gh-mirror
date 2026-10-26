@@ -17,6 +17,7 @@ type memoryCache struct {
 		etag string
 		body []byte
 	}
+	writes int
 }
 
 func (c *memoryCache) Cached(_ context.Context, key string) (string, []byte, error) {
@@ -24,6 +25,7 @@ func (c *memoryCache) Cached(_ context.Context, key string) (string, []byte, err
 	return entry.etag, entry.body, nil
 }
 func (c *memoryCache) Cache(_ context.Context, key, etag string, body []byte) error {
+	c.writes++
 	if c.entries == nil {
 		c.entries = map[string]struct {
 			etag string

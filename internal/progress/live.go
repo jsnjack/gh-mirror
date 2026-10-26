@@ -65,7 +65,6 @@ func (d *Display) commitPhase(next Event, now time.Time) {
 	d.group = ""
 	if next.Repositories > 0 {
 		d.group, d.groupStarted = scope, now
-		d.groupIssues, d.groupComments = d.issues, d.comments
 	}
 }
 
@@ -78,11 +77,14 @@ func (d *Display) checklistLine(now time.Time, mark, code string) string {
 	switch {
 	case d.group != "":
 		label, started = d.group, d.groupStarted
-		detail = received(d.issues-d.groupIssues, d.comments-d.groupComments)
+		// Listings may finish before the repository's group starts, so count by scope.
+		detail = received(d.received[d.group+"/"+FetchingIssues], d.received[d.group+"/"+FetchingComments]+d.received[d.group+"/"+FetchingReviewComments])
 	case strings.HasSuffix(d.phase, "required"):
 		return d.paint(ansiYellow, "  ! ") + label
 	case d.total > 0:
 		detail = count(min(d.done, d.total)) + "/" + count(d.total)
+	case d.issues > d.phaseIssues || d.comments > d.phaseComments:
+		detail = received(d.issues-d.phaseIssues, d.comments-d.phaseComments)
 	}
 	if d.backend != "" && d.total > 0 && d.workerKind != GitHubWorkers {
 		detail += " · " + count(d.embeddingVectors) + " vectors"
@@ -150,6 +152,9 @@ func (d *Display) frameLines(now time.Time) []string {
 		}
 	} else if d.page > 0 {
 		resource := strings.ToLower(strings.TrimPrefix(d.resource, "Fetching "))
+		if d.pageScope != "" && d.pageScope != d.scope && d.pageScope != d.group {
+			resource = d.pageScope + " " + resource
+		}
 		metrics = append(metrics, strings.TrimSpace(fmt.Sprintf("%s page %d · %s records", resource, d.page, count(d.records))))
 	}
 	tail := strings.Join(metrics, "  ")

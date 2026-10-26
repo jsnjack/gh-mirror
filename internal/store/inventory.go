@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // ObserveKind retains only the identity and kind needed to filter repository comment streams.
@@ -48,6 +49,44 @@ func (w *Writer) ClearExtras(ctx context.Context, repo string) error {
 func (w *Writer) DeleteCatalog(ctx context.Context, kind, scope string) error {
 	if _, err := w.tx.ExecContext(ctx, "DELETE FROM catalog WHERE kind=? AND scope=?", kind, scope); err != nil {
 		return fmt.Errorf("remove excluded catalog: %w", err)
+	}
+	return nil
+}
+
+// PruneListing removes cached pages of a complete listing's paths that it no longer
+// requested: an older sort order, stale cursors or pages past a shrunken tail.
+func (w *Writer) PruneListing(ctx context.Context, pages []string) error {
+	keep := make(map[string]bool, len(pages))
+	paths := map[string]bool{}
+	for _, page := range pages {
+		keep[page] = true
+		path, _, _ := strings.Cut(page, "?")
+		paths[path] = true
+	}
+	stale := []string{}
+	for path := range paths {
+		// '@' follows '?', so this range holds exactly the URLs of path with a query.
+		rows, err := w.tx.QueryContext(ctx, "SELECT url FROM responses WHERE url>=? AND url<?", path+"?", path+"@")
+		if err != nil {
+			return fmt.Errorf("read cached listing pages: %w", err)
+		}
+		for rows.Next() {
+			var url string
+			if err := rows.Scan(&url); err != nil {
+				return finishRows(rows, fmt.Errorf("scan cached listing page: %w", err))
+			}
+			if !keep[url] {
+				stale = append(stale, url)
+			}
+		}
+		if err := finishRows(rows, rows.Err()); err != nil {
+			return err
+		}
+	}
+	for _, url := range stale {
+		if _, err := w.tx.ExecContext(ctx, "DELETE FROM responses WHERE url=?", url); err != nil {
+			return fmt.Errorf("remove stale listing page: %w", err)
+		}
 	}
 	return nil
 }

@@ -27,11 +27,12 @@ type Display struct {
 	started, printed, until             time.Time
 	phaseStarted                        time.Time
 	phase, scope, remaining             string
-	resource                            string
+	resource, pageScope                 string
 	received                            map[string]int
 	page, records                       int
 	done, total                         int
 	issues, comments                    int
+	phaseIssues, phaseComments          int
 	repository, repositories            int
 	requests, limit, cached             int
 	active, workers                     int
@@ -47,13 +48,12 @@ type Display struct {
 	quotaLimit                          string
 	changes                             []RepositoryChanges
 	// Terminal checklist state; see live.go.
-	live, color                bool
-	frame                      int
-	pending                    []string
-	group                      string
-	groupStarted               time.Time
-	groupIssues, groupComments int
-	noted                      string
+	live, color  bool
+	frame        int
+	pending      []string
+	group        string
+	groupStarted time.Time
+	noted        string
 }
 
 // New starts status reporting for a sync.
@@ -112,7 +112,8 @@ func (d *Display) Report(event Event) {
 			}
 			d.phaseStarted = time.Now()
 			d.page, d.records, d.done, d.total = 0, 0, 0, 0
-			d.resource = ""
+			d.resource, d.pageScope = "", ""
+			d.phaseIssues, d.phaseComments = d.issues, d.comments
 		}
 		d.phase, d.scope = clean(event.Phase), clean(event.Scope)
 	}
@@ -123,7 +124,7 @@ func (d *Display) Report(event Event) {
 			key := event.Scope + "/" + resource
 			previous = d.received[key]
 			d.received[key] = event.Records
-			d.resource = clean(resource)
+			d.resource, d.pageScope = clean(resource), clean(event.Scope)
 		}
 		switch resource {
 		case FetchingIssues:
@@ -246,6 +247,9 @@ func (d *Display) render(now time.Time, status string) {
 		activity += " | " + d.scope
 	}
 	if d.page > 0 {
+		if d.pageScope != "" && d.pageScope != d.scope {
+			activity += " | " + d.pageScope
+		}
 		if d.resource != "" {
 			activity += " | " + d.resource
 		}

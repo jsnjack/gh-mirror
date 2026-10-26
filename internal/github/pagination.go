@@ -22,31 +22,35 @@ type listingPage struct {
 
 // List fetches all pages, parallelizing numbered ranges advertised by GitHub.
 func (c *Client) List(ctx context.Context, path string) ([]json.RawMessage, error) {
-	return c.ListWithProgress(ctx, path, progress.Event{})
+	items, _, err := c.ListWithProgress(ctx, path, progress.Event{})
+	return items, err
 }
 
-// ListWithProgress reports completed pages independently for each resource listing.
-func (c *Client) ListWithProgress(ctx context.Context, path string, activity progress.Event) ([]json.RawMessage, error) {
+// ListWithProgress reports completed pages independently for each resource listing. It
+// also returns the URL of every page it read, in order.
+func (c *Client) ListWithProgress(ctx context.Context, path string, activity progress.Event) ([]json.RawMessage, []string, error) {
 	target := c.api + path
 	base, err := url.Parse(target)
 	if err != nil {
-		return nil, fmt.Errorf("parse listing URL: %w", err)
+		return nil, nil, fmt.Errorf("parse listing URL: %w", err)
 	}
 	apiBase, err := url.Parse(c.api)
 	if err != nil {
-		return nil, fmt.Errorf("parse API base: %w", err)
+		return nil, nil, fmt.Errorf("parse API base: %w", err)
 	}
 	apiPrefix := strings.TrimRight(apiBase.Path, "/") + "/"
 	seen := map[string]bool{}
+	pages := []string{}
 	out := []json.RawMessage{}
 	for target != "" {
 		if seen[target] {
-			return nil, fmt.Errorf("repeated GitHub pagination URL")
+			return nil, nil, fmt.Errorf("repeated GitHub pagination URL")
 		}
 		seen[target] = true
+		pages = append(pages, target)
 		page, err := c.fetchListingPage(ctx, target, base, apiPrefix)
 		if err != nil {
-			return nil, fmt.Errorf("list %s page %d: %w", base.Path, len(seen), err)
+			return nil, nil, fmt.Errorf("list %s page %d: %w", base.Path, len(seen), err)
 		}
 		out = append(out, page.items...)
 		activity.Page, activity.Records = len(seen), len(out)
@@ -56,24 +60,25 @@ func (c *Client) ListWithProgress(ctx context.Context, path string, activity pro
 			target = page.next
 			continue
 		}
-		pages, err := c.fetchNumberedPages(ctx, plan, base, apiPrefix, activity)
+		numbered, err := c.fetchNumberedPages(ctx, plan, base, apiPrefix, activity)
 		if err != nil {
 			if errors.Is(err, errPaginationChanged) {
 				err = c.discardListingPage(ctx, target, err)
 			}
-			return nil, fmt.Errorf("list %s numbered pages: %w", base.Path, err)
+			return nil, nil, fmt.Errorf("list %s numbered pages: %w", base.Path, err)
 		}
-		for index, result := range pages {
+		for index, result := range numbered {
 			pageURL := plan.url(plan.first + index)
 			if seen[pageURL] {
-				return nil, fmt.Errorf("repeated GitHub pagination URL")
+				return nil, nil, fmt.Errorf("repeated GitHub pagination URL")
 			}
 			seen[pageURL] = true
+			pages = append(pages, pageURL)
 			out = append(out, result.items...)
 		}
-		target = pages[len(pages)-1].next
+		target = numbered[len(numbered)-1].next
 	}
-	return out, nil
+	return out, pages, nil
 }
 
 func (c *Client) fetchListingPage(ctx context.Context, target string, base *url.URL, prefix string) (listingPage, error) {

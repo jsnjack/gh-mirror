@@ -69,6 +69,8 @@ separately from issues. Bootstrap uses 100-record REST pages and 50-node GraphQL
 across repositories. Hydrate only changed tickets on deltas; reconcile catalogs,
 projects, fields and relationships on the configured enrichment interval. Expose
 that timestamp separately. Never retain non-reusable since-response cache entries. Full reconciliation removes stale issues, comments, and memberships.
+A complete listing prunes cached pages of its own paths that it did not request;
+delta listings never prune.
 Repository comment listings may reference parents omitted from issue listings.
 Recover each missing parent once before storing its comments, preserve it through
 full reconciliation, and include it in batched hydration. On deltas, check the stored
@@ -94,7 +96,7 @@ token still require explicit full sync or scheduled reconciliation.
 Workers share concurrency permits, budget reservations, retry pauses, and serialized
 progress callbacks. Retry 429/secondary 403 and GraphQL RATE_LIMITED with at least a
 one-minute backoff for five attempts, and wait for quota reset up to 61 minutes.
-Client clock and sleep are injectable for tests. GraphQL errors keep type and message. Parallelize independent listings, advertised numbered REST page
+Client clock and sleep are injectable for tests. GraphQL errors keep type and message. Parallelize independent listings across repositories, advertised numbered REST page
 ranges and hydration batches; follow cursor-dependent or unknown-range pagination
 sequentially. Preserve page-link query ordering for exact-URL checkpoint reuse.
 Validate origins, page-series parameters and contiguous next links, and assemble
@@ -107,7 +109,9 @@ cached links when the response omits them.
 Apply hydration results serially and join workers
 before ending the collection transaction. One worker must support serial collection.
 Save completed responses in the private `<database>.sync.sqlite` checkpoint with
-FULL synchronous durability, including delta pages. This temporary resume store is
+FULL synchronous durability, including delta pages. A 304 page saves only its ETag
+and links; resume reads the body from the committed conditional cache and refetches
+when the ETag no longer matches. This temporary resume store is
 separate from the reusable conditional cache. Keep the original collection-start
 watermark on resume, but evaluate enrichment and reconciliation intervals against
 the current time. Failed attempts record a count and bounded error in the checkpoint;
@@ -145,7 +149,8 @@ the lock and busy errors map to running. Failed pre-read syncs warn and read old
 `status --check` never syncs first, so a stale mirror fails its freshness check.
 Sync progress starts before opening the database and uses stderr, leaving stdout
 for command results. On terminal stderr (not --debug or TERM=dumb) `progress.NewTerminal`
-draws a checklist: finished phases and per-repository groups become fixed lines and
+draws a checklist: finished phases and per-repository groups become fixed lines
+(one fetch phase covers all repositories; group lines total records by scope) and
 the running phase redraws in place, fitted to the width; stderr diagnostics print
 above it and NO_COLOR disables colour. Otherwise print plain status lines on phase
 changes, at most once a second while events arrive, and every 5 seconds otherwise. `--quiet` disables progress. Report actual
