@@ -220,7 +220,18 @@ Default scope is the seed repository; explicit repositories widen it. Seed candi
 `make duplicates` (part of `make check` and CI) replays anonymized real duplicate pairs
 from `internal/store/testdata/duplicates.json.gz` and fails below recorded floors; run
 it before reporting ranking changes, raise floors when recovery improves and never
-lower them without new evidence. Regenerate the fixture only from local judgments
+lower them without new evidence. The same target runs `TestSearchGolden`, which keeps
+text and candidate search results over that fixture byte-identical (scores, order,
+evidence, status); performance work must pass it unchanged. Regenerate
+`testdata/search_golden.json.gz` with `go test -run '^TestSearchGolden$' ./internal/store
+-args -update-search-golden` only for an intended result change, and say so in the commit.
+`mcp` and `serve` call `EnableReadCache`: status, semantic coverage counts and all
+complete passage vectors stay in memory until SQLite's `data_version` on a dedicated
+connection changes, which any commit by another connection or process does. The token
+is read before each read transaction begins, so a snapshot is never older than its
+cache. Cached vectors keep the repository-filtered scan order because seed neighbours
+sum float32 vectors. `TestSearchGolden` runs with and without the cache. Read-only
+connections map the file (`mmap_size`). Regenerate the fixture only from local judgments
 (`GH_MIRROR_DUPLICATE_DB`, `GH_MIRROR_DUPLICATE_CASES`, `TestWriteDuplicateFixture`);
 it hashes words, shuffles their order, rotates vectors and renumbers tickets so no
 ticket text, numbers or client names enter the public repository. Seed labels

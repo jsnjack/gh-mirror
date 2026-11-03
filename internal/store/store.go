@@ -34,6 +34,7 @@ type Store struct {
 	writerGate chan struct{}
 	Path       string
 	vectorizer Vectorizer
+	cache      readCache
 }
 
 // OpenWithVectorizer opens a mirror with an explicitly selected query encoder.
@@ -77,6 +78,9 @@ func Open(path string, readOnly bool) (*Store, error) {
 	q.Add("_pragma", "busy_timeout(2000)")
 	if readOnly {
 		q.Set("mode", "ro")
+		// Map the file instead of reading each page with a system call; queries scan
+		// the whole vector table. SQLite caps this at its compiled maximum.
+		q.Add("_pragma", "mmap_size(2147418112)")
 	} else {
 		q.Add("_pragma", "journal_mode(WAL)")
 		q.Add("_pragma", "synchronous(FULL)")
@@ -186,6 +190,7 @@ func WriterBusy(ctx context.Context, path string) (bool, error) {
 
 // Close releases database connections.
 func (s *Store) Close() error {
+	s.cache.close()
 	if err := s.db.Close(); err != nil {
 		return fmt.Errorf("close mirror: %w", err)
 	}

@@ -42,6 +42,21 @@ type querier interface {
 }
 
 func status(ctx context.Context, q querier) (Status, error) {
+	scope, cached := scopeOf(q)
+	if cached {
+		if out, ok := scope.cachedStatus(); ok {
+			return out, nil
+		}
+	}
+	out, err := readStatus(ctx, q)
+	if err == nil && cached {
+		scope.saveStatus(out)
+	}
+	return out, err
+}
+
+// readStatus computes the status from the database.
+func readStatus(ctx context.Context, q querier) (Status, error) {
 	s := Status{RepositoryOptions: map[string]json.RawMessage{}, SchemaVersion: SchemaVersion, CollectionVersion: CollectionVersion, Repositories: []string{}, Coverage: []Coverage{}}
 	rows, err := q.QueryContext(ctx, "SELECT key,value FROM metadata")
 	if err != nil {
@@ -126,11 +141,18 @@ func status(ctx context.Context, q querier) (Status, error) {
 	return s, nil
 }
 func (s *Store) view(ctx context.Context, f func(*sql.Tx) error) error {
+	// Read the change token before the transaction starts, so its snapshot is at
+	// least as new as every cache entry it may use.
+	token, cached := s.changeToken(ctx)
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return fmt.Errorf("begin mirror read: %w", err)
 	}
 	defer rollback(tx)
+	if cached {
+		readScopes.Store(tx, readScope{store: s, token: token})
+		defer readScopes.Delete(tx)
+	}
 	if err := f(tx); err != nil {
 		return fmt.Errorf("query mirror: %w", err)
 	}

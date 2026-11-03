@@ -315,6 +315,7 @@ func addServers() {
 		if err != nil {
 			return err
 		}
+		db.EnableReadCache()
 		defer closeStore(command.Context(), db)
 		svc := &service.Service{Store: db, SnapshotDir: settings.SnapshotDir, Token: token, Version: Version, Tools: serveTools}
 		if err := svc.ValidateTools(); err != nil {
@@ -372,6 +373,7 @@ func addServers() {
 		if err != nil {
 			return err
 		}
+		db.EnableReadCache()
 		defer closeStore(command.Context(), db)
 		svc.Store = db
 		return svc.RunMCP(command.Context())
