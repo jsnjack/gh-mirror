@@ -109,7 +109,12 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 		pendingSQL += " AND (" + strings.Join(conditions, " OR ") + ")"
 	}
 	var pending int
-	if err := q.QueryRowContext(ctx, pendingSQL, pendingArgs...).Scan(&pending); err != nil {
+	if scope, ok := scopeOf(q); ok {
+		pending, err = scope.pendingCount(ctx, q, pendingSQL, pendingArgs)
+	} else {
+		err = q.QueryRowContext(ctx, pendingSQL, pendingArgs...).Scan(&pending)
+	}
+	if err != nil {
 		return out, fmt.Errorf("check semantic coverage: %w", err)
 	}
 	if pending > 0 {
@@ -119,26 +124,15 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 	if err != nil {
 		return out, err
 	}
-	rows, err := q.QueryContext(ctx, `SELECT d.repo,d.number,d.id,d.source,v.field,v.text,v.start,v.end,COALESCE(v.vector,cache.vector),i.updated_at,COALESCE(json_extract(i.payload,'$.created_at'),'') FROM semantic_vectors v JOIN semantic_documents s ON s.document_id=v.document_id JOIN documents d ON d.id=v.document_id JOIN issues i ON i.repo=d.repo AND i.number=d.number LEFT JOIN embedding_cache cache ON cache.key=v.cache_key WHERE s.complete=1 AND s.model=? AND (`+fieldWhere+`) AND (`+where+`)`, append(append([]any{e.ID()}, fieldArgs...), args...)...)
-	if err != nil {
-		return out, fmt.Errorf("scan semantic vectors: %w", err)
-	}
 	hits := map[TicketID]*semanticHit{}
 	var neighbours *seedNeighbours
 	if o.seed != nil && o.Engine == "hybrid" {
 		neighbours = newSeedNeighbours()
 	}
-	for rows.Next() {
-		var id TicketID
-		var evidence scoredEvidence
-		var raw []byte
-		var updated, created string
-		if err := rows.Scan(&id.Repo, &id.Number, &evidence.document, &evidence.source, &evidence.field, &evidence.text, &evidence.start, &evidence.end, &raw, &updated, &created); err != nil {
-			return out, finishRows(rows, err)
-		}
+	consume := func(id TicketID, evidence scoredEvidence, raw []byte, updated string) error {
 		score, err := vectorDot(queryVector, raw)
 		if err != nil {
-			return out, finishRows(rows, err)
+			return err
 		}
 		evidence.score = score
 		if o.seed != nil {
@@ -148,12 +142,12 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 			// Seed candidates match on titles and bodies; shared labels and
 			// discussion otherwise make unrelated tickets look alike.
 			if evidence.field != "title" && evidence.field != "body" {
-				continue
+				return nil
 			}
 		}
 		hit := hits[id]
 		if hit == nil {
-			hit = &semanticHit{id: id, score: score, created: created, updated: updated, fieldScores: map[string]float64{}}
+			hit = &semanticHit{id: id, score: score, updated: updated, fieldScores: map[string]float64{}}
 			hits[id] = hit
 		}
 		if score > hit.score {
@@ -187,8 +181,34 @@ func vectorSearch(ctx context.Context, q querier, o SearchOptions, e Vectorizer)
 		if len(hit.evidence) > o.EvidenceLimit {
 			hit.evidence = hit.evidence[:o.EvidenceLimit]
 		}
+		return nil
 	}
-	if err := finishRows(rows, rows.Err()); err != nil {
+	if scope, ok := scopeOf(q); ok {
+		if err := scope.scanVectors(ctx, q, e.ID(), o.In, where, args, consume); err != nil {
+			return out, err
+		}
+	} else {
+		rows, err := q.QueryContext(ctx, `SELECT d.repo,d.number,d.id,d.source,v.field,v.text,v.start,v.end,COALESCE(v.vector,cache.vector),i.updated_at FROM semantic_vectors v JOIN semantic_documents s ON s.document_id=v.document_id JOIN documents d ON d.id=v.document_id JOIN issues i ON i.repo=d.repo AND i.number=d.number LEFT JOIN embedding_cache cache ON cache.key=v.cache_key WHERE s.complete=1 AND s.model=? AND (`+fieldWhere+`) AND (`+where+`)`, append(append([]any{e.ID()}, fieldArgs...), args...)...)
+		if err != nil {
+			return out, fmt.Errorf("scan semantic vectors: %w", err)
+		}
+		for rows.Next() {
+			var id TicketID
+			var evidence scoredEvidence
+			var raw []byte
+			var updated string
+			if err := rows.Scan(&id.Repo, &id.Number, &evidence.document, &evidence.source, &evidence.field, &evidence.text, &evidence.start, &evidence.end, &raw, &updated); err != nil {
+				return out, finishRows(rows, err)
+			}
+			if err := consume(id, evidence, raw, updated); err != nil {
+				return out, finishRows(rows, err)
+			}
+		}
+		if err := finishRows(rows, rows.Err()); err != nil {
+			return out, err
+		}
+	}
+	if err := fillCreated(ctx, q, hits); err != nil {
 		return out, err
 	}
 	semanticScores := map[TicketID]float64{}
@@ -620,4 +640,41 @@ func seedEmbedding(ctx context.Context, q querier, seed *vectorSeed, e Vectorize
 		}
 	}
 	return normalizeVector(out)
+}
+
+// fillCreated reads each hit ticket's creation time once. Reading it in the vector
+// scan parsed the ticket JSON once per passage, which dominated search time.
+func fillCreated(ctx context.Context, q querier, hits map[TicketID]*semanticHit) error {
+	byRepo := map[string][]int{}
+	for id := range hits {
+		byRepo[id.Repo] = append(byRepo[id.Repo], id.Number)
+	}
+	for repo, numbers := range byRepo {
+		for start := 0; start < len(numbers); start += 500 {
+			batch := numbers[start:min(start+500, len(numbers))]
+			args := make([]any, 0, len(batch)+1)
+			args = append(args, repo)
+			for _, n := range batch {
+				args = append(args, n)
+			}
+			rows, err := q.QueryContext(ctx, `SELECT number,COALESCE(json_extract(payload,'$.created_at'),'') FROM issues WHERE repo=? AND number IN (`+strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",")+`)`, args...)
+			if err != nil {
+				return fmt.Errorf("read ticket creation times: %w", err)
+			}
+			for rows.Next() {
+				var number int
+				var created string
+				if err := rows.Scan(&number, &created); err != nil {
+					return finishRows(rows, err)
+				}
+				if hit := hits[TicketID{Repo: repo, Number: number}]; hit != nil {
+					hit.created = created
+				}
+			}
+			if err := finishRows(rows, rows.Err()); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

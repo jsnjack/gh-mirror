@@ -36,6 +36,36 @@ func TestSearchGolden(t *testing.T) {
 	}
 	db, fixture := loadDuplicateFixtureWith(t, true)
 	ctx := context.Background()
+	want := []searchGoldenCase{}
+	if !*updateSearchGolden {
+		want = readSearchGolden(t)
+	}
+	// Both read paths must give the golden results: the cache used by
+	// long-running readers and the direct SQL scan.
+	for _, cached := range []bool{true, false} {
+		setReadCache(db, cached)
+		got := searchGoldenCases(t, ctx, db, fixture)
+		if *updateSearchGolden {
+			if cached {
+				writeSearchGolden(t, got)
+				t.Logf("wrote %d cases to %s", len(got), searchGoldenPath)
+				want = got
+				continue
+			}
+		}
+		compareSearchGolden(t, fmt.Sprintf("cache=%v", cached), want, got)
+	}
+}
+
+func setReadCache(db *Store, enabled bool) {
+	db.cache.mu.Lock()
+	defer db.cache.mu.Unlock()
+	db.cache.closeConn()
+	db.cache.enabled = enabled
+}
+
+func searchGoldenCases(t *testing.T, ctx context.Context, db *Store, fixture duplicateFixture) []searchGoldenCase {
+	t.Helper()
 	got := []searchGoldenCase{}
 	add := func(name string, result SearchResult, err error) {
 		if err != nil {
@@ -67,29 +97,28 @@ func TestSearchGolden(t *testing.T) {
 		out, err := db.FindCandidates(ctx, CandidateOptions{Repo: "o/r", Number: c.Seed, Engine: "hybrid", Limit: 20})
 		add("candidates "+c.Name, out, err)
 	}
-	if *updateSearchGolden {
-		writeSearchGolden(t, got)
-		t.Logf("wrote %d cases to %s", len(got), searchGoldenPath)
-		return
-	}
-	want := readSearchGolden(t)
+	return got
+}
+
+func compareSearchGolden(t *testing.T, mode string, want, got []searchGoldenCase) {
+	t.Helper()
 	if len(want) != len(got) {
-		t.Fatalf("golden has %d cases, run produced %d", len(want), len(got))
+		t.Fatalf("%s: golden has %d cases, run produced %d", mode, len(want), len(got))
 	}
 	failed := 0
 	for n := range got {
 		if want[n].Name != got[n].Name {
-			t.Fatalf("case %d is %q, golden has %q", n, got[n].Name, want[n].Name)
+			t.Fatalf("%s: case %d is %q, golden has %q", mode, n, got[n].Name, want[n].Name)
 		}
 		if !bytes.Equal(want[n].Result, got[n].Result) {
 			failed++
 			if failed <= 5 {
-				t.Errorf("%s changed:\n%s", got[n].Name, firstDifference(want[n].Result, got[n].Result))
+				t.Errorf("%s: %s changed:\n%s", mode, got[n].Name, firstDifference(want[n].Result, got[n].Result))
 			}
 		}
 	}
 	if failed > 0 {
-		t.Fatalf("%d of %d search results differ from %s", failed, len(got), searchGoldenPath)
+		t.Fatalf("%s: %d of %d search results differ from %s", mode, failed, len(got), searchGoldenPath)
 	}
 }
 
