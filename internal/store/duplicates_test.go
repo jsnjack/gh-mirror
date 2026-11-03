@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"gh-mirror/internal/embedding"
 )
@@ -49,6 +50,13 @@ func (e *fixtureVectorizer) Embed(_ context.Context, text string) ([]float32, er
 }
 
 func loadDuplicateFixture(t *testing.T) (*Store, duplicateFixture) {
+	t.Helper()
+	return loadDuplicateFixtureWith(t, false)
+}
+
+// loadDuplicateFixtureWith optionally gives each ticket a distinct creation date,
+// so ranking paths that read created_at are exercised.
+func loadDuplicateFixtureWith(t *testing.T, dated bool) (*Store, duplicateFixture) {
 	t.Helper()
 	file, err := os.Open(duplicateFixturePath)
 	if err != nil {
@@ -98,6 +106,9 @@ func loadDuplicateFixture(t *testing.T) (*Store, duplicateFixture) {
 				labels = append(labels, map[string]string{"name": label})
 			}
 			object := map[string]any{"number": ticket.Number, "node_id": fmt.Sprintf("D%d", ticket.Number), "title": ticket.Title, "body": strings.Join(body, "\n\n"), "labels": labels, "state": "open", "updated_at": "2026-01-01T00:00:00Z", "html_url": fmt.Sprintf("https://github.com/o/r/issues/%d", ticket.Number)}
+			if dated {
+				object["created_at"] = time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(ticket.Number) * time.Hour).Format(time.RFC3339)
+			}
 			if ticket.Closed {
 				object["state"] = "closed"
 			}

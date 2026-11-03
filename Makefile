@@ -16,8 +16,9 @@ vet:
 test:
 	go test -race ./...
 # Real duplicate pairs, anonymized; the race detector makes this fixture take minutes.
+# TestSearchGolden keeps full search results over the same fixture byte-identical.
 duplicates:
-	go test -count=1 -run '^TestDuplicateRegression$$' -v ./internal/store
+	go test -count=1 -run '^(TestDuplicateRegression|TestSearchGolden)$$' -v ./internal/store
 lint:
 	@command -v golangci-lint >/dev/null || { echo 'Install golangci-lint: grm install golangci/golangci-lint'; exit 1; }
 	golangci-lint run
