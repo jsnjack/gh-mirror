@@ -438,7 +438,11 @@ Preserve long-document tails. Index with bounded independent CPU workers, defaul
 four, and FULL synchronous SQLite commits. Resume completed passages after errors,
 interrupts and process restarts. Serialize same-store write transactions through a
 cancellable queue before acquiring pooled connections; keep readers and CPU inference
-concurrent and preserve SQLite locking against independent collectors. Text edits
+concurrent and preserve SQLite locking against independent collectors. Concurrent
+indexing writes share FULL commits, so a slow disk sync does not limit throughput
+to one write per sync; a failed write is undone without discarding the others in
+its commit. CPU workers bound chunking and inference, while four documents per CPU
+worker may wait for commits at the same time. Text edits
 invalidate completeness but keep reusable passages locally; metadata-only updates
 retain vectors. Match reusable text exactly
 within its field and model. Guard checkpoint commits against changed source text
@@ -456,8 +460,9 @@ after finishing a pass to catch remaining work. Serialize active-worker snapshot
 and label GitHub/CPU workers separately. These scheduling changes preserve embedding
 compatibility and durable passages. A failure during indexing retains committed collection and
 completed vectors; rerun `index` to finish without new upstream requests. Progress
-uses stderr, reports known document totals, rate, ETA and active CPU workers, and
-stops on completion/cancellation/failure.
+uses stderr, reports known document totals, rate, ETA and active CPU workers (those
+chunking or encoding, not waiting for the database), and stops on
+completion/cancellation/failure.
 
 CLI, REST and MCP default search and seed-based candidate retrieval to hybrid,
 with explicit lexical, semantic and hybrid overrides. Retrieval supports agent

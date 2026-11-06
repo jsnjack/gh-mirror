@@ -10,7 +10,6 @@ import (
 	"math"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"gh-mirror/internal/embedding"
 	"gh-mirror/internal/representation"
@@ -31,6 +30,8 @@ type cachedCall struct {
 type cachingVectorizer struct {
 	Vectorizer
 	store    *Store
+	writes   *indexWriter
+	cpu      *cpuWorkers
 	mu       sync.Mutex
 	inflight map[string]*cachedCall
 	reused   atomic.Int64
@@ -120,19 +121,21 @@ func (e *cachingVectorizer) compute(ctx context.Context, calls []*cachedCall, te
 		return
 	}
 	var vectors [][]float32
-	var err error
-	if batch, ok := e.Vectorizer.(BatchVectorizer); ok && len(inputs) > 1 {
-		vectors, err = batch.EmbedBatch(ctx, inputs)
-	} else {
+	err := e.cpu.run(ctx, func() error {
+		if batch, ok := e.Vectorizer.(BatchVectorizer); ok && len(inputs) > 1 {
+			var err error
+			vectors, err = batch.EmbedBatch(ctx, inputs)
+			return err
+		}
 		for _, input := range inputs {
-			v, encodeErr := e.Vectorizer.Embed(ctx, input)
-			if encodeErr != nil {
-				err = encodeErr
-				break
+			v, err := e.Vectorizer.Embed(ctx, input)
+			if err != nil {
+				return err
 			}
 			vectors = append(vectors, v)
 		}
-	}
+		return nil
+	})
 	if err == nil && len(vectors) != len(missing) {
 		err = fmt.Errorf("encoder returned %d shared vectors for %d inputs", len(vectors), len(missing))
 	}
@@ -152,16 +155,14 @@ func (e *cachingVectorizer) compute(ctx context.Context, calls []*cachedCall, te
 		}
 	}
 	if err == nil {
-		checkpoint, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		err = e.store.Update(checkpoint, func(w *Writer) error {
+		err = e.writes.update(context.WithoutCancel(ctx), func(ctx context.Context, w *Writer) error {
 			for n, call := range missing {
-				if _, err := w.tx.ExecContext(checkpoint, `INSERT INTO embedding_cache(key,vector) VALUES(?,?) ON CONFLICT(key) DO NOTHING`, call.key, raw[n]); err != nil {
+				if _, err := w.tx.ExecContext(ctx, `INSERT INTO embedding_cache(key,vector) VALUES(?,?) ON CONFLICT(key) DO NOTHING`, call.key, raw[n]); err != nil {
 					return fmt.Errorf("checkpoint shared embedding: %w", err)
 				}
 			}
 			return nil
 		})
-		cancel()
 	}
 	for n, call := range missing {
 		call.vector = vectors[n]

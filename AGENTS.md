@@ -284,6 +284,14 @@ dispatch, join producers/workers on cancellation, and rescan after a completed p
 Queue same-store write transactions before acquiring a connection, with cancellable
 waiting; SQLite has one WAL writer. Keep inference and readers concurrent, retain
 FULL checkpoint durability and use SQLite locking to exclude independent collectors.
+Each FULL commit waits for a disk sync, so one index writer groups concurrent
+document, shared-vector and checkpoint writes into one transaction, isolating each
+write in a savepoint. Documents complete in their last vector checkpoint, or in
+staging when every passage is reused. CPU workers bound chunking and inference;
+four documents per CPU worker stay in progress so commit waits overlap with them,
+and active workers exclude database waits. `TestIndexSharesCommits` simulates slow
+syncs with a test-only SQLite commit hook and fails above 0.75 commits per document;
+`BenchmarkIndexSlowDisk` reports docs/s and commits/doc for 6 ms syncs.
 Optional `BatchVectorizer` bounds passage batches within documents and queries.
 Drain completed batch results into checkpoints even after cancellation; retain the
 first error while saving other successful results. Report the actual runtime,

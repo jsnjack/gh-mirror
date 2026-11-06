@@ -162,7 +162,18 @@ func (s *Store) Index(ctx context.Context, e Vectorizer, o IndexOptions) (Semant
 	if e.Dim() != embedding.Dimension {
 		return SemanticStatus{}, fmt.Errorf("index dimension %d; expected %d", e.Dim(), embedding.Dimension)
 	}
-	cachedEncoder := &cachingVectorizer{Vectorizer: e, store: s, inflight: map[string]*cachedCall{}}
+	var progressMu sync.Mutex
+	active := 0
+	cpu := &cpuWorkers{permits: make(chan struct{}, o.Workers), report: func(event progress.Event, delta int) {
+		progressMu.Lock()
+		defer progressMu.Unlock()
+		active += delta
+		event.Workers, event.Active, event.WorkerKind = o.Workers, active, progress.CPUWorkers
+		o.Progress.Send(event)
+	}}
+	writes := s.startIndexWriter(ctx)
+	defer writes.close()
+	cachedEncoder := &cachingVectorizer{Vectorizer: e, store: s, writes: writes, cpu: cpu, inflight: map[string]*cachedCall{}}
 	e = cachedEncoder
 	o.Progress.Send(progress.Event{Phase: "Applying PR comment policy", Workers: o.Workers, WorkerKind: progress.CPUWorkers})
 	err := s.Update(ctx, func(w *Writer) error {
@@ -230,7 +241,7 @@ func (s *Store) Index(ctx context.Context, e Vectorizer, o IndexOptions) (Semant
 		if err := ctx.Err(); err != nil {
 			return SemanticStatus{}, fmt.Errorf("index interrupted; completed chunks retained: %w", err)
 		}
-		processed, err := s.indexPass(ctx, e, o, &completed, total)
+		processed, err := s.indexPass(ctx, e, writes, cpu, &completed, total, o.Workers*documentsPerCPUWorker)
 		if err != nil {
 			return SemanticStatus{}, err
 		}
@@ -273,35 +284,50 @@ func (s *Store) pendingDocuments(ctx context.Context, after, model string) ([]in
 	return documents, nil
 }
 
-func (s *Store) indexPass(ctx context.Context, e Vectorizer, o IndexOptions, completed *int, total int) (int, error) {
+// documentsPerCPUWorker keeps documents waiting for shared commits while CPU workers chunk and encode others.
+const documentsPerCPUWorker = 4
+
+// cpuWorkers bounds chunking and inference to the configured CPU workers and reports how many are busy.
+type cpuWorkers struct {
+	permits chan struct{}
+	report  func(progress.Event, int)
+}
+
+func (c *cpuWorkers) run(ctx context.Context, work func() error) error {
+	select {
+	case c.permits <- struct{}{}:
+	case <-ctx.Done():
+		return fmt.Errorf("wait for CPU worker: %w", ctx.Err())
+	}
+	c.report(progress.Event{}, 1)
+	defer func() {
+		c.report(progress.Event{}, -1)
+		<-c.permits
+	}()
+	return work()
+}
+
+func (s *Store) indexPass(ctx context.Context, e Vectorizer, writes *indexWriter, cpu *cpuWorkers, completed *int, total, documents int) (int, error) {
 	child, cancel := context.WithCancel(ctx)
 	defer cancel()
-	jobs := make(chan indexDocument, o.Workers)
-	done := make(chan error, o.Workers+1)
+	jobs := make(chan indexDocument, documents)
+	done := make(chan error, documents+1)
 	var group sync.WaitGroup
-	var progressMu sync.Mutex
-	active, submitted := 0, 0
-	report := func(event progress.Event, delta int) {
-		progressMu.Lock()
-		defer progressMu.Unlock()
-		active += delta
-		event.Workers, event.Active, event.WorkerKind = o.Workers, active, progress.CPUWorkers
-		o.Progress.Send(event)
-	}
+	submitted := 0
 	group.Go(func() {
 		defer close(jobs)
 		after := ""
 		for {
-			documents, err := s.pendingDocuments(child, after, e.ID())
+			page, err := s.pendingDocuments(child, after, e.ID())
 			if err != nil {
 				done <- err
 				return
 			}
-			if len(documents) == 0 {
+			if len(page) == 0 {
 				return
 			}
-			after = documents[len(documents)-1].id
-			for _, d := range documents {
+			after = page[len(page)-1].id
+			for _, d := range page {
 				select {
 				case jobs <- d:
 					submitted++
@@ -312,18 +338,21 @@ func (s *Store) indexPass(ctx context.Context, e Vectorizer, o IndexOptions, com
 			}
 		}
 	})
-	for range o.Workers {
+	for range documents {
 		group.Go(func() {
 			for d := range jobs {
 				if child.Err() != nil {
 					return
 				}
-				report(progress.Event{}, 1)
-				chunks, err := passages(e, d)
+				var chunks []passage
+				err := cpu.run(child, func() error {
+					var err error
+					chunks, err = passages(e, d)
+					return err
+				})
 				if err == nil {
-					err = s.indexDocument(child, e, d, chunks, IndexOptions{Workers: 1})
+					err = s.indexDocument(child, e, writes, d, chunks, IndexOptions{Workers: 1})
 				}
-				report(progress.Event{}, -1)
 				done <- err
 				if err != nil {
 					return
@@ -342,7 +371,7 @@ func (s *Store) indexPass(ctx context.Context, e Vectorizer, o IndexOptions, com
 			continue
 		}
 		*completed++
-		report(progress.Event{Phase: "Indexing semantic documents", Completed: *completed, Total: total}, 0)
+		cpu.report(progress.Event{Phase: "Indexing semantic documents", Completed: *completed, Total: total}, 0)
 	}
 	if failure != nil {
 		return submitted, fmt.Errorf("index documents; completed chunks retained: %w", failure)
@@ -369,8 +398,9 @@ func checkDocument(ctx context.Context, w *Writer, d indexDocument) error {
 	}
 	return nil
 }
-func (s *Store) indexDocument(ctx context.Context, e Vectorizer, d indexDocument, chunks []passage, o IndexOptions) error {
-	if err := s.Update(ctx, func(w *Writer) error {
+func (s *Store) indexDocument(ctx context.Context, e Vectorizer, writes *indexWriter, d indexDocument, chunks []passage, o IndexOptions) error {
+	saved := map[int]bool{}
+	if err := writes.update(ctx, func(ctx context.Context, w *Writer) error {
 		if err := checkModel(ctx, w, e.ID()); err != nil {
 			return err
 		}
@@ -421,27 +451,16 @@ func (s *Store) indexDocument(ctx context.Context, e Vectorizer, d indexDocument
 			if _, err := w.tx.ExecContext(ctx, `INSERT INTO semantic_vectors(document_id,chunk,field,start,end,text,cache_key) VALUES(?,?,?,?,?,?,?)`, d.id, n, c.field, c.Start, c.End, c.Text, key); err != nil {
 				return fmt.Errorf("reuse unchanged passage: %w", err)
 			}
+			saved[n] = true
+		}
+		if len(saved) == len(chunks) {
+			return completeDocument(ctx, w, d.id)
 		}
 		if len(cached) > 0 {
 			return advanceSemantic(ctx, w)
 		}
 		return nil
 	}); err != nil {
-		return err
-	}
-	rows, err := s.db.QueryContext(ctx, "SELECT chunk FROM semantic_vectors WHERE document_id=?", d.id)
-	if err != nil {
-		return fmt.Errorf("read completed chunks: %w", err)
-	}
-	saved := map[int]bool{}
-	for rows.Next() {
-		var n int
-		if err := rows.Scan(&n); err != nil {
-			return finishRows(rows, err)
-		}
-		saved[n] = true
-	}
-	if err := finishRows(rows, rows.Err()); err != nil {
 		return err
 	}
 	jobs := make(chan int, len(chunks))
@@ -531,21 +550,19 @@ func (s *Store) indexDocument(ctx context.Context, e Vectorizer, d indexDocument
 			continue
 		}
 		// Completed inference survives cancellation while its small checkpoint finishes.
-		checkpoint, finish := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		checkpointErr := s.Update(checkpoint, func(w *Writer) error {
-			if err := checkModel(checkpoint, w, e.ID()); err != nil {
+		checkpointErr := writes.update(context.WithoutCancel(ctx), func(ctx context.Context, w *Writer) error {
+			if err := checkModel(ctx, w, e.ID()); err != nil {
 				return err
 			}
-			if err := checkDocument(checkpoint, w, d); err != nil {
+			if err := checkDocument(ctx, w, d); err != nil {
 				return err
 			}
 			c := chunks[r.n]
-			if _, err := w.tx.ExecContext(checkpoint, `INSERT INTO semantic_vectors(document_id,chunk,field,start,end,text,cache_key) VALUES(?,?,?,?,?,?,?) ON CONFLICT(document_id,chunk) DO NOTHING`, d.id, r.n, c.field, c.Start, c.End, c.Text, embeddingKey(e.ID(), c.Text)); err != nil {
+			if _, err := w.tx.ExecContext(ctx, `INSERT INTO semantic_vectors(document_id,chunk,field,start,end,text,cache_key) VALUES(?,?,?,?,?,?,?) ON CONFLICT(document_id,chunk) DO NOTHING`, d.id, r.n, c.field, c.Start, c.End, c.Text, embeddingKey(e.ID(), c.Text)); err != nil {
 				return fmt.Errorf("checkpoint vector: %w", err)
 			}
-			return advanceSemantic(checkpoint, w)
+			return completeDocument(ctx, w, d.id)
 		})
-		finish()
 		if checkpointErr != nil {
 			if failure == nil {
 				failure = checkpointErr
@@ -559,18 +576,15 @@ func (s *Store) indexDocument(ctx context.Context, e Vectorizer, d indexDocument
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("index interrupted; chunks retained: %w", err)
 	}
-	return s.Update(ctx, func(w *Writer) error {
-		if err := checkModel(ctx, w, e.ID()); err != nil {
-			return err
-		}
-		if err := checkDocument(ctx, w, d); err != nil {
-			return err
-		}
-		if _, err := w.tx.ExecContext(ctx, "UPDATE semantic_documents SET complete=1,indexed_at=? WHERE document_id=? AND chunks=(SELECT count(*) FROM semantic_vectors WHERE document_id=?)", time.Now().UTC().Format(time.RFC3339Nano), d.id, d.id); err != nil {
-			return fmt.Errorf("complete semantic document: %w", err)
-		}
-		return advanceSemantic(ctx, w)
-	})
+	return nil
+}
+
+// completeDocument makes a document searchable once every passage has a vector.
+func completeDocument(ctx context.Context, w *Writer, id string) error {
+	if _, err := w.tx.ExecContext(ctx, "UPDATE semantic_documents SET complete=1,indexed_at=? WHERE document_id=? AND chunks=(SELECT count(*) FROM semantic_vectors WHERE document_id=?)", time.Now().UTC().Format(time.RFC3339Nano), id, id); err != nil {
+		return fmt.Errorf("complete semantic document: %w", err)
+	}
+	return advanceSemantic(ctx, w)
 }
 func checkModel(ctx context.Context, w *Writer, expected string) error {
 	current, err := w.Metadata(ctx, "semantic_model")
