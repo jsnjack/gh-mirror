@@ -225,6 +225,9 @@ text and candidate search results over that fixture byte-identical (scores, orde
 evidence, status); performance work must pass it unchanged. Regenerate
 `testdata/search_golden.json.gz` with `go test -run '^TestSearchGolden$' ./internal/store
 -args -update-search-golden` only for an intended result change, and say so in the commit.
+Fixture tests run their cases concurrently, and the target starts the duplicate test and
+each golden read-cache pass as separate processes: lock contention inside the SQLite
+driver makes concurrent fixture tests in one process about twice as slow.
 `mcp` and `serve` call `EnableReadCache`: status, semantic coverage counts and all
 complete passage vectors stay in memory until SQLite's `data_version` on a dedicated
 connection changes, which any commit by another connection or process does. The token

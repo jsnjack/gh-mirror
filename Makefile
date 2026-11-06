@@ -17,8 +17,13 @@ test:
 	go test -race ./...
 # Real duplicate pairs, anonymized; the race detector makes this fixture take minutes.
 # TestSearchGolden keeps full search results over the same fixture byte-identical.
+# Separate processes avoid lock contention inside the SQLite driver, which makes
+# concurrent fixture tests in one process about twice as slow.
 duplicates:
-	go test -count=1 -run '^(TestDuplicateRegression|TestSearchGolden)$$' -v ./internal/store
+	@go test -count=1 -run '^TestDuplicateRegression$$' -v ./internal/store & duplicates=$$!; \
+	go test -count=1 -run '^TestSearchGolden$$/^cache=true$$' ./internal/store & cached=$$!; \
+	go test -count=1 -run '^TestSearchGolden$$/^cache=false$$' ./internal/store & direct=$$!; \
+	status=0; for job in $$duplicates $$cached $$direct; do wait $$job || status=1; done; exit $$status
 lint:
 	@command -v golangci-lint >/dev/null || { echo 'Install golangci-lint: grm install golangci/golangci-lint'; exit 1; }
 	golangci-lint run

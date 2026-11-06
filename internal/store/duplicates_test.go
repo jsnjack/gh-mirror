@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -47,6 +50,21 @@ func (e *fixtureVectorizer) Embed(_ context.Context, text string) ([]float32, er
 		return nil, fmt.Errorf("fixture has no vector for %.40q", text)
 	}
 	return v, nil
+}
+
+// forEachConcurrently runs independent fixture queries on all CPUs; work must
+// write only its own index and must not call t.Fatal.
+func forEachConcurrently(count int, work func(int)) {
+	var next atomic.Int64
+	var group sync.WaitGroup
+	for range min(count, runtime.GOMAXPROCS(0)) {
+		group.Go(func() {
+			for n := int(next.Add(1)) - 1; n < count; n = int(next.Add(1)) - 1 {
+				work(n)
+			}
+		})
+	}
+	group.Wait()
 }
 
 func loadDuplicateFixture(t *testing.T) (*Store, duplicateFixture) {
@@ -145,21 +163,28 @@ func TestDuplicateRegression(t *testing.T) {
 	if testing.Short() || raceEnabled {
 		t.Skip("duplicate regression indexes the full fixture; make duplicates runs it without -race")
 	}
+	t.Parallel()
 	db, fixture := loadDuplicateFixture(t)
-	var reciprocal float64
-	found, judged := 0, 0
-	for _, c := range fixture.Cases {
+	ranks := make([]int, len(fixture.Cases))
+	errs := make([]error, len(fixture.Cases))
+	forEachConcurrently(len(fixture.Cases), func(n int) {
+		c := fixture.Cases[n]
 		out, err := db.FindCandidates(context.Background(), CandidateOptions{Repo: "o/r", Number: c.Seed, Engine: "hybrid", Limit: 20})
-		if err != nil {
-			t.Fatal(c.Name, err)
-		}
-		rank := 0
-		for n, m := range out.Matches {
+		errs[n] = err
+		for position, m := range out.Matches {
 			if m.Number == c.Target {
-				rank = n + 1
+				ranks[n] = position + 1
 				break
 			}
 		}
+	})
+	var reciprocal float64
+	found, judged := 0, 0
+	for n, c := range fixture.Cases {
+		if errs[n] != nil {
+			t.Fatal(c.Name, errs[n])
+		}
+		rank := ranks[n]
 		if strings.HasPrefix(c.Name, "join_notifications") {
 			if rank == 0 || rank > duplicatePairWithin {
 				t.Errorf("%s: duplicate rank %d; want top %d", c.Name, rank, duplicatePairWithin)

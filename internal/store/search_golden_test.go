@@ -34,26 +34,28 @@ func TestSearchGolden(t *testing.T) {
 	if testing.Short() || raceEnabled {
 		t.Skip("search golden indexes the full fixture; make duplicates runs it without -race")
 	}
-	db, fixture := loadDuplicateFixtureWith(t, true)
+	t.Parallel()
 	ctx := context.Background()
-	want := []searchGoldenCase{}
-	if !*updateSearchGolden {
+	var want []searchGoldenCase
+	if *updateSearchGolden {
+		db, fixture := loadDuplicateFixtureWith(t, true)
+		setReadCache(db, true)
+		want = searchGoldenCases(t, ctx, db, fixture)
+		writeSearchGolden(t, want)
+		t.Logf("wrote %d cases to %s", len(want), searchGoldenPath)
+	} else {
 		want = readSearchGolden(t)
 	}
 	// Both read paths must give the golden results: the cache used by
 	// long-running readers and the direct SQL scan.
 	for _, cached := range []bool{true, false} {
-		setReadCache(db, cached)
-		got := searchGoldenCases(t, ctx, db, fixture)
-		if *updateSearchGolden {
-			if cached {
-				writeSearchGolden(t, got)
-				t.Logf("wrote %d cases to %s", len(got), searchGoldenPath)
-				want = got
-				continue
-			}
-		}
-		compareSearchGolden(t, fmt.Sprintf("cache=%v", cached), want, got)
+		mode := fmt.Sprintf("cache=%v", cached)
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			db, fixture := loadDuplicateFixtureWith(t, true)
+			setReadCache(db, cached)
+			compareSearchGolden(t, mode, want, searchGoldenCases(t, ctx, db, fixture))
+		})
 	}
 }
 
@@ -66,16 +68,13 @@ func setReadCache(db *Store, enabled bool) {
 
 func searchGoldenCases(t *testing.T, ctx context.Context, db *Store, fixture duplicateFixture) []searchGoldenCase {
 	t.Helper()
-	got := []searchGoldenCase{}
-	add := func(name string, result SearchResult, err error) {
-		if err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
-		raw, err := stableResult(result)
-		if err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
-		got = append(got, searchGoldenCase{Name: name, Result: raw})
+	type query struct {
+		name string
+		run  func() (SearchResult, error)
+	}
+	queries := []query{}
+	search := func(name string, o SearchOptions) {
+		queries = append(queries, query{name, func() (SearchResult, error) { return db.Search(ctx, o) }})
 	}
 	for n := 0; n < len(fixture.Tickets); n += searchGoldenStep {
 		ticket := fixture.Tickets[n]
@@ -84,18 +83,28 @@ func searchGoldenCases(t *testing.T, ctx context.Context, db *Store, fixture dup
 		}
 		for _, engine := range []string{"lexical", "semantic", "hybrid"} {
 			for _, limit := range []int{10, 20} {
-				o := SearchOptions{Engine: engine, Query: ticket.Title, Repo: "o/r", Limit: limit}
-				out, err := db.Search(ctx, o)
-				add(fmt.Sprintf("search %s limit=%d #%d", engine, limit, ticket.Number), out, err)
+				search(fmt.Sprintf("search %s limit=%d #%d", engine, limit, ticket.Number), SearchOptions{Engine: engine, Query: ticket.Title, Repo: "o/r", Limit: limit})
 			}
 		}
-		o := SearchOptions{Engine: "hybrid", Query: ticket.Title, Repo: "o/r", Limit: 10, EvidenceLimit: 1, State: "open"}
-		out, err := db.Search(ctx, o)
-		add(fmt.Sprintf("search hybrid open evidence=1 #%d", ticket.Number), out, err)
+		search(fmt.Sprintf("search hybrid open evidence=1 #%d", ticket.Number), SearchOptions{Engine: "hybrid", Query: ticket.Title, Repo: "o/r", Limit: 10, EvidenceLimit: 1, State: "open"})
 	}
 	for _, c := range fixture.Cases {
-		out, err := db.FindCandidates(ctx, CandidateOptions{Repo: "o/r", Number: c.Seed, Engine: "hybrid", Limit: 20})
-		add("candidates "+c.Name, out, err)
+		o := CandidateOptions{Repo: "o/r", Number: c.Seed, Engine: "hybrid", Limit: 20}
+		queries = append(queries, query{"candidates " + c.Name, func() (SearchResult, error) { return db.FindCandidates(ctx, o) }})
+	}
+	got := make([]searchGoldenCase, len(queries))
+	errs := make([]error, len(queries))
+	forEachConcurrently(len(queries), func(n int) {
+		result, err := queries[n].run()
+		if err == nil {
+			got[n].Result, err = stableResult(result)
+		}
+		got[n].Name, errs[n] = queries[n].name, err
+	})
+	for n, err := range errs {
+		if err != nil {
+			t.Fatalf("%s: %v", queries[n].name, err)
+		}
 	}
 	return got
 }
