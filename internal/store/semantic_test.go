@@ -155,8 +155,9 @@ func TestSemanticDurability(t *testing.T) {
 				if !errors.Is(err, context.Canceled) {
 					t.Fatal("interruption missing", err)
 				}
+				// Other documents in progress may save more vectors before the failure stops them.
 				var saved int
-				if err := db.db.QueryRow("SELECT count(*) FROM semantic_vectors").Scan(&saved); err != nil || saved != 1 {
+				if err := db.db.QueryRow("SELECT count(*) FROM semantic_vectors").Scan(&saved); err != nil || saved == 0 {
 					t.Fatal("completed chunk lost", saved, err)
 				}
 				encoder.failAt = 0
@@ -196,6 +197,10 @@ func TestSemanticDurability(t *testing.T) {
 			}
 			if status.PendingDocuments != 0 || status.IndexedDocuments != status.Documents {
 				t.Fatal("incomplete index", status)
+			}
+			// Every successful inference, before or after the failed call, yields one shared vector.
+			if name == "resume" && encoder.calls-1 != status.SharedVectors {
+				t.Fatal("resume lost or repeated completed inference", encoder.calls, status)
 			}
 			if (name == "unchanged" || name == "metadata update" || name == "delete" || name == "export") && encoder.calls != before {
 				t.Fatal("unchanged text was re-encoded", name, encoder.calls, before)
