@@ -2,7 +2,7 @@ BINARY := gh-mirror
 export PATH := $(PATH):$(shell go env GOPATH)/bin
 .NOTPARALLEL:
 
-.PHONY: build check fmt vet test duplicates lint standards release
+.PHONY: build check agents-size fmt vet test duplicates lint standards release
 build:
 	@command -v monova >/dev/null || { echo 'Install monova: grm install jsnjack/monova'; exit 1; }
 	@mkdir -p bin
@@ -27,7 +27,17 @@ duplicates:
 lint:
 	@command -v golangci-lint >/dev/null || { echo 'Install golangci-lint: grm install golangci/golangci-lint'; exit 1; }
 	golangci-lint run
-check: fmt vet build test duplicates lint
+# Every agent session loads AGENTS.md whole, and Codex reads only its first
+# 32 KiB: keep it under the limit (AGENTS.universal.md, "AGENTS.md size").
+AGENTS_MAX_BYTES ?= 30000
+agents-size:
+	@size=$$(wc -c < AGENTS.md); \
+	if [ "$$size" -gt $(AGENTS_MAX_BYTES) ]; then \
+	  echo "AGENTS.md is $$size bytes, over the $(AGENTS_MAX_BYTES)-byte limit: move detail to docs/ (AGENTS.universal.md, \"AGENTS.md size\")"; \
+	  exit 1; \
+	fi
+
+check: fmt vet build test duplicates lint agents-size
 # grm creates the v<monova> tag on GitHub, so HEAD must already be pushed.
 release: build
 	@command -v grm >/dev/null || { echo 'Install grm: https://github.com/jsnjack/grm'; exit 1; }
