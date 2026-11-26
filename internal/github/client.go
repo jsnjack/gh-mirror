@@ -121,6 +121,15 @@ func (c *Client) request(ctx context.Context, method, target string, payload []b
 	}()
 	for attempt := 1; ; attempt++ {
 		response, err := c.attempt(ctx, method, target, payload, etag)
+		var transport *transportError
+		if errors.As(err, &transport) && ctx.Err() == nil {
+			// Every request reads, so repeating one after a dropped connection is safe.
+			if attempt >= maxServerAttempts {
+				return nil, nil, 0, fmt.Errorf("%w (after %d attempts)", err, attempt)
+			}
+			c.pause(time.Duration(attempt) * time.Second)
+			continue
+		}
 		if err != nil {
 			return nil, nil, 0, err
 		}
@@ -151,6 +160,13 @@ func (c *Client) request(ctx context.Context, method, target string, payload []b
 		c.pause(delay)
 	}
 }
+
+// transportError reports a request that ended without a complete response, such
+// as a reset connection, an HTTP/2 stream GitHub cancelled, or a timeout.
+type transportError struct{ err error }
+
+func (e *transportError) Error() string { return e.err.Error() }
+func (e *transportError) Unwrap() error { return e.err }
 
 type response struct {
 	body    []byte
@@ -184,15 +200,15 @@ func (c *Client) attempt(ctx context.Context, method, target string, payload []b
 	started := time.Now()
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return response{}, fmt.Errorf("GitHub %s request: %w", method, err)
+		return response{}, &transportError{fmt.Errorf("GitHub %s request: %w", method, err)}
 	}
 	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxBody+1))
 	closeErr := resp.Body.Close()
 	if readErr != nil {
-		return response{}, fmt.Errorf("read GitHub response: %w", readErr)
+		return response{}, &transportError{fmt.Errorf("read GitHub response: %w", readErr)}
 	}
 	if closeErr != nil {
-		return response{}, fmt.Errorf("close GitHub response: %w", closeErr)
+		return response{}, &transportError{fmt.Errorf("close GitHub response: %w", closeErr)}
 	}
 	if len(body) > maxBody {
 		return response{}, fmt.Errorf("GitHub response exceeds %d bytes", maxBody)

@@ -126,7 +126,10 @@ collection version and pending-session fingerprints unchanged.
 Network errors, invalid payloads, GraphQL errors/partial responses, repeated pagination
 cursors, or request-budget exhaustion roll back the collection. Readers use WAL
 transactions. HTTP retries have bounded attempts and wait time, obey Retry-After and
-rate-limit reset headers, and respect cancellation. Secondary limits (429, or 403
+rate-limit reset headers, and respect cancellation. Server errors (5xx) and transport
+failures (reset connections, HTTP/2 streams GitHub cancels, timeouts, truncated
+bodies) wait one, then two seconds, for at most three attempts; every request reads,
+so repeating one is safe. Secondary limits (429, or 403
 without Retry-After) wait one minute, then back off, for at most five attempts.
 An exhausted primary quota waits until its reset. Waits longer than 61 minutes stop
 collection. GraphQL `RATE_LIMITED` errors retry the same way. Other GraphQL errors

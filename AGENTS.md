@@ -94,7 +94,7 @@ the identity through status or exported snapshots. Permission changes on the sam
 token still require explicit full sync or scheduled reconciliation.
 
 Workers share concurrency permits, budget reservations, retry pauses, and serialized
-progress callbacks. Retry 429/secondary 403 and GraphQL RATE_LIMITED with at least a
+progress callbacks. Retry 5xx and transport failures three times. Retry 429/secondary 403 and GraphQL RATE_LIMITED with at least a
 one-minute backoff for five attempts, and wait for quota reset up to 61 minutes.
 Client clock and sleep are injectable for tests. GraphQL errors keep type and message. Parallelize independent listings across repositories, advertised numbered REST page
 ranges and hydration batches; follow cursor-dependent or unknown-range pagination
