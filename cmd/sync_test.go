@@ -140,6 +140,7 @@ func TestConditionalSyncCommand(t *testing.T) {
 		{name: "running collector skips", collect: true, session: true, lock: true, args: []string{"--ensure-fresh", "--stale-after", "1ns"}, reason: "running"},
 		{name: "interrupted session resumes", collect: true, session: true, args: []string{"--ensure-fresh", "--stale-after", "1ns"}},
 		{name: "lock taken after the check reports running", collect: true, lock: true, args: []string{"--ensure-fresh", "--stale-after", "1ns"}, reason: "running"},
+		{name: "plain sync explains a held lock", collect: true, lock: true, fails: "another gh-mirror process, usually a sync, is writing the mirror"},
 		{name: "stale-after requires ensure-fresh", args: []string{"--stale-after", "1h"}, fails: "--stale-after requires --ensure-fresh"},
 		{name: "zero stale-after", args: []string{"--ensure-fresh", "--stale-after", "0s"}, fails: "positive duration"},
 		{name: "negative stale-after", args: []string{"--ensure-fresh", "--stale-after", "-1m"}, fails: "positive duration"},

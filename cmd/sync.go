@@ -167,7 +167,7 @@ func runSync(command *cobra.Command, run syncRun) (_ any, freshness collect.Fres
 	case conditional && store.IsBusy(err):
 		return skip(collect.SkipRunning)
 	case err != nil:
-		return nil, freshness, fmt.Errorf("collect GitHub data: %w", err)
+		return nil, freshness, fmt.Errorf("collect GitHub data: %w", explainBusy(err))
 	}
 	if run.index {
 		setEmbeddingProgress(report)

@@ -176,9 +176,18 @@ func Execute() error {
 func open(readOnly bool) (*store.Store, error) {
 	db, err := store.OpenWithVectorizer(settings.Database, readOnly, commandEncoder())
 	if err != nil {
-		return nil, fmt.Errorf("open configured mirror: %w", err)
+		return nil, fmt.Errorf("open configured mirror: %w", explainBusy(err))
 	}
 	return db, nil
+}
+
+// explainBusy names the likely cause when SQLite gives up waiting for the mirror's
+// write lock: a sync holds it for its whole collection transaction.
+func explainBusy(err error) error {
+	if !store.IsBusy(err) {
+		return err
+	}
+	return fmt.Errorf("another gh-mirror process, usually a sync, is writing the mirror; wait for it to finish, then check gh-mirror status: %w", err)
 }
 func closeStore(ctx context.Context, db *store.Store) {
 	if err := db.Close(); err != nil {

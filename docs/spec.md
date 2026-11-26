@@ -191,7 +191,9 @@ print `skipped`, `reason` (`fresh` or `running`), `stale_after` and, once collec
 `collected_at` and `age`. Before other commands the sync writes nothing to stdout
 and shows progress only on a terminal stderr. A failed sync before a read prints a
 stderr warning and reads the previous collection; it fails when the mirror was never
-collected or the command was cancelled. Plain `sync` always collects.
+collected or the command was cancelled. Plain `sync` always collects; when another
+process keeps the write lock past the busy timeout, `sync` and `index` fail with an
+error that names a running sync as the usual holder instead of SQLite's code alone.
 
 The persisted `collection_version` identifies data compatibility independently of
 release and physical SQL schema versions. Missing metadata denotes the current version.
